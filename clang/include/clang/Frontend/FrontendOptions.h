@@ -68,6 +68,9 @@ enum ActionKind {
   /// Emit a .cir file
   EmitCIR,
 
+  /// Emit a .mlir file
+  EmitMLIR,
+
   /// Emit a .ll file.
   EmitLLVM,
 
@@ -148,17 +151,15 @@ enum ActionKind {
   PrintDependencyDirectivesSourceMinimizerOutput
 };
 
+enum MLIRDialectKind { MLIR_CORE, MLIR_LLVM, MLIR_CIR, MLIR_CIR_FLAT };
+
 } // namespace frontend
 
 /// The kind of a file that we've been handed as an input.
 class InputKind {
 public:
   /// The input file format.
-  enum Format {
-    Source,
-    ModuleMap,
-    Precompiled
-  };
+  enum Format { Source, ModuleMap, Precompiled };
 
   // If we are building a header unit, what kind it is; this affects whether
   // we look for the file in the user or system include search paths before

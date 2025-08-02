@@ -15,7 +15,7 @@ add_clang_library(clangCIRLoweringDirectToLLVM
   MLIRCIROpInterfacesIncGen
 
   LINK_LIBS
-  clangCIRLoweringCommon
+  clangCIRLoweringHelpers
   ${dialect_libs}
   MLIRCIR
   MLIRBuiltinToLLVMIRTranslation

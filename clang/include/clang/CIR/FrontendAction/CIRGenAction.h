@@ -9,10 +9,16 @@
 #ifndef LLVM_CLANG_CIR_CIRGENACTION_H
 #define LLVM_CLANG_CIR_CIRGENACTION_H
 
-#include "clang/Frontend/FrontendAction.h"
-
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "clang/CodeGen/CodeGenAction.h"
+#include "clang/Frontend/FrontendAction.h"
+#include <memory>
+
+namespace llvm {
+class LLVMIRContext;
+class Module;
+} // namespace llvm
 
 namespace mlir {
 class MLIRContext;
@@ -21,42 +27,63 @@ class ModuleOp;
 
 namespace cir {
 class CIRGenConsumer;
+class CIRGenerator;
 
 class CIRGenAction : public clang::ASTFrontendAction {
 public:
   enum class OutputType {
     EmitAssembly,
-    EmitCIR,
+    EmitMLIR,
     EmitLLVM,
     EmitBC,
     EmitObj,
+    None
   };
 
 private:
   friend class CIRGenConsumer;
 
-  mlir::OwningOpRef<mlir::ModuleOp> MLIRMod;
+  // TODO: this is redundant but just using the OwningModuleRef requires more of
+  // clang against MLIR. Hide this somewhere else.
+  std::unique_ptr<mlir::OwningOpRef<mlir::ModuleOp>> mlirModule;
+  std::unique_ptr<llvm::Module> llvmModule;
 
-  mlir::MLIRContext *MLIRCtx;
+  mlir::MLIRContext *mlirContext;
+
+  mlir::OwningOpRef<mlir::ModuleOp> loadModule(llvm::MemoryBufferRef mbRef);
 
 protected:
-  CIRGenAction(OutputType Action, mlir::MLIRContext *MLIRCtx = nullptr);
+  CIRGenAction(OutputType action, mlir::MLIRContext *_MLIRContext = nullptr);
 
   std::unique_ptr<clang::ASTConsumer>
   CreateASTConsumer(clang::CompilerInstance &CI,
                     llvm::StringRef InFile) override;
 
+  void ExecuteAction() override;
+
+  void EndSourceFileAction() override;
+
 public:
   ~CIRGenAction() override;
 
-  OutputType Action;
+  virtual bool hasCIRSupport() const override { return true; }
+
+  CIRGenConsumer *cgConsumer;
+  OutputType action;
 };
 
-class EmitCIRAction : public CIRGenAction {
+class EmitCIROnlyAction : public CIRGenAction {
   virtual void anchor();
 
 public:
-  EmitCIRAction(mlir::MLIRContext *MLIRCtx = nullptr);
+  EmitCIROnlyAction(mlir::MLIRContext *mlirCtx = nullptr);
+};
+
+class EmitMLIRAction : public CIRGenAction {
+  virtual void anchor();
+
+public:
+  EmitMLIRAction(mlir::MLIRContext *MLIRCtx = nullptr);
 };
 
 class EmitLLVMAction : public CIRGenAction {
@@ -85,6 +112,62 @@ class EmitObjAction : public CIRGenAction {
 
 public:
   EmitObjAction(mlir::MLIRContext *MLIRCtx = nullptr);
+};
+
+// Used for -fclangir-analysis-only: use CIR analysis but still use original
+// LLVM codegen path
+class AnalysisOnlyActionBase : public clang::CodeGenAction {
+  virtual void anchor();
+
+protected:
+  std::unique_ptr<clang::ASTConsumer>
+  CreateASTConsumer(clang::CompilerInstance &CI,
+                    llvm::StringRef InFile) override;
+
+  AnalysisOnlyActionBase(unsigned _Act,
+                         llvm::LLVMContext *_VMContext = nullptr);
+};
+
+class AnalysisOnlyAndEmitAssemblyAction : public AnalysisOnlyActionBase {
+  virtual void anchor() override;
+
+public:
+  AnalysisOnlyAndEmitAssemblyAction(llvm::LLVMContext *_VMContext = nullptr);
+};
+
+class AnalysisOnlyAndEmitBCAction : public AnalysisOnlyActionBase {
+  virtual void anchor() override;
+
+public:
+  AnalysisOnlyAndEmitBCAction(llvm::LLVMContext *_VMContext = nullptr);
+};
+
+class AnalysisOnlyAndEmitLLVMAction : public AnalysisOnlyActionBase {
+  virtual void anchor() override;
+
+public:
+  AnalysisOnlyAndEmitLLVMAction(llvm::LLVMContext *_VMContext = nullptr);
+};
+
+class AnalysisOnlyAndEmitLLVMOnlyAction : public AnalysisOnlyActionBase {
+  virtual void anchor() override;
+
+public:
+  AnalysisOnlyAndEmitLLVMOnlyAction(llvm::LLVMContext *_VMContext = nullptr);
+};
+
+class AnalysisOnlyAndEmitCodeGenOnlyAction : public AnalysisOnlyActionBase {
+  virtual void anchor() override;
+
+public:
+  AnalysisOnlyAndEmitCodeGenOnlyAction(llvm::LLVMContext *_VMContext = nullptr);
+};
+
+class AnalysisOnlyAndEmitObjAction : public AnalysisOnlyActionBase {
+  virtual void anchor() override;
+
+public:
+  AnalysisOnlyAndEmitObjAction(llvm::LLVMContext *_VMContext = nullptr);
 };
 
 } // namespace cir
