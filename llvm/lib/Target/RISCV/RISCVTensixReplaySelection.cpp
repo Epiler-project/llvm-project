@@ -62,13 +62,43 @@ bool isCandidate(const MachineInstr &MI) {
   case RISCV::TTSHIFTXB:
   case RISCV::TTTRNSPSRCB:
   case RISCV::TTNOP:
-    for (unsigned I = 0; I != MI.getNumExplicitOperands(); ++I)
-      if (!MI.getOperand(I).isImm())
-        return false;
-    return true;
+    break;
   default:
     return false;
   }
+  // The opcode proof covers only its declared effects. In particular, a
+  // bundled header does not account for the issues hidden inside its bundle.
+  const MCInstrDesc &Desc = MI.getDesc();
+  if (MI.isBundled() || MI.peekDebugInstrNum() ||
+      MI.getNumExplicitOperands() != Desc.getNumOperands() ||
+      MI.getNumOperands() != Desc.getNumOperands() +
+                                 Desc.implicit_uses().size() +
+                                 Desc.implicit_defs().size())
+    return false;
+  for (unsigned I = 0; I != Desc.getNumOperands(); ++I)
+    if (!MI.getOperand(I).isImm())
+      return false;
+  for (const MachineOperand &MO : MI.implicit_operands()) {
+    if (!MO.isReg() || !MO.getReg().isPhysical() || MO.getSubReg() ||
+        MO.isUndef() || MO.isEarlyClobber() || MO.isInternalRead())
+      return false;
+    if (MO.isDef() ? !is_contained(Desc.implicit_defs(), MO.getReg().id())
+                   : !is_contained(Desc.implicit_uses(), MO.getReg().id()))
+      return false;
+  }
+  for (MCPhysReg Reg : Desc.implicit_uses())
+    if (count_if(MI.implicit_operands(), [Reg](const MachineOperand &MO) {
+          return MO.isUse() && MO.getReg() == Reg;
+        }) != 1)
+      return false;
+  for (MCPhysReg Reg : Desc.implicit_defs())
+    if (count_if(MI.implicit_operands(), [Reg](const MachineOperand &MO) {
+          return MO.isDef() && MO.getReg() == Reg;
+        }) != 1)
+      return false;
+  // Ordinary intrinsic lowering carries volatile memory references. Retain
+  // them on the execute replacement rather than treating them as extra state.
+  return true;
 }
 
 bool equalInstruction(const MachineInstr &A, const MachineInstr &B) {
@@ -88,7 +118,7 @@ bool equalInstruction(const MachineInstr &A, const MachineInstr &B) {
       return false;
     }
   }
-  // The SFPU whitelist separately proves that every implicit effect is the
+  // Both whitelists separately prove that every implicit effect is the
   // exact declared physical use/def. Kill/dead annotations are allocation
   // bookkeeping, not instruction bits or permissions to change the result.
   return true;
@@ -161,7 +191,7 @@ bool llvm::selectTensixReplay(MachineFunction &MF) {
   // explicit or implicit replay/MOP owner. In particular a call cannot silently
   // invalidate a recording between its first and subsequent occurrences.
   for (const auto &BB : MF)
-    for (const auto &MI : BB) {
+    for (const auto &MI : BB.instrs()) {
       if (any_of(MI.operands(), [](const MachineOperand &MO) {
             return MO.isReg() && MO.getReg().isVirtual();
           }))
@@ -186,6 +216,14 @@ bool llvm::selectTensixReplay(MachineFunction &MF) {
     SmallVector<MachineInstr *> Run;
     for (auto &MI : BB) {
       if (HasSFPU ? isTensixSFPUReplayCandidate(MI) : isCandidate(MI)) {
+        // Merging a known memory reference with an unannotated instruction
+        // drops all references. Keep that boundary so volatile annotations
+        // survive and the replacement never understates unknown accesses.
+        if (!Run.empty() &&
+            Run.back()->memoperands_empty() != MI.memoperands_empty()) {
+          consider(Run, Best, HasSFPU);
+          Run.clear();
+        }
         Run.push_back(&MI);
         continue;
       }
@@ -244,6 +282,11 @@ bool llvm::selectTensixReplay(MachineFunction &MF) {
         if (!is_contained(Desc.implicit_defs(), Reg.id()))
           Execute.addReg(Reg, RegState::Implicit | RegState::Define);
       BuildMI(BB, At, At->getDebugLoc(), TII.get(RISCV::TTSFPNOP));
+    } else {
+      SmallVector<const MachineInstr *, 32> Replaced;
+      for (unsigned I = 0; I != Best.Length; ++I)
+        Replaced.push_back(Best.Instructions[Occurrence + I]);
+      Execute.cloneMergedMemRefs(Replaced);
     }
     for (unsigned I = 0; I != Best.Length; ++I)
       Best.Instructions[Occurrence + I]->eraseFromParent();

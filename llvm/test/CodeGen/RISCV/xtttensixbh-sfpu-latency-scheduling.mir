@@ -134,14 +134,8 @@
 # SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
 # SAFE-NEXT: PseudoRET
 #
-# Opaque issue ownership conservatively disables scheduling in the function.
-# SAFE-LABEL: name: retain_inline_asm
-# SAFE: $tt_l0 = TTSFPMAD
-# SAFE-NEXT: TTSFPNOP
-# SAFE-NEXT: $tt_l0 = TTSFPIADD
-# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
-# SAFE-NEXT: INLINEASM
-# SAFE-NEXT: PseudoRET
+# Explicit replay ownership conservatively disables scheduling in the function.
+# Opaque inline assembly is rejected in xtttensixbh-sfpu-machine-inline-asm.mir.
 # SAFE-LABEL: name: retain_explicit_replay
 # SAFE: TTREPLAY 1, 0, 1, 0,
 # SAFE-NEXT: TTNOP
@@ -214,7 +208,6 @@
   define void @retain_extra_clobber() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_scalar_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_scalar_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
-  define void @retain_inline_asm() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_explicit_replay() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_swap_cooldown() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_loop_cfg() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
@@ -354,17 +347,6 @@ body: |
     $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
     $x5 = ADDI $x0, 1
     $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
-    PseudoRET
-...
----
-name: retain_inline_asm
-tracksRegLiveness: false
-body: |
-  bb.0:
-    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
-    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
-    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
-    INLINEASM &"", 1
     PseudoRET
 ...
 ---

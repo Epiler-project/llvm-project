@@ -665,6 +665,10 @@ public:
 
   /// Parameters that control the generic loop unrolling transformation.
   struct UnrollingPreferences {
+    /// Target contract forbids duplicating loop iterations, including peeling
+    /// and unroll-and-jam. Unlike profitability thresholds, this restriction
+    /// cannot be overridden by loop hints or command-line tuning options.
+    bool PreserveIterations = false;
     /// The cost threshold for the unrolled loop. Should be relative to the
     /// getInstructionCost values returned by this API, and the expectation is
     /// that the unrolled loop's instructions when run through that interface

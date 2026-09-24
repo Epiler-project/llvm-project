@@ -3050,6 +3050,18 @@ InstructionCost RISCVTTIImpl::getPointersChainCost(
 void RISCVTTIImpl::getUnrollingPreferences(
     Loop *L, ScalarEvolution &SE, TTI::UnrollingPreferences &UP,
     OptimizationRemarkEmitter *ORE) const {
+  // Tensix keeps source traversal and numerical iterations as loops. This is
+  // independent of whether a particular loop contains an SFPU intrinsic: its
+  // scalar address/control work has the same iteration contract. Keep this
+  // policy per function so ordinary RISC-V functions in a mixed module retain
+  // their usual unrolling preferences. NCRISC has an executor identity but
+  // cannot issue Tensix instructions, so it does not carry +xtttensixbh.
+  if (ST->hasVendorXTTTensixBH() ||
+      L->getHeader()->getParent()->hasFnAttribute("tensix-executor")) {
+    UP.PreserveIterations = true;
+    return;
+  }
+
   // TODO: More tuning on benchmarks and metrics with changes as needed
   //       would apply to all settings below to enable performance.
 
@@ -3125,7 +3137,15 @@ void RISCVTTIImpl::getUnrollingPreferences(
 }
 
 void RISCVTTIImpl::getPeelingPreferences(Loop *L, ScalarEvolution &SE,
-                                         TTI::PeelingPreferences &PP) const {
+                                       TTI::PeelingPreferences &PP) const {
+  if (ST->hasVendorXTTTensixBH() ||
+      L->getHeader()->getParent()->hasFnAttribute("tensix-executor")) {
+    PP.PeelCount = 0;
+    PP.AllowPeeling = false;
+    PP.AllowLoopNestsPeeling = false;
+    PP.PeelProfiledIterations = false;
+    return;
+  }
   BaseT::getPeelingPreferences(L, SE, PP);
 }
 

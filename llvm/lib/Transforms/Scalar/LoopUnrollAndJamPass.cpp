@@ -268,6 +268,8 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
   TargetTransformInfo::UnrollingPreferences UP = gatherUnrollingPreferences(
       L, SE, TTI, nullptr, nullptr, ORE, OptLevel, std::nullopt, std::nullopt,
       std::nullopt, std::nullopt, std::nullopt);
+  if (UP.PreserveIterations)
+    return LoopUnrollResult::Unmodified;
   TargetTransformInfo::PeelingPreferences PP =
       gatherPeelingPreferences(L, SE, TTI, std::nullopt, std::nullopt);
 

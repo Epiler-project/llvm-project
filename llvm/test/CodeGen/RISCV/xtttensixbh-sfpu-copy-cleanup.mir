@@ -72,12 +72,8 @@
 # CLEAN-NEXT: TTSFPENCC 3, 10,
 # CLEAN-NEXT: PseudoRET
 #
-# CLEAN-LABEL: name: retain_inline_asm
-# CLEAN: TTSFPENCC 3, 10,
-# CLEAN-NEXT: TTSFPENCC 3, 10,
-# CLEAN-NEXT: INLINEASM
-# CLEAN-NEXT: $tt_l0 = TTSFPMOVAll $tt_l0,
-# CLEAN-NEXT: PseudoRET
+# The inline-assembly cleanup boundary is tested with final rejection in
+# xtttensixbh-sfpu-machine-inline-asm.mir.
 
 --- |
   define void @repair_removed_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
@@ -86,7 +82,6 @@
   define void @retain_cc_boundaries() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_backedge() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_explicit_replay() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
-  define void @retain_inline_asm() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
 ...
 ---
 name: repair_removed_gap
@@ -177,16 +172,5 @@ body: |
     $tt_l0 = TTSFPMOV $tt_l0, $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
-    PseudoRET
-...
----
-name: retain_inline_asm
-tracksRegLiveness: false
-body: |
-  bb.0:
-    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
-    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
-    INLINEASM &"", 1
-    $tt_l0 = TTSFPMOVAll $tt_l0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
     PseudoRET
 ...

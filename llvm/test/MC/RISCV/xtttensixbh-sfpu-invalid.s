@@ -40,3 +40,24 @@ ttsfpstore l0, 0, 7, 1
 # CHECK: error: SFPSTORE format must be one of {0, 2, 3, 4}
 ttsfpload l0, 0, 7, 5
 # CHECK: error: SFPLOAD format must be one of {0, 2, 3, 4}
+
+# CReg CONFIG fields must obey the same admitted mask/mode contract as the
+# formal intrinsics, for every programmable CReg destination.
+ttsfpconfig.c11 1, 0
+# CHECK: error: SFPCONFIG mode 0 requires a zero mask
+ttsfpconfig.c12 21845, 0
+# CHECK: error: SFPCONFIG mode 0 requires a zero mask
+ttsfpconfig.c13 16384, 0
+# CHECK: error: SFPCONFIG mode 0 requires a zero mask
+ttsfpconfig.c14 65535, 0
+# CHECK: error: SFPCONFIG mode 0 requires a zero mask
+ttsfpconfig.c11 2, 8
+# CHECK: error: SFPCONFIG mode 8 mask must select even lane bits
+ttsfpconfig.c12 32768, 8
+# CHECK: error: SFPCONFIG mode 8 mask must select even lane bits
+ttsfpconfig.c13 21847, 8
+# CHECK: error: SFPCONFIG mode 8 mask must select even lane bits
+ttsfpconfig.c14 65535, 8
+# CHECK: error: SFPCONFIG mode 8 mask must select even lane bits
+ttsfpconfig.c11 0, 1
+# CHECK: error: SFPCONFIGC11 mode must be one of {0, 8}

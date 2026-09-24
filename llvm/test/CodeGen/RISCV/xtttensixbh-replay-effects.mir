@@ -1,0 +1,222 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-selection %s -o - | FileCheck %s --check-prefixes=REJECT,MEMORY
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -riscv-tensix-enable-replay-selection=false -run-pass=riscv-tensix-replay-selection %s -o - | FileCheck %s --check-prefix=REJECT
+#
+# Ordinary replay may compress the declared instruction effects, but it must
+# retain instructions carrying extra physical uses/defs, instruction references
+# or bundle obligations. Each function contains two authored three-word
+# sequences; no source loop is unrolled to create a candidate.
+#
+# The memory case uses the volatile load/store annotation produced by ordinary
+# intrinsic lowering. The recording is more aligned than the repeated
+# occurrence: execute must retain its own references, not copy the recording.
+# A partly unannotated body cannot form a precise merged memory description.
+# REJECT-LABEL: name: extra_use
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-SAME: implicit $x10
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: PseudoRET
+# REJECT-LABEL: name: extra_def
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-SAME: implicit-def $x10
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: PseudoRET
+# REJECT-LABEL: name: duplicate_use
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-SAME: implicit $tt_issue
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: PseudoRET
+# REJECT-LABEL: name: instruction_reference
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-SAME: debug-instr-number 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: PseudoRET
+# REJECT-LABEL: name: bundle_header
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-SAME: {
+# REJECT-NEXT: TTNOP
+# REJECT-NEXT: }
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: PseudoRET
+# MEMORY-LABEL: name: volatile_memory
+# MEMORY: bb.0:
+# MEMORY-NEXT: TTREPLAY 1, 1, 3, 0
+# MEMORY-NEXT: TTSETADC 0, 0, 0, 1
+# MEMORY-SAME: :: (volatile load store (s32), align 8)
+# MEMORY-NEXT: TTSETADC 1, 0, 0, 1
+# MEMORY-SAME: :: (volatile load store (s32), align 8)
+# MEMORY-NEXT: TTSETADC 2, 0, 0, 1
+# MEMORY-SAME: :: (volatile load store (s32), align 8)
+# MEMORY-NEXT: PseudoTTReplayRecordEnd
+# MEMORY-NEXT: TTREPLAY 0, 0, 3, 0
+# MEMORY-SAME: :: (volatile load store (s32))
+# MEMORY-NEXT: PseudoRET
+# REJECT-LABEL: name: mixed_memory
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: PseudoRET
+
+# Bundled instructions must remain visible to the function-wide replay/MOP
+# ownership scan, even when the repeated sequence itself is not bundled.
+# REJECT-LABEL: name: bundled_mop_owner
+# REJECT: bb.0:
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTSETADC 0, 0, 0, 1
+# REJECT-NEXT: TTSETADC 1, 0, 0, 1
+# REJECT-NEXT: TTSETADC 2, 0, 0, 1
+# REJECT-NEXT: TTNOP
+# REJECT-SAME: {
+# REJECT-NEXT: {{.*}} = PseudoTTMOPClear 2
+# REJECT-NEXT: }
+# REJECT-NEXT: PseudoRET
+
+--- |
+  define void @extra_use() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @extra_def() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @duplicate_use() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @instruction_reference() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @bundle_header() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @volatile_memory() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @mixed_memory() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @bundled_mop_owner() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: extra_use
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue, implicit $x10
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: extra_def
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue, implicit-def $x10
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: duplicate_use
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue, implicit $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: instruction_reference
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue, debug-instr-number 1
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: bundle_header
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue {
+      TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    }
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: volatile_memory
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32), align 8)
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32), align 8)
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32), align 8)
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+---
+name: mixed_memory
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: bundled_mop_owner
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 0, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 1, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETADC 2, 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue {
+      early-clobber $x10, early-clobber $x11 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    }
+    PseudoRET
+...

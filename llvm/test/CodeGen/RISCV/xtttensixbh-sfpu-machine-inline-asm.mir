@@ -1,0 +1,100 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/bundle.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=BUNDLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/hidden-sfpu.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=BUNDLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/basic.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards %t/basic.mir -o /dev/null 2>&1 | FileCheck %s
+# BUNDLE: bundled instructions have no verified Tensix SFPU issue order
+# CHECK: inline assembly has no verified Tensix SFPU preservation ABI
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-copy-cc-cleanup %t/cleanup.mir -o %t.cleaned.mir
+# RUN: FileCheck %s --check-prefix=CLEAN < %t.cleaned.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.cleaned.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/latency.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -O0 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/latency.mir -o /dev/null 2>&1 | FileCheck %s
+#
+# Cleanup conservatively preserves the opaque boundary. The independent
+# machine verifier rejects it; neither scheduling nor missing replay may
+# turn unsupported inline assembly into an admitted SFPU function.
+# CLEAN-LABEL: name: retain_inline_asm
+# CLEAN: TTSFPENCC 3, 10,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: INLINEASM
+# CLEAN-NEXT: $tt_l0 = TTSFPMOVAll $tt_l0,
+# CLEAN-NEXT: PseudoRET
+
+#--- basic.mir
+--- |
+  define void @test() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" {
+    ret void
+  }
+...
+---
+name: test
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    INLINEASM &"", 1
+    PseudoRET
+...
+
+#--- cleanup.mir
+--- |
+  define void @retain_inline_asm() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: retain_inline_asm
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    INLINEASM &"", 1
+    $tt_l0 = TTSFPMOVAll $tt_l0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- latency.mir
+--- |
+  define void @retain_inline_asm() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: retain_inline_asm
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    INLINEASM &"", 1
+    PseudoRET
+...
+
+#--- bundle.mir
+--- |
+  define void @bundled() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: bundled
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue {
+      INLINEASM &"", 1
+    }
+    PseudoRET
+...
+
+#--- hidden-sfpu.mir
+--- |
+  define void @hidden_sfpu() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: hidden_sfpu
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $x0 = ADDI $x0, 0 {
+      TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    }
+    PseudoRET
+...

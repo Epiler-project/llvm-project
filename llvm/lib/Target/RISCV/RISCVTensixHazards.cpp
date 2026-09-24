@@ -309,7 +309,7 @@ public:
         return Fail(toString(std::move(E)));
     bool Uses = MF.getInfo<RISCVMachineFunctionInfo>()->usesTensixSFPU();
     for (const auto &BB : MF)
-      for (const auto &MI : BB)
+      for (const auto &MI : BB.instrs())
         Uses |= isSFPU(MI);
     if (!Uses)
       return false;
@@ -317,7 +317,11 @@ public:
     const auto &TRI = *ST.getRegisterInfo();
     const auto &TII = *ST.getInstrInfo();
     for (const auto &BB : MF)
-      for (const auto &MI : BB) {
+      for (const auto &MI : BB.instrs()) {
+        if (MI.isBundled())
+          return Fail("bundled instructions have no verified Tensix SFPU issue order");
+        if (MI.isInlineAsm())
+          return Fail("inline assembly has no verified Tensix SFPU preservation ABI");
         if (MI.isCall())
           return Fail("machine call has no verified Tensix SFPU preservation ABI");
         if (MI.getOpcode() == RISCV::TTSETC16 &&

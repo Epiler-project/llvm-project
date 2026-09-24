@@ -228,6 +228,19 @@ Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
     }
   }
   switch (MI.getOpcode()) {
+  case RISCV::TTSFPCONFIGC11:
+  case RISCV::TTSFPCONFIGC12:
+  case RISCV::TTSFPCONFIGC13:
+  case RISCV::TTSFPCONFIGC14: {
+    uint64_t Mask = MI.getOperand(0).getImm();
+    unsigned Mode = MI.getOperand(1).getImm();
+    if (Mode == 0 && Mask != 0)
+      return createStringError("SFPCONFIG mode 0 requires a zero mask");
+    if (Mode == 8 && (Mask & ~uint64_t(0x5555)) != 0)
+      return createStringError(
+          "SFPCONFIG mode 8 mask must select even lane bits");
+    break;
+  }
   case RISCV::TTSFPSETEXP:
   case RISCV::TTSFPSETMAN:
   case RISCV::TTSFPSETSGN: {
