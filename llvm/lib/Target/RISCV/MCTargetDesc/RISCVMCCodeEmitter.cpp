@@ -27,6 +27,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/EndianStream.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
@@ -565,6 +566,17 @@ void RISCVMCCodeEmitter::encodeInstruction(const MCInst &MI,
                                            SmallVectorImpl<char> &CB,
                                            SmallVectorImpl<MCFixup> &Fixups,
                                            const MCSubtargetInfo &STI) const {
+  if (RISCV::getTensixEncoding(MI.getOpcode())) {
+    if (!STI.hasFeature(RISCV::FeatureVendorXTTTensixBH)) {
+      Ctx.reportError(MI.getLoc(), "Tensix instruction requires +xtttensixbh");
+      return;
+    }
+    if (Error E = RISCV::verifyTensixMCInstruction(MI, MCII,
+                                                   *Ctx.getRegisterInfo())) {
+      Ctx.reportError(MI.getLoc(), toString(std::move(E)));
+      return;
+    }
+  }
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   // Get byte count of instruction.
   unsigned Size = Desc.getSize();

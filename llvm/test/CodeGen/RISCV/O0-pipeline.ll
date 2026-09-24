@@ -18,6 +18,8 @@
 ; CHECK-NEXT: Assumption Cache Tracker
 ; CHECK-NEXT: Profile summary info
 ; CHECK-NEXT: Machine Branch Probability Analysis
+; CHECK-NEXT: Default Regalloc Eviction Advisor
+; CHECK-NEXT: Default Regalloc Priority Advisor
 ; CHECK-NEXT:   ModulePass Manager
 ; CHECK-NEXT:     Pre-ISel Intrinsic Lowering
 ; CHECK-NEXT:     FunctionPass Manager
@@ -36,6 +38,10 @@
 ; CHECK-NEXT:       Safe Stack instrumentation pass
 ; CHECK-NEXT:       Insert stack protectors
 ; CHECK-NEXT:       Module Verifier
+; CHECK-NEXT:       Dominator Tree Construction
+; CHECK-NEXT:       Natural Loop Information
+; CHECK-NEXT:       Scalar Evolution Analysis
+; CHECK-NEXT:       Verify Tensix SFPU IR
 ; CHECK-NEXT:       Assignment Tracking Analysis
 ; CHECK-NEXT:       RISC-V DAG->DAG Pattern Instruction Selection
 ; CHECK-NEXT:       Finalize ISel and expand pseudo-instructions
@@ -48,13 +54,29 @@
 ; CHECK-NEXT:       Init Undef Pass
 ; CHECK-NEXT:       Eliminate PHI nodes for register allocation
 ; CHECK-NEXT:       Two-Address instruction pass
+; CHECK-NEXT:       MachineDominator Tree Construction
+; CHECK-NEXT:       Slot index numbering
+; CHECK-NEXT:       Live Interval Analysis
+; CHECK-NEXT:       Mark Tensix SFPU intervals nonspillable
+; CHECK-NEXT:       Machine Cycle Info Analysis
+; CHECK-NEXT:       Machine Block Frequency Analysis
+; CHECK-NEXT:       Debug Variable Analysis
+; CHECK-NEXT:       Live Stack Slot Analysis
+; CHECK-NEXT:       Machine Natural Loop Construction
+; CHECK-NEXT:       Virtual Register Map
+; CHECK-NEXT:       Live Register Matrix
+; CHECK-NEXT:       Bundle Machine CFG Edges
+; CHECK-NEXT:       Spill Code Placement Analysis
+; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
+; CHECK-NEXT:       Machine Optimization Remark Emitter
+; CHECK-NEXT:       Greedy Register Allocator
+; CHECK-NEXT:       Virtual Register Rewriter
+; CHECK-NEXT:       Verify Tensix SFPU register allocation
 ; CHECK-NEXT:       Fast Register Allocator
 ; CHECK-NEXT:       RISC-V Insert VSETVLI pass
 ; CHECK-NEXT:       Fast Register Allocator
 ; CHECK-NEXT:       Remove Redundant DEBUG_VALUE analysis
 ; CHECK-NEXT:       Fixup Statepoint Caller Saved
-; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
-; CHECK-NEXT:       Machine Optimization Remark Emitter
 ; CHECK-NEXT:       Prologue/Epilogue Insertion & Frame Finalization
 ; CHECK-NEXT:       Post-RA pseudo instruction expansion pass
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Post-RA
@@ -63,7 +85,10 @@
 ; CHECK-NEXT:       Insert fentry calls
 ; CHECK-NEXT:       Insert XRay ops
 ; CHECK-NEXT:       Implement the 'patchable-function' attribute
+; CHECK-NEXT:       Remove redundant Tensix SFPU copies and condition enables
 ; CHECK-NEXT:       RISC-V Indirect Branch Tracking
+; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
+; CHECK-NEXT:       Select existing repeated Tensix sequences for replay
 ; CHECK-NEXT:       Branch relaxation pass
 ; CHECK-NEXT:       RISC-V Make Compressible
 ; CHECK-NEXT:       Contiguously Lay Out Funclets
@@ -78,6 +103,7 @@
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Pre-Emit
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Atomics
 ; CHECK-NEXT:       Unpack machine instruction bundles
+; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
 ; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
 ; CHECK-NEXT:       Machine Optimization Remark Emitter
 ; CHECK-NEXT:       RISC-V Assembly Printer

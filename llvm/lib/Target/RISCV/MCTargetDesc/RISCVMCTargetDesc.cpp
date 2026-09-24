@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVMCTargetDesc.h"
+#include "RISCVBaseInfo.h"
 #include "RISCVELFStreamer.h"
 #include "RISCVInstPrinter.h"
 #include "RISCVMCAsmInfo.h"
@@ -45,6 +46,24 @@
 #include "RISCVGenSubtargetInfo.inc"
 
 using namespace llvm;
+
+Expected<bool> llvm::RISCV::verifyTensixTargetFeatures(const Triple &TT,
+                                                     StringRef CPU,
+                                                     StringRef Features) {
+  if (CPU.empty() || CPU == "generic")
+    CPU = TT.isArch64Bit() ? "generic-rv64" : "generic-rv32";
+  if (!RISCV::parseCPU(CPU, TT.isArch64Bit()))
+    return createStringError("invalid RISC-V CPU: " + CPU);
+  std::unique_ptr<MCSubtargetInfo> STI(
+      createRISCVMCSubtargetInfoImpl(TT, CPU, CPU, Features));
+  RISCV::updateCZceFeatureImplications(*STI);
+  if (STI->hasFeature(RISCV::Feature64Bit) != TT.isArch64Bit() ||
+      STI->hasFeature(RISCV::Feature32Bit) != TT.isArch32Bit())
+    return createStringError("RISC-V feature width conflicts with target triple");
+  if (Error E = RISCV::verifyTensixFeatureBits(TT, STI->getFeatureBits()))
+    return std::move(E);
+  return STI->getFeatureBits()[RISCV::FeatureVendorXTTTensixBH];
+}
 
 static MCInstrInfo *createRISCVMCInstrInfo() {
   MCInstrInfo *X = new MCInstrInfo();
@@ -170,6 +189,12 @@ createRISCVMCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
   }
 
   RISCV::updateCZceFeatureImplications(*X);
+
+  // Tensix must reject incompatible feature combinations. Preserve ordinary
+  // MC consumers that intentionally override a file's base architecture via
+  // its attributes (for example, llvm-objdump with an explicit RV32 triple).
+  if (X->hasFeature(RISCV::FeatureVendorXTTTensixBH))
+    RISCVFeatures::validate(TT, X->getFeatureBits());
 
   return X;
 }

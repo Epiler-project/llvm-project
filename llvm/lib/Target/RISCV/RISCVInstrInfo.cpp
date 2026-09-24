@@ -30,6 +30,8 @@
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInstBuilder.h"
@@ -514,6 +516,20 @@ void RISCVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  bool RenamableDest, bool RenamableSrc) const {
   const TargetRegisterInfo *TRI = STI.getRegisterInfo();
   RegState KillFlag = getKillRegState(KillSrc);
+  if (RISCV::SFPRRegClass.contains(DstReg) &&
+      RISCV::SFPRReadRegClass.contains(SrcReg)) {
+    BuildMI(MBB, MBBI, DL, get(RISCV::TTSFPMOVAll), DstReg)
+        .addReg(SrcReg, KillFlag);
+    return;
+  }
+  if (RISCV::SFPRReadRegClass.contains(DstReg) ||
+      RISCV::SFPRReadRegClass.contains(SrcReg)) {
+    auto &MF = *MBB.getParent();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(), "Tensix SFPU copy cannot cross register banks"));
+    return;
+  }
 
   if (RISCV::GPRRegClass.contains(DstReg, SrcReg)) {
     BuildMI(MBB, MBBI, DL, get(RISCV::ADDI), DstReg)
@@ -673,6 +689,13 @@ void RISCVInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                          const TargetRegisterClass *RC,
                                          Register VReg,
                                          MachineInstr::MIFlag Flags) const {
+  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
+    auto &MF = *MBB.getParent();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(), "Tensix SFPU registers cannot spill or reload"));
+    return;
+  }
   MachineFunction *MF = MBB.getParent();
   MachineFrameInfo &MFI = MF->getFrameInfo();
   Align Alignment = MFI.getObjectAlign(FI);
@@ -763,6 +786,13 @@ void RISCVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           const TargetRegisterClass *RC,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
+  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
+    auto &MF = *MBB.getParent();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(), "Tensix SFPU registers cannot spill or reload"));
+    return;
+  }
   MachineFunction *MF = MBB.getParent();
   MachineFrameInfo &MFI = MF->getFrameInfo();
   Align Alignment = MFI.getObjectAlign(FI);

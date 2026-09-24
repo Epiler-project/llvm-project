@@ -1,0 +1,100 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t
+# RUN: FileCheck %s < %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -x mir -run-pass=riscv-tensix-hazards %t -o /dev/null
+--- |
+  define void @swap_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @existing_nop() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @scalar_dma_is_not_sfpu_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @swap_cc_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @matrix_dst_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @swap_replay_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: swap_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPADD $tt_l2, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: swap_gap
+# CHECK: TTSFPSWAP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l2 = TTSFPADD
+---
+name: existing_nop
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPADD $tt_l2, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: existing_nop
+# CHECK: TTSFPSWAP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l2 = TTSFPADD
+---
+name: scalar_dma_is_not_sfpu_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTDMANOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l2 = TTSFPADD $tt_l2, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: scalar_dma_is_not_sfpu_gap
+# CHECK: TTDMANOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l2 = TTSFPADD
+---
+name: swap_cc_boundary
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: swap_cc_boundary
+# CHECK: TTSFPSWAP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPPUSHC
+---
+name: matrix_dst_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOAD $tt_l0, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: matrix_dst_gap
+# CHECK: TTMVMUL
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPLOAD
+---
+name: swap_replay_boundary
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l2 = TTSFPADD $tt_l2, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: swap_replay_boundary
+# CHECK: TTSFPSWAP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTREPLAY 0, 0, 1, 0
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l2 = TTSFPADD

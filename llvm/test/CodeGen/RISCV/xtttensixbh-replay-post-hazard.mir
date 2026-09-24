@@ -1,0 +1,58 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -enable-new-pm -debug-pass-manager -start-before=riscv-expand-pseudo-pre-emit -stop-before=riscv-asm-printer %s -o %t.before.mir 2>&1 | FileCheck %s --check-prefix=VERIFY
+# RUN: FileCheck %s --check-prefix=BEFORE < %t.before.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=HAZARD
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.repaired.mir
+# RUN: FileCheck %s --check-prefix=REPAIRED < %t.repaired.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -enable-new-pm -start-before=riscv-expand-pseudo-pre-emit -stop-before=riscv-asm-printer %t.repaired.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FINAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -x mir -run-pass=riscv-tensix-hazards %t.repaired.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FINAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=FINAL
+#
+# First prove the unmodified recording passes the replay verifier. The new-PM
+# tail lets this replay-only check run independently of SFPU hazard checking;
+# it is not a supported SFPU code generation pipeline. The legacy hazard check
+# then diagnoses the unresolved hazard, rather than an initial replay error.
+# VERIFY: Running pass: RISCVTensixReplayVerificationPass
+# HAZARD: unresolved Tensix SFPU MAD to IADD destination hazard
+#
+# Stream 1 was recorded before stream 0 starts recording. Its replay is not a
+# stream-0 recorded issue, so stream 0 initially contains exactly one TTNOP.
+# A preceding SWAP requires repair before that remote replay. The actual repair
+# inserts a stream-0 SFP NOP inside the record, where the typed SFPU preservation
+# ABI is intentionally unsupported. Final legality must recheck the mutated
+# body and reject it; checking just the source length would silently admit it.
+# FINAL: SFPU replay recording requires a typed SSA preservation ABI
+#
+# BEFORE-LABEL: name: record_after_hazard
+# BEFORE: TTSFPSWAP
+# BEFORE-NEXT: TTREPLAY 1, 0, 1, 0
+# BEFORE-NEXT: {{.*}} = PseudoTTREPLAYPort 1, 0, 0, 1, 0
+# BEFORE-NEXT: TTNOP
+# BEFORE-NEXT: PseudoTTReplayRecordEnd
+# BEFORE-NEXT: PseudoRET
+# REPAIRED-LABEL: name: record_after_hazard
+# REPAIRED: TTSFPSWAP
+# REPAIRED-NEXT: TTREPLAY 1, 0, 1, 0
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: {{.*}} = PseudoTTREPLAYPort 1, 0, 0, 1, 0
+# REPAIRED-NEXT: TTNOP
+# REPAIRED-NEXT: PseudoTTReplayRecordEnd
+# REPAIRED-NEXT: PseudoRET
+
+--- |
+  define void @record_after_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_after_hazard
+tracksRegLiveness: false
+body: |
+  bb.0:
+    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTREPLAYPort 1, 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTNOPPort 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTREPLAYPort 1, 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

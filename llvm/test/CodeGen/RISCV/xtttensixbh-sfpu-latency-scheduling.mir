@@ -1,0 +1,440 @@
+# RUN: split-file %s %t
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/schedule.mir -o %t.scheduled.mir
+# RUN: FileCheck %s --check-prefixes=SCHEDULED,SAFE < %t.scheduled.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.scheduled.mir -o /dev/null
+# RUN: llc -O0 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/schedule.mir -o %t.baseline.mir
+# RUN: FileCheck %s --check-prefixes=BASELINE,SAFE < %t.baseline.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.baseline.mir -o /dev/null
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.scheduled.mir -o %t.again.mir
+# RUN: FileCheck %s --check-prefixes=SCHEDULED,SAFE < %t.again.mir
+# RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/call.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
+#
+# Blackhole MAD/ADD/MUL take two SFPU cycles. IADD's tied destination is
+# not covered by the hardware scoreboard. A pre-existing, independent,
+# unpredicated one-cycle move can fill this gap: P,C,F becomes P,F,C rather
+# than P,NOP,C,F. This is a real instruction-count reduction, not merely
+# insertion of safety NOPs. The O0 stream provides the unscheduled baseline.
+#
+# SFPMOV mode 2 ignores lane enable; the selected IADD/ISUB modes preserve CC.
+# Register conflicts, fixed storage, undeclared effects and external issue
+# owners exclude motion. Ordinary scalar issue is not an SFPU waiting cycle.
+# SFPSWAP's next SFPU cycle accepts only SFPNOP, not an independent move.
+# All checks retain original non-NOP instructions and actual loop branches.
+#
+# ISA basis: tt-isa-documentation b0cfdc436537de5260f136dad37a77c95eb3bc3d,
+# BlackholeA0/TensixTile/TensixCoprocessor/{SFPMAD,SFPMUL,SFPADD,SFPSWAP}.md,
+# and shared WormholeB0/TensixTile/TensixCoprocessor/{SFPMOV,SFPIADD}.md.
+
+# SCHEDULED-LABEL: name: hide_mad_gap
+# SCHEDULED: $tt_l0 = TTSFPMAD
+# SCHEDULED-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SCHEDULED-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# SCHEDULED-NEXT: PseudoRET
+# BASELINE-LABEL: name: hide_mad_gap
+# BASELINE: $tt_l0 = TTSFPMAD
+# BASELINE-NEXT: TTSFPNOP
+# BASELINE-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# BASELINE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# BASELINE-NEXT: PseudoRET
+#
+# SCHEDULED-LABEL: name: hide_mul_gap
+# SCHEDULED: $tt_l0 = TTSFPMUL
+# SCHEDULED-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SCHEDULED-NEXT: $tt_l0 = TTSFPISUB $tt_l0, $tt_l2,
+# SCHEDULED-NEXT: PseudoRET
+# BASELINE-LABEL: name: hide_mul_gap
+# BASELINE: $tt_l0 = TTSFPMUL
+# BASELINE-NEXT: TTSFPNOP
+# BASELINE-NEXT: $tt_l0 = TTSFPISUB $tt_l0, $tt_l2,
+# BASELINE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# BASELINE-NEXT: PseudoRET
+#
+# SCHEDULED-LABEL: name: hide_add_gap
+# SCHEDULED: $tt_l0 = TTSFPADD
+# SCHEDULED-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SCHEDULED-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# SCHEDULED-NEXT: PseudoRET
+# BASELINE-LABEL: name: hide_add_gap
+# BASELINE: $tt_l0 = TTSFPADD
+# BASELINE-NEXT: TTSFPNOP
+# BASELINE-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# BASELINE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# BASELINE-NEXT: PseudoRET
+#
+# Moving this read earlier would copy the MAD result instead of the IADD
+# result, and would itself immediately consume the pending producer.
+# SAFE-LABEL: name: retain_raw
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l0,
+# SAFE-NEXT: PseudoRET
+#
+# SAFE-LABEL: name: retain_war
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# SAFE-NEXT: $tt_l2 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+#
+# The tied IADD destination makes this both WAW and WAR; the final L0 must
+# contain the move's value, not the consumer's sum.
+# SAFE-LABEL: name: retain_waw
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l2,
+# SAFE-NEXT: $tt_l0 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+#
+# SAFE-LABEL: name: retain_fixed_source
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: retain_fixed_destination
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+#
+# SAFE-LABEL: name: retain_cc_consumer
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADDCCLT
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: retain_predicated_copy
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOV $tt_l4, $tt_l5,
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: retain_extra_clobber
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5, {{.*}}implicit-def $tt_cc
+# SAFE-NEXT: PseudoRET
+#
+# Neither scalar placement may be interpreted as providing an SFPU cycle.
+# SAFE-LABEL: name: retain_scalar_gap
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: $x5 = ADDI $x0, 1
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: retain_scalar_boundary
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $x5 = ADDI $x0, 1
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+#
+# Opaque issue ownership conservatively disables scheduling in the function.
+# SAFE-LABEL: name: retain_inline_asm
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: INLINEASM
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: retain_explicit_replay
+# SAFE: TTREPLAY 1, 0, 1, 0,
+# SAFE-NEXT: TTNOP
+# SAFE-NEXT: PseudoTTReplayRecordEnd
+# SAFE-NEXT: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+#
+# SAFE-LABEL: name: retain_swap_cooldown
+# SAFE: $tt_l0, $tt_l1 = TTSFPSWAP
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l4 = TTSFPIADD
+# SAFE-NEXT: $tt_l6 = TTSFPMOVAll $tt_l7,
+# SAFE-NEXT: PseudoRET
+#
+# Move only within an existing iteration; keep its entry, body, backedge and
+# exit, with exactly one original MAD, IADD and MOV in the loop body.
+# SCHEDULED-LABEL: name: retain_loop_cfg
+# SCHEDULED: bb.0:
+# SCHEDULED: PseudoBR %bb.1
+# SCHEDULED: bb.1:
+# SCHEDULED: $tt_l0 = TTSFPMAD
+# SCHEDULED-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SCHEDULED-NEXT: $tt_l0 = TTSFPIADD
+# SCHEDULED-NEXT: $x10 = ADDI $x10, -1
+# SCHEDULED-NEXT: BNE $x10, $x0, %bb.1
+# SCHEDULED-NEXT: PseudoBR %bb.2
+# SCHEDULED: bb.2:
+# SCHEDULED-NEXT: PseudoRET
+# BASELINE-LABEL: name: retain_loop_cfg
+# BASELINE: bb.0:
+# BASELINE: PseudoBR %bb.1
+# BASELINE: bb.1:
+# BASELINE: $tt_l0 = TTSFPMAD
+# BASELINE-NEXT: TTSFPNOP
+# BASELINE-NEXT: $tt_l0 = TTSFPIADD
+# BASELINE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# BASELINE-NEXT: $x10 = ADDI $x10, -1
+# BASELINE-NEXT: BNE $x10, $x0, %bb.1
+# BASELINE-NEXT: PseudoBR %bb.2
+# BASELINE: bb.2:
+# BASELINE-NEXT: PseudoRET
+#
+# A propagated pending producer is not permission to move across a CFG edge.
+# SAFE-LABEL: name: retain_block_boundary
+# SAFE: bb.0:
+# SAFE: $tt_l0 = TTSFPMAD
+# SAFE-NEXT: PseudoBR %bb.1
+# SAFE: bb.1:
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: $tt_l0 = TTSFPIADD
+# SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
+# SAFE-NEXT: PseudoRET
+# CALL: machine call has no verified Tensix SFPU preservation ABI
+
+#--- schedule.mir
+--- |
+  define void @hide_mad_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @hide_mul_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @hide_add_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_raw() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_war() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_waw() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_fixed_source() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_fixed_destination() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_cc_consumer() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_predicated_copy() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_extra_clobber() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_scalar_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_scalar_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_inline_asm() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_explicit_replay() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_swap_cooldown() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_loop_cfg() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_block_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: hide_mad_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: hide_mul_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMUL $tt_l0, $tt_c10, $tt_c9, 0, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPISUB $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: hide_add_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPADD $tt_l0, $tt_c9, $tt_c9, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_raw
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_war
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_waw
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_fixed_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  tensixFixedLRegs: 32
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_fixed_destination
+tracksRegLiveness: false
+machineFunctionInfo:
+  tensixFixedLRegs: 16
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_cc_consumer
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADDCCLT $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_predicated_copy
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOV $tt_l4, $tt_l5, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_extra_clobber
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    PseudoRET
+...
+---
+name: retain_scalar_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x5 = ADDI $x0, 1
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_scalar_boundary
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x5 = ADDI $x0, 1
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_inline_asm
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    INLINEASM &"", 1
+    PseudoRET
+...
+---
+name: retain_explicit_replay
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_swap_cooldown
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0, $tt_l1 = TTSFPSWAP $tt_l0, $tt_l1, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPIADD $tt_l4, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l6 = TTSFPMOVAll $tt_l7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_loop_cfg
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x10 = ADDI $x10, -1
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+---
+name: retain_block_boundary
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- call.mir
+--- |
+  declare void @external()
+  define void @retain_call_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: retain_call_boundary
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoCALL target-flags(riscv-call) @external
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

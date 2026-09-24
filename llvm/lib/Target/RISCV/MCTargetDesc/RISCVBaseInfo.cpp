@@ -14,8 +14,11 @@
 #include "RISCVBaseInfo.h"
 #include "RISCVMCAsmInfo.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -47,7 +50,218 @@ namespace RISCV {
 #define GET_RISCVVLXTable_IMPL
 #define GET_RISCVVSXTable_IMPL
 #define GET_RISCVNDSVLNTable_IMPL
+#define GET_RISCVTensixEncodingTable_IMPL
+#define GET_RISCVTensixInstructionTable_IMPL
+#define GET_RISCVTensixMachineTable_IMPL
+#define GET_RISCVTensixFieldTable_IMPL
 #include "RISCVGenSearchableTables.inc"
+
+uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port) {
+  switch (Port) {
+  case TensixInstructionPort::Local:
+    return 0xffe40000;
+  case TensixInstructionPort::BriscToTrisc1:
+    return 0xffe50000;
+  case TensixInstructionPort::BriscToTrisc2:
+    return 0xffe60000;
+  }
+  llvm_unreachable("unknown Tensix instruction port");
+}
+
+Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits) {
+  if (FeatureBits[RISCV::FeatureVendorXTTTensixBH]) {
+    if (TT.getArch() != Triple::riscv32 || !TT.isLittleEndian())
+      return createStringError("XTTTensixBH requires RV32 little-endian");
+    if (FeatureBits[RISCV::FeatureStdExtC] ||
+        FeatureBits[RISCV::FeatureStdExtZca] ||
+        FeatureBits[RISCV::FeatureStdExtZcb] ||
+        FeatureBits[RISCV::FeatureStdExtZcd] ||
+        FeatureBits[RISCV::FeatureStdExtZce] ||
+        FeatureBits[RISCV::FeatureStdExtZcf] ||
+        FeatureBits[RISCV::FeatureStdExtZclsd] ||
+        FeatureBits[RISCV::FeatureStdExtZcmop] ||
+        FeatureBits[RISCV::FeatureStdExtZcmp] ||
+        FeatureBits[RISCV::FeatureStdExtZcmt])
+      return createStringError("XTTTensixBH is incompatible with C/Zc extensions");
+    if (FeatureBits[RISCV::FeatureStdExtV] ||
+        FeatureBits[RISCV::FeatureStdExtZve32x] ||
+        FeatureBits[RISCV::FeatureStdExtZve32f] ||
+        FeatureBits[RISCV::FeatureStdExtZve64x] ||
+        FeatureBits[RISCV::FeatureStdExtZve64f] ||
+        FeatureBits[RISCV::FeatureStdExtZve64d])
+      return createStringError(
+          "XTTTensixBH is incompatible with V/Zve extensions");
+  }
+  return Error::success();
+}
+
+const TensixInstructionInfo *getTensixInstructionByName(StringRef Name) {
+  return lookupTensixInstructionByName(Name.upper());
+}
+
+StringRef TensixInstructionInfo::getName() const {
+  return getTensixInstructionInfoStr(Name);
+}
+
+StringRef TensixInstructionField::getName() const {
+  return getTensixInstructionFieldStr(Name);
+}
+
+const TensixInstructionInfo *
+getTensixInstructionByIntrinsic(Intrinsic::ID ID) {
+  if (const auto *Info = lookupTensixInstruction(ID))
+    return Info;
+  if (const auto *Info = lookupTensixInstructionByPort(ID))
+    return Info;
+  return lookupTensixInstructionByMop(ID);
+}
+
+const TensixInstructionField *
+getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index) {
+  if (Index >= Info.NumFields)
+    return nullptr;
+  return lookupTensixInstructionField(Info.IntrinsicID, Index);
+}
+
+Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
+                                const MCRegisterInfo &MRI) {
+  const TensixEncoding *Encoding = getTensixEncoding(MI.getOpcode());
+  if (!Encoding)
+    return Error::success();
+
+  const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
+  if (MI.getNumOperands() != Desc.getNumOperands())
+    return createStringError("incorrect number of Tensix instruction operands");
+  if (const auto *Machine = getTensixMachineInfo(MI.getOpcode())) {
+    const auto *Info = lookupTensixInstruction(Machine->IntrinsicID);
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      const auto *Field = getTensixInstructionField(*Info, I);
+      const MCOperand &Op = MI.getOperand(I);
+      if (!Op.isImm() || Op.getImm() < 0 ||
+          uint64_t(Op.getImm()) > Field->MaxValue)
+        return createStringError(Twine(Info->getName()) + " field " + Field->getName() +
+                                 " must be in [0, " +
+                                 Twine(Field->MaxValue) + "]");
+    }
+    return Error::success();
+  }
+  for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
+    const MCOperand &Op = MI.getOperand(I);
+    const MCOperandInfo &Info = Desc.operands()[I];
+    if (Info.RegClass >= 0) {
+      if (!Op.isReg() || !MRI.getRegClass(Info.RegClass).contains(Op.getReg()))
+        return createStringError(
+            "invalid register for Tensix instruction operand");
+      int Tied = Desc.getOperandConstraint(I, MCOI::TIED_TO);
+      if (Tied >= 0 && (!MI.getOperand(Tied).isReg() ||
+                        MI.getOperand(Tied).getReg() != Op.getReg()))
+        return createStringError(
+            "Tensix destination and passthrough must be tied");
+      continue;
+    }
+    if (!Op.isImm())
+      return createStringError(
+          "Tensix instruction requires immediate operands");
+    unsigned Bits;
+    switch (Info.OperandType) {
+    case RISCVOp::OPERAND_UIMM2:
+      Bits = 2;
+      break;
+    case RISCVOp::OPERAND_UIMM3:
+      Bits = 3;
+      break;
+    case RISCVOp::OPERAND_UIMM4:
+      Bits = 4;
+      break;
+    case RISCVOp::OPERAND_UIMM8:
+      Bits = 8;
+      break;
+    case RISCVOp::OPERAND_UIMM10:
+      Bits = 10;
+      break;
+    case RISCVOp::OPERAND_UIMM12:
+      Bits = 12;
+      break;
+    case RISCVOp::OPERAND_UIMM16:
+      Bits = 16;
+      break;
+    case RISCVOp::OPERAND_SIMM12:
+      if (!isInt<12>(Op.getImm()))
+        return createStringError("Tensix immediate operand must fit in 12 signed bits");
+      continue;
+    default:
+      return createStringError("unsupported Tensix immediate operand contract");
+    }
+    if (!isUIntN(Bits, Op.getImm()))
+      return createStringError("Tensix immediate operand must fit in " +
+                               Twine(Bits) + " unsigned bits");
+  }
+
+  if (Encoding->ConfigCount &&
+      uint64_t(MI.getOperand(0).getImm()) >= Encoding->ConfigCount)
+    return createStringError("SETC16 configuration index must be in [0, 67]");
+
+  if (Encoding->AllowedModes) {
+    if (Encoding->ModeOperandIndex >= MI.getNumOperands() ||
+        !MI.getOperand(Encoding->ModeOperandIndex).isImm())
+      return createStringError("invalid Tensix mode operand contract");
+    uint64_t Mode = MI.getOperand(Encoding->ModeOperandIndex).getImm();
+    if (Mode >= 16 || !(Encoding->AllowedModes & (uint16_t(1) << Mode))) {
+      std::string Message;
+      raw_string_ostream OS(Message);
+      OS << MCII.getName(MI.getOpcode()).drop_front(2)
+         << ((MI.getOpcode() == RISCV::TTSFPLOAD ||
+              MI.getOpcode() == RISCV::TTSFPSTORE)
+                 ? " format"
+                 : " mode")
+         << " must be one of {";
+      bool First = true;
+      for (unsigned M = 0; M != 16; ++M)
+        if (Encoding->AllowedModes & (uint16_t(1) << M)) {
+          if (!First)
+            OS << ", ";
+          OS << M;
+          First = false;
+        }
+      OS << '}';
+      return createStringError(Message);
+    }
+  }
+  switch (MI.getOpcode()) {
+  case RISCV::TTSFPSETEXP:
+  case RISCV::TTSFPSETMAN:
+  case RISCV::TTSFPSETSGN: {
+    unsigned Mode = MI.getOperand(4).getImm();
+    int64_t Value = MI.getOperand(3).getImm();
+    unsigned Max = MI.getOpcode() == RISCV::TTSFPSETEXP ? 255
+                 : MI.getOpcode() == RISCV::TTSFPSETMAN ? 4095 : 1;
+    if (!(Mode & 1))
+      Max = 0;
+    if (uint64_t(Value) > Max)
+      return createStringError("Tensix field immediate must be in [0, " +
+                               Twine(Max) + "] for this mode");
+    break;
+  }
+  case RISCV::TTSFPSHFT:
+    if (!(MI.getOperand(4).getImm() & 1) && MI.getOperand(3).getImm() != 0)
+      return createStringError("Tensix vector shift requires zero immediate field");
+    break;
+  case RISCV::TTSFPSTOCHRNDI: {
+    unsigned Mode = MI.getOperand(4).getImm();
+    uint64_t Descale = MI.getOperand(3).getImm();
+    if (Descale > (Mode == 12 || Mode == 13 ? 31u : 0u))
+      return createStringError("Tensix floating conversion requires zero descale; integer descale must fit five bits");
+    [[fallthrough]];
+  }
+  case RISCV::TTSFPSTOCHRNDV:
+    if (MI.getOperand(5).getImm() > 2)
+      return createStringError("Tensix stochastic rounding mode must be in [0, 2]");
+    break;
+  default:
+    break;
+  }
+  return Error::success();
+}
 } // namespace RISCV
 
 namespace RISCVABI {
@@ -151,6 +365,8 @@ MCRegister getSCSPReg() { return RISCV::X3; }
 namespace RISCVFeatures {
 
 void validate(const Triple &TT, const FeatureBitset &FeatureBits) {
+  if (Error E = RISCV::verifyTensixFeatureBits(TT, FeatureBits))
+    reportFatalUsageError(Twine(toString(std::move(E))));
   if (TT.isArch64Bit() && !FeatureBits[RISCV::Feature64Bit])
     reportFatalUsageError("RV64 target requires an RV64 CPU");
   if (!TT.isArch64Bit() && !FeatureBits[RISCV::Feature32Bit])

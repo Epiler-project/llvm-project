@@ -15,6 +15,7 @@
 #define LLVM_LIB_TARGET_RISCV_RISCV_H
 
 #include "MCTargetDesc/RISCVBaseInfo.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/Target/TargetMachine.h"
 
@@ -26,6 +27,35 @@ class PassRegistry;
 class RISCVRegisterBankInfo;
 class RISCVSubtarget;
 class RISCVTargetMachine;
+
+class RISCVTensixNewPMGate : public RequiredPassInfoMixin<RISCVTensixNewPMGate> {
+  const RISCVTargetMachine *TM;
+public:
+  explicit RISCVTensixNewPMGate(const RISCVTargetMachine *TM) : TM(TM) {}
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+};
+FunctionPass *createRISCVTensixIRVerificationPass(bool Supported = true);
+void initializeRISCVTensixIRVerificationPass(PassRegistry &);
+FunctionPass *createRISCVTensixNoSpillPass();
+void initializeRISCVTensixNoSpillPass(PassRegistry &);
+FunctionPass *createRISCVTensixAllocatedPass();
+void initializeRISCVTensixAllocatedPass(PassRegistry &);
+FunctionPass *createRISCVTensixCopyCCCleanupPass();
+void initializeRISCVTensixCopyCCCleanupPass(PassRegistry &);
+FunctionPass *createRISCVTensixHazardsPass(bool Repair);
+void initializeRISCVTensixHazardsPass(PassRegistry &);
+FunctionPass *createRISCVTensixReplaySelectionPass();
+void initializeRISCVTensixReplaySelectionPass(PassRegistry &);
+class RISCVTensixReplaySelectionPass
+    : public OptionalPassInfoMixin<RISCVTensixReplaySelectionPass> {
+public:
+  PreservedAnalyses run(MachineFunction &MF, MachineFunctionAnalysisManager &);
+};
+class RISCVTensixReplayVerificationPass
+    : public RequiredPassInfoMixin<RISCVTensixReplayVerificationPass> {
+public:
+  PreservedAnalyses run(MachineFunction &MF, MachineFunctionAnalysisManager &);
+};
 
 class RISCVCodeGenPreparePass
     : public OptionalPassInfoMixin<RISCVCodeGenPreparePass> {

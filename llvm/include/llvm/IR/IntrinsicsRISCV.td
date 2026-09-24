@@ -10,6 +10,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Blackhole Tensix issue operations. These carry a full memory chain: issue
+// ordering is observable by the asynchronous compute engine. In particular,
+// they must not acquire the default nosync attribute.
+let TargetPrefix = "riscv" in {
+  def int_riscv_tt_dependent_use : Intrinsic<[], [llvm_i32_ty],
+      [IntrHasSideEffects, IntrConvergent, IntrNoDuplicate]>;
+}
+
 //===----------------------------------------------------------------------===//
 // Atomics
 
@@ -2306,3 +2314,6 @@ include "llvm/IR/IntrinsicsRISCVXsf.td"
 include "llvm/IR/IntrinsicsRISCVXCV.td"
 include "llvm/IR/IntrinsicsRISCVXAndes.td"
 include "llvm/IR/IntrinsicsRISCVXMIPS.td"
+include "llvm/IR/IntrinsicsRISCVTensix.td"
+include "llvm/IR/IntrinsicsRISCVTensixSFPUExtra.td"
+include "llvm/IR/IntrinsicsRISCVTensixOrdinary.td"

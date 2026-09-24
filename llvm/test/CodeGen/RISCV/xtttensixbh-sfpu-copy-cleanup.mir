@@ -1,0 +1,192 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-copy-cc-cleanup %s -o %t.cleaned.mir
+# RUN: FileCheck %s --check-prefix=CLEAN < %t.cleaned.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.cleaned.mir -o %t.repaired.mir
+# RUN: FileCheck %s --check-prefix=REPAIRED < %t.repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.repaired.mir -o /dev/null
+#
+# Removing a self move can remove an SFPU issue that supplied a needed gap.
+# The cleanup must precede hazard repair, which recomputes the surviving stream.
+# CLEAN-LABEL: name: repair_removed_gap
+# CLEAN: $tt_l0 = TTSFPMAD
+# CLEAN-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED-LABEL: name: repair_removed_gap
+# REPAIRED: $tt_l0 = TTSFPMAD
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+#
+# CLEAN-LABEL: name: eliminate_copies_and_cc
+# CLEAN: bb.0:
+# CLEAN-NEXT: TTSFPENCC 0, 0,
+# CLEAN-NEXT: TTSFPENCC 1, 2,
+# CLEAN-NEXT: TTSFPENCC 2, 8,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: PseudoRET
+#
+# CLEAN-LABEL: name: retain_copies_and_snapshots
+# CLEAN: $tt_l0 = TTSFPMOV $tt_l0, $tt_l1, implicit $tt_cc
+# CLEAN-NEXT: $tt_l0 = TTSFPMOVNeg $tt_l0, $tt_l0, implicit $tt_cc
+# CLEAN-NEXT: $tt_l4 = TTSFPMOVAll $tt_l3,
+# CLEAN-NEXT: $tt_l3 = TTSFPMOVAll $tt_l5,
+# CLEAN-NEXT: $tt_l6 = TTSFPMOVAll $tt_l3,
+# CLEAN-NEXT: TTSFPSTORE $tt_l4, 0, 0, 4,
+# CLEAN-NEXT: TTSFPSTORE $tt_l6, 1, 0, 4,
+# CLEAN-NEXT: PseudoRET
+#
+# CLEAN-LABEL: name: retain_cc_boundaries
+# CLEAN: TTSFPENCC 0, 1,
+# CLEAN-NEXT: TTSFPENCC 0, 1,
+# CLEAN-NEXT: TTSFPENCC 2, 9,
+# CLEAN-NEXT: TTSFPENCC 2, 9,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: TTSFPENCC 1, 10,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: TTSFPSETCCNE $tt_l0,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: TTSFPNOP
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: $x5 = ADDI $x0, 1
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: PseudoRET
+#
+# The two ENCCs are separated by an actual CFG edge/backedge, not a straight
+# line adjacency. No block, branch or source iteration can be removed.
+# CLEAN-LABEL: name: retain_backedge
+# CLEAN: bb.0:
+# CLEAN: TTSFPENCC 3, 10,
+# CLEAN-NEXT: PseudoBR %bb.1
+# CLEAN: bb.1:
+# CLEAN: TTSFPENCC 3, 10,
+# CLEAN-NEXT: BNE $x10, $x0, %bb.1
+# CLEAN-NEXT: PseudoBR %bb.2
+# CLEAN: bb.2:
+# CLEAN-NEXT: PseudoRET
+#
+# An explicit replay owner disables cleanup for the complete function, even
+# for candidates outside its recording. The recorded count stays untouched.
+# CLEAN-LABEL: name: retain_explicit_replay
+# CLEAN: TTREPLAY 1, 0, 1, 0,
+# CLEAN-NEXT: TTNOP
+# CLEAN-NEXT: PseudoTTReplayRecordEnd
+# CLEAN-NEXT: $tt_l0 = TTSFPMOV $tt_l0, $tt_l0,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: PseudoRET
+#
+# CLEAN-LABEL: name: retain_inline_asm
+# CLEAN: TTSFPENCC 3, 10,
+# CLEAN-NEXT: TTSFPENCC 3, 10,
+# CLEAN-NEXT: INLINEASM
+# CLEAN-NEXT: $tt_l0 = TTSFPMOVAll $tt_l0,
+# CLEAN-NEXT: PseudoRET
+
+--- |
+  define void @repair_removed_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @eliminate_copies_and_cc() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_copies_and_snapshots() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_cc_boundaries() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_backedge() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_explicit_replay() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_inline_asm() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: repair_removed_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOV $tt_l1, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: eliminate_copies_and_cc
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOV $tt_l0, $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 1, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 1, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 2, 8, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 2, 8, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_copies_and_snapshots
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOV $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVNeg $tt_l0, $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPMOVAll $tt_l3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_l5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l6 = TTSFPMOVAll $tt_l3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l4, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_dst, implicit $tt_dst
+    TTSFPSTORE $tt_l6, 1, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_dst, implicit $tt_dst
+    PseudoRET
+...
+---
+name: retain_cc_boundaries
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPENCC 0, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 0, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 2, 9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 2, 9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 1, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPSETCCNE $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    $x5 = ADDI $x0, 1
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_backedge
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOV $tt_l0, $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+---
+name: retain_explicit_replay
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOV $tt_l0, $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_inline_asm
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    INLINEASM &"", 1
+    $tt_l0 = TTSFPMOVAll $tt_l0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

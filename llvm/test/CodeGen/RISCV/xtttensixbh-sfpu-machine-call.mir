@@ -1,0 +1,17 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s
+# CHECK: machine call has no verified Tensix SFPU preservation ABI
+--- |
+  declare void @external()
+  define void @test() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" {
+    ret void
+  }
+...
+---
+name: test
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoCALL target-flags(riscv-call) @external
+    PseudoRET
+...

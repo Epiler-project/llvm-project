@@ -94,6 +94,7 @@ void RISCVCodeGenPassBuilder::addCodeGenPrepare(PassManagerWrapper &PMW) {
 }
 
 Error RISCVCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {
+  addFunctionPass(RISCVTensixNewPMGate(&getTM()), PMW);
   addMachineFunctionPass(RISCVISelDAGToDAGPass(getTM(), getOptLevel()), PMW);
   return Error::success();
 }
@@ -154,6 +155,7 @@ void RISCVCodeGenPassBuilder::addPreSched2(PassManagerWrapper &PMW) {
 }
 
 void RISCVCodeGenPassBuilder::addPreEmitPass(PassManagerWrapper &PMW) {
+  addMachineFunctionPass(RISCVTensixReplaySelectionPass(), PMW);
   // TODO: It would potentially be better to schedule copy propagation after
   // expanding pseudos (in addPreEmitPass2). However, performing copy
   // propagation after the machine outliner (which runs after addPreEmitPass)
@@ -200,6 +202,7 @@ void RISCVCodeGenPassBuilder::addPreEmitPass2(PassManagerWrapper &PMW) {
   // this target picks exactly one.
   if (!TM.Options.EnableCFIFixup)
     addMachineFunctionPass(CFIInstrInserterPass(), PMW);
+  addMachineFunctionPass(RISCVTensixReplayVerificationPass(), PMW);
 }
 
 void RISCVCodeGenPassBuilder::addAsmPrinterBegin(PassManagerWrapper &PMW) {

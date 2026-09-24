@@ -118,6 +118,12 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> B(getTheRISCV64beTarget());
   auto *PR = PassRegistry::getPassRegistry();
   initializeGlobalISel(*PR);
+  initializeRISCVTensixIRVerificationPass(*PR);
+  initializeRISCVTensixNoSpillPass(*PR);
+  initializeRISCVTensixAllocatedPass(*PR);
+  initializeRISCVTensixCopyCCCleanupPass(*PR);
+  initializeRISCVTensixHazardsPass(*PR);
+  initializeRISCVTensixReplaySelectionPass(*PR);
   initializeRISCVO0PreLegalizerCombinerPass(*PR);
   initializeRISCVPreLegalizerCombinerPass(*PR);
   initializeRISCVPostLegalizerCombinerPass(*PR);
@@ -330,6 +336,11 @@ public:
       : RegisterRegAllocBase(N, D, C) {}
 };
 
+static bool onlyAllocateTensixReg(const TargetRegisterInfo &TRI,
+                                  const MachineRegisterInfo &MRI, Register Reg) {
+  return RISCV::SFPRRegClass.hasSubClassEq(MRI.getRegClass(Reg));
+}
+
 static bool onlyAllocateRVVReg(const TargetRegisterInfo &TRI,
                                const MachineRegisterInfo &MRI,
                                const Register Reg) {
@@ -445,6 +456,10 @@ FunctionPass *RISCVPassConfig::createRVVRegAllocPass(bool Optimized) {
 }
 
 bool RISCVPassConfig::addRegAssignAndRewriteFast() {
+  addPass(createRISCVTensixNoSpillPass());
+  addPass(createGreedyRegisterAllocator(onlyAllocateTensixReg));
+  addPass(createVirtRegRewriter(false));
+  addPass(createRISCVTensixAllocatedPass());
   addPass(createRVVRegAllocPass(false));
   addPass(createRISCVInsertVSETVLIPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
@@ -454,6 +469,10 @@ bool RISCVPassConfig::addRegAssignAndRewriteFast() {
 }
 
 bool RISCVPassConfig::addRegAssignAndRewriteOptimized() {
+  addPass(createRISCVTensixNoSpillPass());
+  addPass(createGreedyRegisterAllocator(onlyAllocateTensixReg));
+  addPass(createVirtRegRewriter(false));
+  addPass(createRISCVTensixAllocatedPass());
   addPass(createRVVRegAllocPass(true));
   addPass(createVirtRegRewriter(false));
   addPass(createRISCVInsertVSETVLIPass());
@@ -514,12 +533,14 @@ void RISCVPassConfig::addCodeGenPrepare() {
 }
 
 bool RISCVPassConfig::addInstSelector() {
+  addPass(createRISCVTensixIRVerificationPass());
   addPass(createRISCVISelDagLegacyPass(getRISCVTargetMachine(), getOptLevel()));
 
   return false;
 }
 
 bool RISCVPassConfig::addIRTranslator() {
+  addPass(createRISCVTensixIRVerificationPass(false));
   addPass(new IRTranslatorLegacy(getOptLevel()));
   return false;
 }
@@ -562,6 +583,7 @@ void RISCVPassConfig::addPreSched2() {
 }
 
 void RISCVPassConfig::addPreEmitPass() {
+  addPass(createRISCVTensixCopyCCCleanupPass());
   // TODO: It would potentially be better to schedule copy propagation after
   // expanding pseudos (in addPreEmitPass2). However, performing copy
   // propagation after the machine outliner (which runs after addPreEmitPass)
@@ -576,6 +598,8 @@ void RISCVPassConfig::addPreEmitPass() {
   // basic block alignment. It must be done before Branch Relaxation to
   // prevent the adjusted offset exceeding the branch range.
   addPass(createRISCVIndirectBranchTrackingPass());
+  addPass(createRISCVTensixHazardsPass(true));
+  addPass(createRISCVTensixReplaySelectionPass());
   addPass(&BranchRelaxationPassID);
   addPass(createRISCVMakeCompressibleOptPass());
 }
@@ -606,6 +630,7 @@ void RISCVPassConfig::addPreEmitPass2() {
 
   if (EnableCFIInstrInserter)
     addPass(createCFIInstrInserterLegacy());
+  addPass(createRISCVTensixHazardsPass(false));
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {

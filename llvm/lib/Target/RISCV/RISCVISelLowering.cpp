@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVISelLowering.h"
+#include "RISCVTensixLowering.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCV.h"
 #include "RISCVConstantPoolValue.h"
@@ -327,6 +328,9 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
     }
   }
 
+  if (Subtarget.hasVendorXTTTensixBH())
+    addRegisterClass(MVT::v32i32, &RISCV::SFPRRegClass);
+
   // Compute derived properties from the register classes.
   computeRegisterProperties(STI.getRegisterInfo());
 
@@ -433,6 +437,14 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
 
   if (Subtarget.hasStdExtP())
     setOperationAction({ISD::FSHL, ISD::FSHR}, XLenVT, Legal);
+
+  // Also custom-lower when the feature is absent, to diagnose use of the
+  // formal Tensix intrinsics instead of silently emitting an external call.
+  setOperationAction(ISD::INTRINSIC_VOID, {MVT::Other, MVT::i16}, Custom);
+  if (Subtarget.hasVendorXTTTensixBH())
+    // Intrinsic operation legalization is queried with MVT::Other, even
+    // when the intrinsic returns the legal SFPU vector carrier.
+    setOperationAction(ISD::INTRINSIC_W_CHAIN, MVT::Other, Custom);
 
   setOperationAction(ISD::BSWAP, XLenVT,
                      Subtarget.hasREV8Like() ? Legal : Expand);
@@ -968,6 +980,10 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
       setMinCmpXchgSizeInBits(8);
     else
       setMinCmpXchgSizeInBits(32);
+  } else if (Subtarget.hasStdExtZaamo()) {
+    // Keep native-width AMOs and aligned loads/stores through AtomicExpandPass
+    // without requiring LR/SC. Unsupported RMW/CAS forms use DAG libcalls.
+    setMaxAtomicSizeInBitsSupported(Subtarget.getXLen());
   } else if (Subtarget.hasForcedAtomics()) {
     setMaxAtomicSizeInBitsSupported(Subtarget.getXLen());
   } else {
@@ -1942,6 +1958,21 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
 
   if (Subtarget.hasStdExtZaamo())
     setOperationAction(ISD::ATOMIC_LOAD_SUB, XLenVT, Expand);
+
+  if (Subtarget.hasStdExtZaamo() && !Subtarget.hasStdExtZalrsc()) {
+    // Type legalization promotes subword atomic results to XLEN. Select
+    // native AMOs or libcalls using the memory width in LowerOperation, not
+    // the promoted result type. ATOMIC_LOAD_SUB expands to ATOMIC_LOAD_ADD.
+    setOperationAction(
+        {ISD::ATOMIC_SWAP, ISD::ATOMIC_LOAD_ADD, ISD::ATOMIC_LOAD_AND,
+         ISD::ATOMIC_LOAD_OR, ISD::ATOMIC_LOAD_XOR, ISD::ATOMIC_LOAD_MIN,
+         ISD::ATOMIC_LOAD_MAX, ISD::ATOMIC_LOAD_UMIN, ISD::ATOMIC_LOAD_UMAX,
+         ISD::ATOMIC_CMP_SWAP},
+        XLenVT, Custom);
+    // With Zacas, AtomicExpand has already formed a CAS loop where legal.
+    // There is no native NAND instruction for a remaining atomic NAND.
+    setOperationAction(ISD::ATOMIC_LOAD_NAND, XLenVT, LibCall);
+  }
 
   if (Subtarget.hasForcedAtomics()) {
     // Force __sync libcalls to be emitted for atomic rmw/cas operations.
@@ -8322,6 +8353,25 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
     return LowerPREFETCH(Op, Subtarget, DAG);
   case ISD::ATOMIC_FENCE:
     return LowerATOMIC_FENCE(Op, DAG, Subtarget);
+  case ISD::ATOMIC_SWAP:
+  case ISD::ATOMIC_LOAD_ADD:
+  case ISD::ATOMIC_LOAD_AND:
+  case ISD::ATOMIC_LOAD_OR:
+  case ISD::ATOMIC_LOAD_XOR:
+  case ISD::ATOMIC_LOAD_MIN:
+  case ISD::ATOMIC_LOAD_MAX:
+  case ISD::ATOMIC_LOAD_UMIN:
+  case ISD::ATOMIC_LOAD_UMAX:
+  case ISD::ATOMIC_CMP_SWAP:
+    assert(Subtarget.hasStdExtZaamo() && !Subtarget.hasStdExtZalrsc());
+    // Empty custom legalization falls through to the standard atomic libcall
+    // expansion. In particular, do not manufacture an LR/SC requirement.
+    if ((Op.getOpcode() == ISD::ATOMIC_CMP_SWAP &&
+         !Subtarget.hasStdExtZacas()) ||
+        (cast<AtomicSDNode>(Op)->getMemoryVT().getSizeInBits() < 32 &&
+         !Subtarget.hasStdExtZabha()))
+      return SDValue();
+    return Op;
   case ISD::GlobalAddress:
     return lowerGlobalAddress(Op, DAG);
   case ISD::BlockAddress:
@@ -13696,6 +13746,8 @@ lowerFixedVectorSegLoadIntrinsics(unsigned IntNo, SDValue Op,
 
 SDValue RISCVTargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
                                                     SelectionDAG &DAG) const {
+  if (SDValue Tensix = lowerTensixSFPUIntrinsic(Op, DAG, Subtarget))
+    return Tensix;
   unsigned IntNo = Op.getConstantOperandVal(1);
   switch (IntNo) {
   default:
@@ -13840,10 +13892,21 @@ lowerFixedVectorSegStoreIntrinsics(unsigned IntNo, SDValue Op,
 
 SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
                                                  SelectionDAG &DAG) const {
+  if (SDValue Tensix = lowerTensixSFPUIntrinsic(Op, DAG, Subtarget))
+    return Tensix;
+  if (SDValue Tensix = lowerTensixOrdinaryIntrinsic(Op, DAG, Subtarget))
+    return Tensix;
   unsigned IntNo = Op.getConstantOperandVal(1);
   switch (IntNo) {
   default:
     break;
+  case Intrinsic::riscv_tt_dependent_use: {
+    if (!Subtarget.hasVendorXTTTensixBH())
+      reportFatalUsageError("Tensix intrinsic requires +xtttensixbh");
+    return SDValue(DAG.getMachineNode(RISCV::PseudoTTDependentUse, SDLoc(Op),
+                                      MVT::Other, Op.getOperand(2),
+                                      Op.getOperand(0)), 0);
+  }
   case Intrinsic::riscv_seg2_store_mask:
   case Intrinsic::riscv_seg3_store_mask:
   case Intrinsic::riscv_seg4_store_mask:
@@ -28987,6 +29050,12 @@ RISCVTargetLowering::shouldExpandAtomicRMWInIR(const AtomicRMWInst *AI) const {
     return AtomicExpansionKind::None;
 
   unsigned Size = AI->getType()->getPrimitiveSizeInBits();
+  if (!Subtarget.hasStdExtZalrsc() &&
+      ((Size < 32 && !Subtarget.hasStdExtZabha()) ||
+       (AI->getOperation() == AtomicRMWInst::Nand &&
+        !Subtarget.hasStdExtZacas())))
+    return AtomicExpansionKind::None;
+
   if (AI->getOperation() == AtomicRMWInst::Nand) {
     if (Subtarget.hasStdExtZacas() &&
         (Size >= 32 || Subtarget.hasStdExtZabha()))
@@ -29092,6 +29161,11 @@ RISCVTargetLowering::shouldExpandAtomicCmpXchgInIR(
     return AtomicExpansionKind::None;
 
   unsigned Size = CI->getCompareOperand()->getType()->getPrimitiveSizeInBits();
+  if (!Subtarget.hasStdExtZalrsc() &&
+      (!Subtarget.hasStdExtZacas() ||
+       (Size < 32 && !Subtarget.hasStdExtZabha())))
+    return AtomicExpansionKind::None;
+
   if (!(Subtarget.hasStdExtZabha() && Subtarget.hasStdExtZacas()) &&
       (Size == 8 || Size == 16))
     return AtomicExpansionKind::MaskedIntrinsic;

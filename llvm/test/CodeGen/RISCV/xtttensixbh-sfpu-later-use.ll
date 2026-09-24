@@ -1,0 +1,55 @@
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %s -o /dev/null
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o /dev/null
+
+; Every destructive SFPU operation below consumes an old destination and then
+; uses that old value after the issue. The selector/allocator must preserve the
+; tied passthrough instead of treating it as a dead physical register.
+declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpexexp(<32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpexman(<32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpabs(<32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfplz(<32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpcast(<32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpsetman.v(<32 x i32>, <32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpsetsgn.v(<32 x i32>, <32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpshft.v(<32 x i32>, <32 x i32>, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpstochrnd.v(<32 x i32>, <32 x i32>, <32 x i32>, i32 immarg, i32 immarg)
+declare <32 x i32> @llvm.riscv.tt.sfpstochrnd.i(<32 x i32>, <32 x i32>, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.riscv.tt.sfpstore(<32 x i32>, i32, i32 immarg, i32 immarg)
+
+define void @destructive_later_use() "tensix-executor"="trisc1" {
+  %old0 = call <32 x i32> @llvm.riscv.tt.creg.read(i32 9)
+  %src0 = call <32 x i32> @llvm.riscv.tt.creg.read(i32 10)
+  %field0 = call <32 x i32> @llvm.riscv.tt.creg.read(i32 15)
+  %exp = call <32 x i32> @llvm.riscv.tt.sfpexexp(<32 x i32> %old0, <32 x i32> %src0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %exp, i32 0, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 1, i32 0, i32 4)
+  %man = call <32 x i32> @llvm.riscv.tt.sfpexman(<32 x i32> %old0, <32 x i32> %src0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %man, i32 2, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 3, i32 0, i32 4)
+  %abs = call <32 x i32> @llvm.riscv.tt.sfpabs(<32 x i32> %old0, <32 x i32> %src0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %abs, i32 4, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 5, i32 0, i32 4)
+  %lz = call <32 x i32> @llvm.riscv.tt.sfplz(<32 x i32> %old0, <32 x i32> %src0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %lz, i32 6, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 7, i32 0, i32 4)
+  %cast = call <32 x i32> @llvm.riscv.tt.sfpcast(<32 x i32> %old0, <32 x i32> %src0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %cast, i32 8, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 9, i32 0, i32 4)
+  %setman = call <32 x i32> @llvm.riscv.tt.sfpsetman.v(<32 x i32> %old0, <32 x i32> %src0, <32 x i32> %field0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %setman, i32 10, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 11, i32 0, i32 4)
+  %setsgn = call <32 x i32> @llvm.riscv.tt.sfpsetsgn.v(<32 x i32> %old0, <32 x i32> %src0, <32 x i32> %field0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %setsgn, i32 12, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 13, i32 0, i32 4)
+  %shift = call <32 x i32> @llvm.riscv.tt.sfpshft.v(<32 x i32> %old0, <32 x i32> %field0, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %shift, i32 14, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 15, i32 0, i32 4)
+  %roundv = call <32 x i32> @llvm.riscv.tt.sfpstochrnd.v(<32 x i32> %old0, <32 x i32> %src0, <32 x i32> %field0, i32 4, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %roundv, i32 16, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 17, i32 0, i32 4)
+  %roundi = call <32 x i32> @llvm.riscv.tt.sfpstochrnd.i(<32 x i32> %old0, <32 x i32> %src0, i32 3, i32 4, i32 0)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %roundi, i32 18, i32 0, i32 4)
+  call void @llvm.riscv.tt.sfpstore(<32 x i32> %old0, i32 19, i32 0, i32 4)
+  ret void
+}

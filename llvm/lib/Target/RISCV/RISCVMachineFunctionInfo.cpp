@@ -11,6 +11,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVMachineFunctionInfo.h"
+#include "RISCVTensixIRVerification.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/Module.h"
 
 using namespace llvm;
@@ -18,7 +22,9 @@ using namespace llvm;
 yaml::RISCVMachineFunctionInfo::RISCVMachineFunctionInfo(
     const llvm::RISCVMachineFunctionInfo &MFI)
     : VarArgsFrameIndex(MFI.getVarArgsFrameIndex()),
-      VarArgsSaveSize(MFI.getVarArgsSaveSize()) {}
+      VarArgsSaveSize(MFI.getVarArgsSaveSize()),
+      TensixFixedLRegs(MFI.getTensixFixedLRegs()),
+      UsesTensixSFPU(MFI.usesTensixSFPU()) {}
 
 MachineFunctionInfo *RISCVMachineFunctionInfo::clone(
     BumpPtrAllocator &Allocator, MachineFunction &DestMF,
@@ -29,6 +35,19 @@ MachineFunctionInfo *RISCVMachineFunctionInfo::clone(
 
 RISCVMachineFunctionInfo::RISCVMachineFunctionInfo(const Function &F,
                                                    const RISCVSubtarget *STI) {
+  for (const Instruction &I : instructions(F)) {
+    const auto *II = dyn_cast<IntrinsicInst>(&I);
+    if (!II || !isTensixSFPUIntrinsic(II->getIntrinsicID()))
+      continue;
+    UsesTensixSFPU = true;
+    if (II->getIntrinsicID() != Intrinsic::riscv_tt_lreg_read &&
+        II->getIntrinsicID() != Intrinsic::riscv_tt_lreg_write)
+      continue;
+    const auto *Index = dyn_cast<ConstantInt>(II->getArgOperand(0));
+    if (Index && Index->getValue().ult(8))
+      TensixFixedLRegs |= 1u << Index->getZExtValue();
+  }
+
   if (const auto *CFB = mdconst::extract_or_null<ConstantInt>(
           F.getParent()->getModuleFlag("cf-protection-branch")))
     CFProtectionBranch = CFB->getZExtValue() != 0;
@@ -137,6 +156,8 @@ bool RISCVMachineFunctionInfo::hasImplicitFPUpdates(
 
 void RISCVMachineFunctionInfo::initializeBaseYamlFields(
     const yaml::RISCVMachineFunctionInfo &YamlMFI) {
+  TensixFixedLRegs = YamlMFI.TensixFixedLRegs;
+  UsesTensixSFPU = YamlMFI.UsesTensixSFPU;
   VarArgsFrameIndex = YamlMFI.VarArgsFrameIndex;
   VarArgsSaveSize = YamlMFI.VarArgsSaveSize;
 }

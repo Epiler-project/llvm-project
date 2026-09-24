@@ -30,6 +30,7 @@
 ; CHECK-NEXT:   stack-protector
 ; CHECK-NEXT: riscv-asm-printer-begin
 ; CHECK-NEXT: function
+; CHECK-NEXT:   RISCVTensixNewPMGate
 ; CHECK-NEXT:   machine-function
 ; CHECK-NEXT:     riscv-isel
 ; CHECK-NEXT:     finalize-isel
@@ -47,6 +48,7 @@
 ; CHECK-NEXT:     fentry-insert
 ; CHECK-NEXT:     xray-instrumentation
 ; CHECK-NEXT:     patchable-function
+; CHECK-NEXT:     RISCVTensixReplaySelectionPass
 ; CHECK-NEXT:     branch-relaxation
 ; CHECK-NEXT:     funclet-layout
 ; CHECK-NEXT:     remove-loads-into-fake-uses
@@ -57,6 +59,7 @@
 ; CHECK-NEXT:     riscv-expand-pseudo-pre-emit
 ; CHECK-NEXT:     riscv-expand-pseudo-atomics
 ; CHECK-NEXT:     unpack-mi-bundles
+; CHECK-NEXT:     RISCVTensixReplayVerificationPass
 ; CHECK-NEXT:     riscv-asm-printer
 ; CHECK-NEXT:   free-machine-function
 ; CHECK-NEXT: riscv-asm-printer-end

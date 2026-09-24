@@ -1335,6 +1335,13 @@ def HasStdExtY : Predicate<"Subtarget->hasStdExtY()">,
 // Vendor extensions
 //===----------------------------------------------------------------------===//
 
+// Tenstorrent Blackhole Tensix extension
+
+def FeatureVendorXTTTensixBH
+    : RISCVExtension<1, 0, "Tenstorrent Blackhole Tensix instructions">;
+def HasVendorXTTTensixBH : Predicate<"Subtarget->hasVendorXTTTensixBH()">,
+    AssemblerPredicate<(all_of FeatureVendorXTTTensixBH), "'XTTTensixBH'">;
+
 // T-Head Extensions
 
 def FeatureVendorXTHeadBa
@@ -2040,7 +2047,8 @@ def FeatureForcedAtomics : SubtargetFeature<
     "forced-atomics", "HasForcedAtomics", "true",
     "Assume that lock-free native-width atomics are available">;
 def HasAtomicLdSt
-    : Predicate<"Subtarget->hasStdExtZalrsc() || Subtarget->hasForcedAtomics()">;
+    : Predicate<"Subtarget->hasStdExtZalrsc() || Subtarget->hasStdExtZaamo() || "
+                "Subtarget->hasForcedAtomics()">;
 
 // The RISC-V Unprivileged Architecture - ISA Volume 1 (Version: 20250508)
 // [https://docs.riscv.org/reference/isa/_attachments/riscv-unprivileged.pdf]

@@ -21,6 +21,7 @@
 #include "llvm/ADT/StringTable.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Target/RISCV/RISCVTensix.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 #include "llvm/TargetParser/RISCVTargetParser.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
@@ -28,6 +29,9 @@
 namespace llvm {
 
 class MCSubtargetInfo;
+class MCInst;
+class MCInstrInfo;
+class MCRegisterInfo;
 
 namespace RISCVOp {
 enum OperandType : unsigned {
@@ -857,6 +861,10 @@ inline const PseudoInfo *getBaseInfo(unsigned BaseInstr, uint8_t VLMul,
 } // namespace RISCVVInversePseudosTable
 
 namespace RISCV {
+
+Expected<bool> verifyTensixTargetFeatures(const Triple &TT, StringRef CPU,
+                                         StringRef Features);
+Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &Features);
 struct VLSEGPseudo {
   uint16_t NF : 4;
   uint16_t Masked : 1;
@@ -930,6 +938,35 @@ struct NDSVLNPseudo {
   uint16_t Pseudo;
 };
 
+struct TensixEncoding {
+  unsigned Opcode;
+  uint8_t RawOpcode;
+  uint8_t OpcodeShift;
+  uint8_t ConfigShift;
+  uint8_t ConfigCount;
+  uint8_t ValueBits;
+  uint8_t ModeOperandIndex;
+  uint16_t AllowedModes;
+};
+
+struct TensixMachineInfo {
+  unsigned Opcode;
+  unsigned PortOpcode;
+  unsigned MopOpcode;
+  unsigned IntrinsicID;
+  bool WritesDst;
+};
+
+enum class TensixInstructionPort : uint8_t {
+  Local = 0,
+  BriscToTrisc1 = 1,
+  BriscToTrisc2 = 2,
+};
+
+uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port);
+Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
+                                const MCRegisterInfo &MRI);
+
 #define GET_RISCVVSSEGTable_DECL
 #define GET_RISCVVLSEGTable_DECL
 #define GET_RISCVVLXSEGTable_DECL
@@ -939,6 +976,10 @@ struct NDSVLNPseudo {
 #define GET_RISCVVLXTable_DECL
 #define GET_RISCVVSXTable_DECL
 #define GET_RISCVNDSVLNTable_DECL
+#define GET_RISCVTensixEncodingTable_DECL
+#define GET_RISCVTensixInstructionTable_DECL
+#define GET_RISCVTensixMachineTable_DECL
+#define GET_RISCVTensixFieldTable_DECL
 #include "RISCVGenSearchableTables.inc"
 
 inline bool isValidYBNDSWImm(int64_t Imm) {

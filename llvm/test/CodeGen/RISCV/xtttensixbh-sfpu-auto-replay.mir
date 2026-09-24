@@ -1,0 +1,510 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-selection %t/input.mir -o %t/selected.mir
+# RUN: FileCheck %s --check-prefix=SELECT < %t/selected.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -riscv-tensix-enable-replay-selection=false -run-pass=riscv-tensix-replay-selection %t/input.mir -o %t/plain.mir
+# RUN: %python %t/check-replay.py %t/input.mir %t/selected.mir %t/plain.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/selected.mir -o %t/final.mir
+# RUN: %python %t/check-replay.py %t/input.mir %t/final.mir %t/plain.mir
+# RUN: %python %t/mutate.py %t/selected.mir %t/missing-def.mir %t/missing-use.mir %t/wrong-length.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/missing-def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/missing-use.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/wrong-length.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RECORD-LENGTH
+# EFFECTS: automatic SFPU replay execution physical effects differ from its recording
+# RECORD-LENGTH: Tensix replay final issue count 6 differs from declared length 5
+#
+# The input uses only existing instructions, so a preimplementation failure
+# must report missing compression, not an unknown opcode or unregistered pass.
+# Two six-word sequences cost 12 words. The selected form costs six retained
+# words, one record header, one execute and two SFPU fences: ten words.
+# The independent checker interprets the replay buffer, compares the complete
+# issued arithmetic/control stream, and checks live physical effects and size.
+#
+# SELECT-LABEL: name: profitable_physical
+# SELECT: PseudoTTSFPUReplay 1, 1, 6, 0,
+# SELECT-NEXT: $tt_l0 = TTSFPIADD $tt_l0, $tt_l1,
+# SELECT-NEXT: $tt_l2 = TTSFPXOR $tt_l2, $tt_l3,
+# SELECT-NEXT: $tt_l4 = TTSFPAND $tt_l4, $tt_c9,
+# SELECT-NEXT: $tt_l0 = TTSFPOR $tt_l0, $tt_l1,
+# SELECT-NEXT: $tt_l2 = TTSFPAND $tt_l2, $tt_l3,
+# SELECT-NEXT: $tt_l4 = TTSFPXOR $tt_l4, $tt_c9,
+# SELECT-NEXT: PseudoTTReplayRecordEnd
+# SELECT-NEXT: TTSFPNOP
+# SELECT-NEXT: PseudoTTSFPUReplay 0, 0, 6, 0,
+# SELECT-NEXT: TTSFPNOP
+# SELECT-NEXT: TTSFPSTORE $tt_l0, 0, 0, 4,
+# SELECT-NEXT: TTSFPSTORE $tt_l2, 1, 0, 4,
+# SELECT-NEXT: TTSFPSTORE $tt_l4, 2, 0, 4,
+# SELECT-NEXT: TTSFPSTORE $tt_l6, 3, 0, 4,
+# SELECT-NEXT: PseudoRET
+#
+# Four-word pairs only break even once both fences are charged. They are not
+# profitable even though the ordinary immediate-only replay cost would be.
+# SELECT-LABEL: name: fence_break_even
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: PseudoRET
+# SELECT-LABEL: name: different_physical
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: PseudoRET
+# SELECT-LABEL: name: predicate_boundary
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: TTSFPSETCCNE
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: PseudoRET
+# SELECT-LABEL: name: occupied_explicit
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: TTREPLAY 1, 0, 1, 0,
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: PseudoRET
+# SELECT-LABEL: name: real_backedge
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: PseudoBR %bb.1
+# SELECT: BNE $x10, $x0, %bb.1
+# SELECT-NEXT: PseudoBR %bb.2
+# SELECT-NOT: PseudoTTSFPUReplay
+# SELECT: PseudoRET
+
+#--- input.mir
+--- |
+  define void @profitable_physical() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @fence_break_even() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @different_physical() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @predicate_boundary() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @occupied_explicit() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @real_backedge() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @capacity_32() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @capacity_33() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: profitable_physical
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l0, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPSTORE $tt_l2, 1, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPSTORE $tt_l4, 2, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPSTORE $tt_l6, 3, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: fence_break_even
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: different_physical
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: predicate_boundary
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSETCCNE $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: occupied_explicit
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: real_backedge
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_l6, $tt_l7, $tt_cc, $tt_config, $tt_dst, $tt_issue, $x10
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPXOR $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPAND $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPOR $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPAND $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPXOR $tt_l4, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    PseudoRET
+...
+
+---
+name: capacity_32
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_cc, $tt_config, $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 2, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 3, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 4, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 5, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 6, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 7, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 8, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 9, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 10, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 11, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 12, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 13, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 14, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 15, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 16, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 17, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 18, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 19, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 20, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 21, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 22, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 23, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 24, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 25, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 26, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 27, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 28, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 29, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 30, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 31, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 2, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 3, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 4, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 5, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 6, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 7, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 8, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 9, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 10, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 11, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 12, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 13, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 14, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 15, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 16, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 17, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 18, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 19, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 20, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 21, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 22, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 23, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 24, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 25, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 26, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 27, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 28, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 29, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 30, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 31, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: capacity_33
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_cc, $tt_config, $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 2, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 3, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 4, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 5, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 6, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 7, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 8, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 9, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 10, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 11, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 12, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 13, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 14, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 15, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 16, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 17, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 18, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 19, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 20, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 21, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 22, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 23, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 24, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 25, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 26, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 27, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 28, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 29, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 30, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 31, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 33, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 2, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 3, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 4, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 5, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 6, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 7, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 8, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 9, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 10, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 11, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 12, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 13, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 14, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 15, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 16, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 17, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 18, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 19, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 20, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 21, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 22, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 23, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 24, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 25, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 26, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 27, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 28, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 29, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 30, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 31, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 33, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- check-replay.py
+import re
+import sys
+
+
+def read(path):
+    functions = {}
+    current = None
+    in_body = False
+    for line in open(path, encoding="utf-8"):
+        match = re.fullmatch(r"name:\s+(\w+)\s*", line.strip())
+        if match:
+            current = match.group(1)
+            functions[current] = []
+            in_body = False
+        if line.startswith("body:"):
+            in_body = True
+            continue
+        if not in_body or current is None:
+            continue
+        text = line.strip()
+        if text == "...":
+            in_body = False
+            continue
+        if not text or text.startswith(("liveins:", "successors:")):
+            continue
+        if text.startswith("bb."):
+            functions[current].append(("block", text, (), (), ()))
+            continue
+        match = re.search(r"\b(TTSFP\w+|TTREPLAY|TTNOP|Pseudo\w+|BNE)\b", text)
+        assert match, (path, current, text)
+        opcode = match.group(1)
+        defs = tuple(re.findall(r"\$[\w]+", text[:match.start()]))
+        operands = text[match.end():].split(", implicit", 1)[0].strip()
+        operands = re.sub(r"\b(killed|dead|renamable)\s+", "", operands)
+        args = tuple(operand.strip() for operand in operands.split(",") if operand.strip())
+        uses = tuple(re.findall(r"implicit\s+(?:killed\s+)?(\$\w+)", text))
+        clobbers = tuple(re.findall(r"implicit-def\s+(?:dead\s+)?(\$\w+)", text))
+        functions[current].append((opcode, defs, args, uses, clobbers))
+    return functions
+
+
+def expand(instructions):
+    # Model the hardware buffer and record/execute controls independently of
+    # the compiler's candidate search or register-effect calculation.
+    bank = [None] * 32
+    recording = None
+    result = []
+    for instruction in instructions:
+        opcode, defs, args, uses, clobbers = instruction
+        if opcode in ("TTREPLAY", "PseudoTTSFPUReplay"):
+            load, execute, length, start = map(int, args)
+            assert 0 < length <= 32 and 0 <= start <= 32 - length
+            assert recording is None
+            if load:
+                recording = [start, length, execute, 0]
+            else:
+                assert all(value is not None for value in bank[start:start + length])
+                result.extend(bank[start:start + length])
+            continue
+        if opcode == "PseudoTTReplayRecordEnd":
+            assert recording is not None and recording[1] == recording[3]
+            recording = None
+            continue
+        encoded = (opcode, defs, args)
+        if recording is not None:
+            assert opcode.startswith(("TTSFP", "TTNOP")), instruction
+            start, length, execute, count = recording
+            assert count < length
+            bank[start + count] = encoded
+            recording[3] += 1
+            if execute:
+                result.append(encoded)
+        else:
+            result.append(encoded)
+    assert recording is None
+    # SFPU NOPs inserted outside recording change spacing, not arithmetic.
+    # Final machine hazard verification separately proves their legality.
+    return [instruction for instruction in result if instruction[0] != "TTSFPNOP"]
+
+
+def words(instructions):
+    return sum(instruction[0] not in ("block", "PseudoTTReplayRecordEnd")
+               for instruction in instructions)
+
+
+source, selected, plain = map(read, sys.argv[1:])
+assert source.keys() == selected.keys() == plain.keys()
+for name, before in source.items():
+    assert expand(before) == expand(selected[name]), (name, "changed issue stream or CFG")
+    assert expand(before) == expand(plain[name]), (name, "disabled selection changed semantics")
+    assert not any(instruction[0] == "PseudoTTSFPUReplay" for instruction in plain[name])
+    if name in ("capacity_32", "capacity_33"):
+        records = [instruction for instruction in selected[name]
+                   if instruction[0] == "PseudoTTSFPUReplay"]
+        assert len(records) == 2 and all(instruction[2][2] == "32" for instruction in records)
+        assert words(selected[name]) == words(before) - 28, (name, "capacity or fence cost")
+        continue
+    if name != "profitable_physical":
+        assert not any(instruction[0] == "PseudoTTSFPUReplay" for instruction in selected[name])
+        assert words(selected[name]) == words(before), (name, "unprofitable or unsafe mutation")
+        continue
+    assert words(selected[name]) == words(before) - 2, "fences must be charged to actual benefit"
+    executes = [instruction for instruction in selected[name]
+                if instruction[0] == "PseudoTTSFPUReplay" and instruction[2][0] == "0"]
+    assert len(executes) == 1
+    uses = set(executes[0][3])
+    clobbers = set(executes[0][4])
+    assert {"$tt_l0", "$tt_l1", "$tt_l2", "$tt_l3", "$tt_l4", "$tt_c9",
+            "$tt_cc", "$tt_config", "$tt_issue"} <= uses, uses
+    assert {reg for reg in clobbers if re.fullmatch(r"\$tt_l[0-7]", reg)} == {
+        "$tt_l0", "$tt_l2", "$tt_l4"}, clobbers
+    assert "$tt_cc" not in clobbers and "$tt_l6" not in clobbers, clobbers
+
+#--- mutate.py
+import re
+import sys
+from pathlib import Path
+
+
+text = Path(sys.argv[1]).read_text()
+lines = text.splitlines(keepends=True)
+execute = next(i for i, line in enumerate(lines)
+               if "PseudoTTSFPUReplay 0, 0, 6, 0," in line)
+for path, pattern in zip(sys.argv[2:4], (
+        r", implicit-def(?: dead)? \$tt_l4(?=,|\s*$)",
+        r", implicit(?: killed)? \$tt_l1(?=,|\s*$)")):
+    changed, count = re.subn(pattern, "", lines[execute])
+    assert count == 1, (pattern, lines[execute])
+    result = lines.copy()
+    result[execute] = changed
+    Path(path).write_text("".join(result))
+changed, count = re.subn(r"PseudoTTSFPUReplay 1, 1, 6, 0,",
+                       "PseudoTTSFPUReplay 1, 1, 5, 0,", text, count=1)
+assert count == 1
+Path(sys.argv[4]).write_text(changed)

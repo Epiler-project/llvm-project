@@ -1,0 +1,33 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.mir
+# RUN: FileCheck %s < %t.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.mir -o /dev/null
+# INVALID: unresolved Tensix SFPU
+--- |
+  define void @mul_config_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: mul_config_hazard
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    $tt_l0 = TTSFPMUL $tt_l0, $tt_c10, $tt_c10, 2, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSETC16 2, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    $x5 = ADDI $x0, 1
+    TTSFPCONFIGC11 0, 0, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+    $tt_l1 = TTSFPMUL $tt_l1, $tt_c10, $tt_c10, 2, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPIADD $tt_l1, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCOMPC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: bb.1:
+# CHECK: $x5 = ADDI $x0, 1
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPCONFIGC11
+# CHECK: $tt_l1 = TTSFPMUL
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l1 = TTSFPIADD
+# CHECK: TTSFPCOMPC
