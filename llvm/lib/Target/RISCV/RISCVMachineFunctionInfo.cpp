@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVMachineFunctionInfo.h"
+#include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixIRVerification.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -24,7 +25,8 @@ yaml::RISCVMachineFunctionInfo::RISCVMachineFunctionInfo(
     : VarArgsFrameIndex(MFI.getVarArgsFrameIndex()),
       VarArgsSaveSize(MFI.getVarArgsSaveSize()),
       TensixFixedLRegs(MFI.getTensixFixedLRegs()),
-      UsesTensixSFPU(MFI.usesTensixSFPU()) {}
+      UsesTensixSFPU(MFI.usesTensixSFPU()),
+      UsesBoundTensixSFPU(MFI.usesBoundTensixSFPU()) {}
 
 MachineFunctionInfo *RISCVMachineFunctionInfo::clone(
     BumpPtrAllocator &Allocator, MachineFunction &DestMF,
@@ -40,6 +42,7 @@ RISCVMachineFunctionInfo::RISCVMachineFunctionInfo(const Function &F,
     if (!II || !isTensixSFPUIntrinsic(II->getIntrinsicID()))
       continue;
     UsesTensixSFPU = true;
+    UsesBoundTensixSFPU |= isTensixBoundSFPUIntrinsic(II->getIntrinsicID());
     if (II->getIntrinsicID() != Intrinsic::riscv_tt_lreg_read &&
         II->getIntrinsicID() != Intrinsic::riscv_tt_lreg_write)
       continue;
@@ -157,7 +160,9 @@ bool RISCVMachineFunctionInfo::hasImplicitFPUpdates(
 void RISCVMachineFunctionInfo::initializeBaseYamlFields(
     const yaml::RISCVMachineFunctionInfo &YamlMFI) {
   TensixFixedLRegs = YamlMFI.TensixFixedLRegs;
-  UsesTensixSFPU = YamlMFI.UsesTensixSFPU;
+  // MIR may add a constraint, but cannot erase the bound calls in actual IR.
+  UsesBoundTensixSFPU |= YamlMFI.UsesBoundTensixSFPU;
+  UsesTensixSFPU = YamlMFI.UsesTensixSFPU || UsesBoundTensixSFPU;
   VarArgsFrameIndex = YamlMFI.VarArgsFrameIndex;
   VarArgsSaveSize = YamlMFI.VarArgsSaveSize;
 }

@@ -76,6 +76,8 @@ add_llvm_target(RISCVCodeGen
   RISCVTensixHazards.cpp
   RISCVTensixIRVerification.cpp
   RISCVTensixLowering.cpp
+  RISCVTensixBoundLowering.cpp
+  RISCVTensixBoundVerification.cpp
   RISCVTensixReplay.cpp
   RISCVTensixReplaySelection.cpp
   RISCVTensixRegisterAllocation.cpp

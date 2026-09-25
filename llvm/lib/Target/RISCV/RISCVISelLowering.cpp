@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVISelLowering.h"
-#include "RISCVTensixLowering.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCV.h"
 #include "RISCVConstantPoolValue.h"
@@ -20,6 +19,8 @@
 #include "RISCVRegisterInfo.h"
 #include "RISCVSelectionDAGInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixLowering.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -13746,6 +13747,8 @@ lowerFixedVectorSegLoadIntrinsics(unsigned IntNo, SDValue Op,
 
 SDValue RISCVTargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
                                                     SelectionDAG &DAG) const {
+  if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
+    return Bound;
   if (SDValue Tensix = lowerTensixSFPUIntrinsic(Op, DAG, Subtarget))
     return Tensix;
   unsigned IntNo = Op.getConstantOperandVal(1);
@@ -13892,6 +13895,8 @@ lowerFixedVectorSegStoreIntrinsics(unsigned IntNo, SDValue Op,
 
 SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
                                                  SelectionDAG &DAG) const {
+  if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
+    return Bound;
   if (SDValue Tensix = lowerTensixSFPUIntrinsic(Op, DAG, Subtarget))
     return Tensix;
   if (SDValue Tensix = lowerTensixOrdinaryIntrinsic(Op, DAG, Subtarget))
@@ -27287,6 +27292,8 @@ static MachineBasicBlock *emitFROUND(MachineInstr &MI, MachineBasicBlock *MBB,
 MachineBasicBlock *
 RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
                                                  MachineBasicBlock *BB) const {
+  if (auto *Bound = emitTensixBoundSFPUInstruction(MI, BB, Subtarget))
+    return Bound;
   switch (MI.getOpcode()) {
   default:
     llvm_unreachable("Unexpected instr type to insert");

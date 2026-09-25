@@ -177,6 +177,7 @@ BitVector RISCVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   unsigned Fixed = MF.getInfo<RISCVMachineFunctionInfo>()->getTensixFixedLRegs();
   for (MCPhysReg Reg : RISCV::SFPRRegClass)
     if (!Subtarget.hasVendorXTTTensixBH() ||
+        MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU() ||
         (Fixed & (1u << getEncodingValue(Reg))))
       markSuperRegs(Reserved, Reg);
   for (MCPhysReg Reg : RISCV::SFPCRRegClass)

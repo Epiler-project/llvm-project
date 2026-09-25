@@ -46,6 +46,7 @@
 ; CHECK-NEXT:       RISC-V DAG->DAG Pattern Instruction Selection
 ; CHECK-NEXT:       Finalize ISel and expand pseudo-instructions
 ; CHECK-NEXT:       Local Stack Slot Allocation
+; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Pre-RA
 ; CHECK-NEXT:       RISC-V Insert Read/Write CSR Pass
 ; CHECK-NEXT:       RISC-V Insert Write VXRM Pass
@@ -104,6 +105,7 @@
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Atomics
 ; CHECK-NEXT:       Unpack machine instruction bundles
 ; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
+; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
 ; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
 ; CHECK-NEXT:       Machine Optimization Remark Emitter
 ; CHECK-NEXT:       RISC-V Assembly Printer

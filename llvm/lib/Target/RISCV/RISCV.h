@@ -36,6 +36,8 @@ public:
 };
 FunctionPass *createRISCVTensixIRVerificationPass(bool Supported = true);
 void initializeRISCVTensixIRVerificationPass(PassRegistry &);
+FunctionPass *createRISCVTensixBoundVerificationPass();
+void initializeRISCVTensixBoundVerificationPass(PassRegistry &);
 FunctionPass *createRISCVTensixNoSpillPass();
 void initializeRISCVTensixNoSpillPass(PassRegistry &);
 FunctionPass *createRISCVTensixAllocatedPass();

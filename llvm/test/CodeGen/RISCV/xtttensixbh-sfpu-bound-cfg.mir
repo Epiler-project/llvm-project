@@ -1,0 +1,423 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/valid.mir -o - | FileCheck %s --check-prefix=CFG-BINDING
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/scalar.mir -o - | FileCheck %s --check-prefix=SCALAR
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/legacy.mir -o - | FileCheck %s --check-prefix=LEGACY
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/valid.mir -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=PIPELINE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/virtual.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/copy.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=COPY
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/phi.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PHI
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/tie.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=TIE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/missing-fixed.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/extra-fixed.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/duplicate-fixed.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/undef-old.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=OLD
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/creg-write.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/implicit-def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=IMPLICIT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/call.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL-CLOBBER
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/asm.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ASM
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/mode.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MODE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/scratch.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SCRATCH
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/spill.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SPILL
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/rename.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RENAME
+#
+# Disable the optional generic MachineVerifier to exercise the production
+# bound verifier directly. MIR parsing and its mandatory structural verifier
+# stay enabled; class, PHI, tie and reserved-renaming errors are caught there.
+# The bound verifier is independent of -verify-machineinstrs and of IR
+# admission. A malformed direct MIR entry must fail before generic PHI,
+# two-address or register allocation can repair it. Scalar virtual registers
+# and the separately admitted legacy carrier path remain unaffected.
+# Missing required fixed operands are already rejected by the MIR parser;
+# extra and duplicate physical effects exercise the independent machine check.
+#
+# CFG-BINDING-LABEL: name: bound_cfg
+# CFG-BINDING: bb.0:
+# CFG-BINDING: $tt_l0 = TTSFPMOVAll $tt_c9,
+# CFG-BINDING: bb.1:
+# CFG-BINDING: $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_c10, 0,
+# CFG-BINDING: bb.2:
+# CFG-BINDING: $tt_l0 = TTSFPMUL $tt_l0, $tt_l0, $tt_c10, 0,
+# CFG-BINDING: bb.3:
+# CFG-BINDING: $tt_l0 = TTSFPIADD $tt_l0, $tt_c9,
+# CFG-BINDING: BNE $x10, $x0, %bb.3
+# CFG-BINDING: bb.4:
+# CFG-BINDING: TTSFPSTORE $tt_l0, 0, 0, 4,
+# CFG-BINDING-LABEL: name: fixed_group
+# CFG-BINDING: TTSFPTRANSP implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3,
+# CFG-BINDING-SAME: implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7,
+# SCALAR-LABEL: name: scalar_virtuals
+# SCALAR: %[[INPUT:[0-9]+]]:gpr = COPY $x10
+# SCALAR: %[[CURRENT:[0-9]+]]:gpr = PHI %[[INPUT]], %bb.0, %[[NEXT:[0-9]+]], %bb.1
+# SCALAR: %[[NEXT]]:gpr = ADDI %[[CURRENT]], -1
+# SCALAR-LABEL: name: dynamic_port
+# SCALAR: $tt_l0, early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSFPLOAD $tt_l0, %{{[0-9]+}}, 0, 4,
+# LEGACY-LABEL: name: legacy_carrier
+# LEGACY: %0:sfpr = COPY $tt_l0
+# PIPELINE-LABEL: <bound_cfg>:
+# PIPELINE: ttsfpmov.all l0, c9
+# PIPELINE: ttsfpadd l0, l0, c10, 0
+# PIPELINE: ttsfpmul l0, l0, c10, 0
+# PIPELINE: ttsfpiadd l0, c9
+# PIPELINE: bnez a0,
+# PIPELINE: ttsfpstore l0, 0, 0, 4
+# VIRTUAL: bound Tensix SFPU cannot contain virtual SFPU registers
+# COPY: bound Tensix SFPU cannot contain generic register copies
+# PHI: Expected first PHI operand to be a virtual register
+# TIE: Tied physical registers must match.
+# MISSING: missing implicit register operand 'implicit-def $tt_l7'
+# EFFECTS: bound Tensix SFPU physical effects differ from the native descriptor
+# OLD: bound Tensix SFPU requires defined whole-register operands
+# CLASS: $tt_c9 is not a SFPR register.
+# SPILL: $tt_l0 is not a GPR register.
+# RENAME: isRenamable set on reserved register
+# IMPLICIT: bound Tensix SFPU register is used by an unsupported machine operation
+# CALL-CLOBBER: bound Tensix SFPU call has no preservation ABI
+# ASM: bound Tensix SFPU inline assembly has no preservation ABI
+# MODE: SFPLOAD format must be one of
+# SCRATCH: bound Tensix SFPU scalar scratch must preserve all inputs
+
+#--- valid.mir
+--- |
+  define void @bound_cfg() "target-features"="+xtttensixbh" "tensix-executor"="trisc2" { ret void }
+  define void @fixed_group() "target-features"="+xtttensixbh" "tensix-executor"="trisc2" { ret void }
+...
+---
+name: bound_cfg
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_c10, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    $tt_l0 = TTSFPMUL $tt_l0, $tt_l0, $tt_c10, 0, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    successors: %bb.3, %bb.4
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x10 = ADDI $x10, -1
+    BNE $x10, $x0, %bb.3
+    PseudoBR %bb.4
+  bb.4:
+    TTSFPSTORE $tt_l0, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: fixed_group
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPTRANSP implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- scalar.mir
+--- |
+  define void @scalar_virtuals() "target-features"="+xtttensixbh" "tensix-executor"="trisc2" { ret void }
+  define void @dynamic_port() "target-features"="+xtttensixbh" "tensix-executor"="trisc2" { ret void }
+...
+---
+name: scalar_virtuals
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $x10
+    %0:gpr = COPY $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    %2:gpr = PHI %0, %bb.0, %3, %bb.1
+    %3:gpr = ADDI %2, -1
+    BNE %3, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+---
+name: dynamic_port
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    %0:gpr = COPY $x10
+    $tt_l0, early-clobber %1:gpr, early-clobber %2:gpr = PseudoTTSFPLOAD $tt_l0, %0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- legacy.mir
+--- |
+  define void @legacy_carrier() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: legacy_carrier
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    %0:sfpr = COPY $tt_l0
+    PseudoRET
+...
+
+#--- virtual.mir
+--- |
+  define void @virtual_sfpr() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: virtual_sfpr
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- copy.mir
+--- |
+  define void @repair_copy() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: repair_copy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = COPY $tt_l1
+    PseudoRET
+...
+
+#--- phi.mir
+--- |
+  define void @repair_phi() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: repair_phi
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1
+    PseudoBR %bb.1
+  bb.1:
+    $tt_l0 = PHI $tt_l1, %bb.0
+    PseudoRET
+...
+
+#--- tie.mir
+--- |
+  define void @missing_copy() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_copy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMUL $tt_l1, $tt_l2, $tt_l3, 0, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- missing-fixed.mir
+--- |
+  define void @missing_fixed_clobber() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_fixed_clobber
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPTRANSP implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- extra-fixed.mir
+--- |
+  define void @undeclared_clobber() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: undeclared_clobber
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_l7
+    PseudoRET
+...
+
+#--- duplicate-fixed.mir
+--- |
+  define void @duplicate_effect() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: duplicate_effect
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit $tt_config
+    PseudoRET
+...
+
+#--- undef-old.mir
+--- |
+  define void @lost_inactive_lanes() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: lost_inactive_lanes
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMUL undef $tt_l0, $tt_l2, $tt_l3, 0, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- creg-write.mir
+--- |
+  define void @write_constant_bank() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: write_constant_bank
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_c9 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- implicit-def.mir
+--- |
+  define void @implicit_temporary() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: implicit_temporary
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = IMPLICIT_DEF
+    PseudoRET
+...
+
+#--- call.mir
+--- |
+  declare void @callee()
+  define void @unproved_call() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: unproved_call
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoCALL @callee, csr_ilp32_lp64, implicit-def $x1
+    PseudoRET
+...
+
+#--- asm.mir
+--- |
+  define void @unproved_assembly() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: unproved_assembly
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    INLINEASM &"", 1
+    PseudoRET
+...
+
+#--- mode.mir
+--- |
+  define void @unproved_format() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: unproved_format
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPLOAD $tt_l0, 0, 0, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- scratch.mir
+--- |
+  define void @destroyed_offset() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: destroyed_offset
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, early-clobber $x10, early-clobber $x11 = PseudoTTSFPLOAD $tt_l0, $x10, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- spill.mir
+--- |
+  define void @sfpu_spill() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: sfpu_spill
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    SW $tt_l0, $x2, 0
+    PseudoRET
+...
+
+#--- rename.mir
+--- |
+  define void @renamable_binding() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: renamable_binding
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    renamable $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

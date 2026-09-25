@@ -29,6 +29,7 @@ struct RISCVMachineFunctionInfo final : public yaml::MachineFunctionInfo {
   int VarArgsSaveSize;
   unsigned TensixFixedLRegs = 0;
   bool UsesTensixSFPU = false;
+  bool UsesBoundTensixSFPU = false;
 
   RISCVMachineFunctionInfo() = default;
   RISCVMachineFunctionInfo(const llvm::RISCVMachineFunctionInfo &MFI);
@@ -43,6 +44,7 @@ template <> struct MappingTraits<RISCVMachineFunctionInfo> {
     YamlIO.mapOptional("varArgsSaveSize", MFI.VarArgsSaveSize);
     YamlIO.mapOptional("tensixFixedLRegs", MFI.TensixFixedLRegs, 0u);
     YamlIO.mapOptional("usesTensixSFPU", MFI.UsesTensixSFPU, false);
+    YamlIO.mapOptional("usesBoundTensixSFPU", MFI.UsesBoundTensixSFPU, false);
   }
 };
 } // end namespace yaml
@@ -53,6 +55,7 @@ class RISCVMachineFunctionInfo : public MachineFunctionInfo {
 private:
   unsigned TensixFixedLRegs = 0;
   bool UsesTensixSFPU = false;
+  bool UsesBoundTensixSFPU = false;
   bool TensixCodegenFailed = false;
   /// FrameIndex for start of varargs area
   int VarArgsFrameIndex = 0;
@@ -115,6 +118,7 @@ public:
 
   unsigned getTensixFixedLRegs() const { return TensixFixedLRegs; }
   bool usesTensixSFPU() const { return UsesTensixSFPU; }
+  bool usesBoundTensixSFPU() const { return UsesBoundTensixSFPU; }
   bool hasTensixCodegenFailed() const { return TensixCodegenFailed; }
   void setTensixCodegenFailed() { TensixCodegenFailed = true; }
 

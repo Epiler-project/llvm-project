@@ -5,38 +5,41 @@
 #include "MCTargetDesc/RISCVBaseInfo.h"
 #include "RISCV.h"
 #include "RISCVTargetMachine.h"
-#include "llvm/Analysis/AssumptionCache.h"
-#include "llvm/Analysis/LazyValueInfo.h"
-#include "llvm/Analysis/ValueTracking.h"
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/IR/Dominators.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/Support/ErrorHandling.h"
+#include "RISCVTensixBoundLowering.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/LazyValueInfo.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
-#include <initializer_list>
 #include <functional>
+#include <initializer_list>
 #include <optional>
 
 using namespace llvm;
 
 bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
+  if (isTensixBoundSFPUIntrinsic(ID))
+    return true;
   switch (ID) {
   case Intrinsic::riscv_tt_sfparecip:
   case Intrinsic::riscv_tt_sfpexexp:
@@ -392,8 +395,13 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
     if (Executor == "ncrisc")
       return invalid(F, "ncrisc cannot issue Tensix instructions");
     if (isTensixSFPUIntrinsic(ID)) {
-      if (Executor != "trisc1")
+      if (isTensixBoundSFPUIntrinsic(ID)) {
+        if (Executor != "trisc0" && Executor != "trisc1" &&
+            Executor != "trisc2")
+          return invalid(F, "bound SFPU execution requires a TRISC executor");
+      } else if (Executor != "trisc1") {
         return invalid(F, "Tensix SFPU execution requires tensix-executor=trisc1");
+      }
       continue;
     }
     if (ID == Intrinsic::riscv_tt_replay_record_end)
@@ -494,6 +502,21 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
 Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
                       AssumptionCache &AC, DominatorTree &DT,
                       TensixSFPUFunctionFacts &Facts) {
+  if (isTensixBoundSFPUIntrinsic(II.getIntrinsicID())) {
+    if (Error E = verifyTensixBoundSFPUIntrinsic(II))
+      return E;
+    if (auto Index = getTensixBoundDstOffsetOperand(II.getIntrinsicID())) {
+      Value *OffsetValue = II.getArgOperand(*Index);
+      if (!isDefinedOffset(OffsetValue, II, SE, AC, DT))
+        return invalid(*II.getFunction(),
+                       "bound Dst offset must be defined and non-poison");
+      const SCEV *Offset = SE.getSCEV(OffsetValue);
+      if (SE.getUnsignedRange(Offset).getUnsignedMax().ugt(1023))
+        return invalid(*II.getFunction(),
+                       "bound Dst offset must be proven in [0, 1023]");
+    }
+    return Error::success();
+  }
   switch (II.getIntrinsicID()) {
   case Intrinsic::riscv_tt_sfparecip:
     return mode(II, 2, {0, 1, 2});
@@ -666,11 +689,13 @@ Error verifyCCStack(Function &F) {
       auto *II = dyn_cast<IntrinsicInst>(&I);
       if (!II)
         continue;
-      if (II->getIntrinsicID() == Intrinsic::riscv_tt_sfppushc) {
+      if (II->getIntrinsicID() == Intrinsic::riscv_tt_sfppushc ||
+          II->getIntrinsicID() == Intrinsic::riscv_tt_bound_sfppushc) {
         if (Depth == 8)
           return invalid(F, "CC stack depth exceeds 8");
         ++Depth;
-      } else if (II->getIntrinsicID() == Intrinsic::riscv_tt_sfppopc) {
+      } else if (II->getIntrinsicID() == Intrinsic::riscv_tt_sfppopc ||
+                 II->getIntrinsicID() == Intrinsic::riscv_tt_bound_sfppopc) {
         if (Depth == 0)
           return invalid(F, "CC stack underflow");
         --Depth;
@@ -694,6 +719,18 @@ Expected<TensixSFPUFunctionFacts>
 llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
                               AssumptionCache &AC, DominatorTree &DT) {
   TensixSFPUFunctionFacts Facts;
+  bool Bound = false, Legacy = false;
+  for (const Instruction &I : instructions(F)) {
+    const auto *II = dyn_cast<IntrinsicInst>(&I);
+    if (!II || !isTensixSFPUIntrinsic(II->getIntrinsicID()))
+      continue;
+    if (isTensixBoundSFPUIntrinsic(II->getIntrinsicID()))
+      Bound = true;
+    else
+      Legacy = true;
+  }
+  if (Bound && Legacy)
+    return invalid(F, "bound and legacy SFPU ingress cannot share a function");
   if (containsCarrier(F.getReturnType()))
     return invalid(F, "SFPU carrier cannot cross the return ABI");
   for (const Argument &Arg : F.args())
@@ -727,6 +764,9 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
     }
     if (auto *AI = dyn_cast<AllocaInst>(&I))
       Carrier |= containsCarrier(AI->getAllocatedType());
+    if (Bound && Carrier)
+      return invalid(
+          F, "bound SFPU ingress cannot contain an unbound carrier or PHI");
     if (Carrier && !SFPU && !isa<PHINode>(I) && !Extract)
       return invalid(F, "SFPU carrier is only legal in target intrinsics and PHI");
     if (containsCarrier(I.getType()) && !isCarrier(I.getType()) &&

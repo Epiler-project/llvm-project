@@ -50,6 +50,7 @@ class TensixSSAInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
   let Predicates = [HasVendorXTTTensixBH];
   let hasSideEffects = 1;
   let isNotDuplicable = 1;
+  let isConvergent = 1;
   let mayLoad = 0;
   let mayStore = 0;
   let hasNoSchedulingInfo = 1;
@@ -275,3 +276,5 @@ def PseudoTTSFPSTORE : Pseudo<(outs GPR:$word, GPR:$address),
 }
 
 include "RISCVInstrInfoTensixSFPU.td"
+
+include "RISCVInstrInfoTensixBound.td"

@@ -145,6 +145,7 @@
 ; CHECK-NEXT:       Peephole Optimizations
 ; CHECK-NEXT:       Remove dead machine instructions
 ; RV64-NEXT:        RISC-V Optimize W Instructions
+; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Pre-RA
 ; CHECK-NEXT:       RISC-V Merge Base Offset
 ; CHECK-NEXT:       MachineDominator Tree Construction
@@ -250,6 +251,7 @@
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Atomics
 ; CHECK-NEXT:       Unpack machine instruction bundles
 ; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
+; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
 ; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
 ; CHECK-NEXT:       Machine Optimization Remark Emitter
 ; CHECK-NEXT:       RISC-V Assembly Printer

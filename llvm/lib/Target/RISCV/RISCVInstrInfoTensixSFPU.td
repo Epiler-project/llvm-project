@@ -2,8 +2,9 @@
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-// SSA destination passthroughs model predication. The machine allocator owns
-// all physical LReg choices and ties; scalar integers never carry LReg IDs.
+// Destination passthroughs model predication for both ingress paths. Legacy
+// numerical SSA delegates placement to the allocator; bound ingress directly
+// constructs these native instructions with verified physical defs and uses.
 class TensixUnary<bits<8> Opcode, string Name, bits<16> Modes>
     : TensixSSAInst<Opcode, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$src, uimm4:$mode),
@@ -128,7 +129,8 @@ def TTSFPSWAP : TensixSSAInst<0x92, (outs SFPR:$dst, SFPR:$other),
 }
 
 // Group instructions name their entire fixed-register footprint. The selector
-// stages SSA inputs with register copies, then reads results after the issue.
+// stages legacy SSA inputs with copies and captures results. Bound ingress
+// requires the complete authored group and never performs that staging.
 def TTSFPLUT : TensixSSAInst<0x73, (outs SFPR:$dst),
     (ins SFPR:$old, uimm4:$mode), "ttsfplut", "$dst, $mode"> {
   bits<4> dst;

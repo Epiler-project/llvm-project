@@ -1,0 +1,115 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/valid.mir -o - | FileCheck %s --check-prefix=VALID
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/tie.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=TIE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/effect.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECT
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/scratch.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SCRATCH
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/missing-mode.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MODE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -start-before=finalize-isel %t/live-scratch.mir -o %t/failed-o0.s 2>&1 | FileCheck %s --check-prefix=TIE
+# RUN: test ! -e %t/failed-o0.s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -start-before=finalize-isel %t/live-scratch.mir -o %t/failed-o2.o -filetype=obj 2>&1 | FileCheck %s --check-prefix=TIE
+# RUN: test ! -e %t/failed-o2.o
+# RUN: sed 's/0, 1, %0, 0, 4/0, 0, %0, 0, 4/' %t/live-scratch.mir > %t/valid-scratch.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -start-before=finalize-isel %t/valid-scratch.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -start-before=finalize-isel %t/valid-scratch.mir -o /dev/null -filetype=obj
+# Private ingress still checks actual operands when entered through MIR. It
+# cannot hide a clobber by rebuilding native effects or create SFPU scratch
+# by accepting malformed scalar results. Failures use LLVM diagnostics.
+# MODE: error: {{.*}}bound SFPU ingress requires bound machine mode
+# VALID-LABEL: name: bound_ingress
+# VALID: $tt_l2 = TTSFPMUL $tt_l2, $tt_l0, $tt_l1, 0,
+# VALID-NOT: PseudoTTBound
+# TIE: error: {{.*}}bound SFPU destructive tie requires identical physical registers
+# EFFECT: error: {{.*}}bound Tensix SFPU physical effects differ from the native descriptor
+# SCRATCH: $tt_l7 is not a GPR register.
+
+#--- valid.mir
+--- |
+  define void @bound_ingress() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: bound_ingress
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTBoundSFPMUL 2, 2, 0, 1, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+#--- tie.mir
+--- |
+  define void @bad_tie() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: bad_tie
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTBoundSFPMUL 2, 1, 0, 1, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+#--- effect.mir
+--- |
+  define void @hidden_effect() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: hidden_effect
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTBoundSFPMUL 2, 2, 0, 1, 0, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_l7
+    PseudoRET
+...
+#--- scratch.mir
+--- |
+  define void @hidden_scratch() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: hidden_scratch
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $tt_l7, early-clobber $x6 = PseudoTTBoundSFPLOADDynamic 0, 0, $x10, 0, 4, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- missing-mode.mir
+--- |
+  define void @missing_mode() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_mode
+tracksRegLiveness: false
+body: |
+  bb.0:
+    PseudoTTBoundSFPMUL 2, 2, 0, 1, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+# A returning diagnostic handler must not leave these existing GPR scratch
+# users without definitions and crash the remaining generic machine passes.
+# The rejected function is poisoned and no assembly/object may be published.
+#--- live-scratch.mir
+--- |
+  define i32 @live_scratch() "tensix-executor"="trisc1" { ret i32 0 }
+...
+---
+name: live_scratch
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $x10
+    %0:gpr = COPY $x10
+    early-clobber %1:gpr, early-clobber %2:gpr = PseudoTTBoundSFPLOADDynamic 0, 1, %0, 0, 4, implicit $tt_issue, implicit-def $tt_issue
+    %3:gpr = ADD %1, %2
+    $x10 = COPY %3
+    PseudoRET implicit $x10
+...

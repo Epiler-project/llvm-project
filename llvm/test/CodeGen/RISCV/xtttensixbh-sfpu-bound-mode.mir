@@ -1,0 +1,59 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/omitted.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/false.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=postrapseudos %t/copy.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=COPY
+#
+# An optional MIR projection must not erase actual bound-intrinsic facts.
+# Even bypassing the early verifier, a later copy hook must diagnose through
+# the LLVM context instead of emitting a native copy or terminating the process.
+# CHECK: bound Tensix SFPU cannot contain generic register copies
+# COPY: error: {{.*}}bound SFPU cannot synthesize a register copy
+
+#--- omitted.mir
+--- |
+  declare void @llvm.riscv.tt.bound.sfpnop()
+  define void @bound_mode() "tensix-executor"="trisc1" {
+    call void @llvm.riscv.tt.bound.sfpnop()
+    ret void
+  }
+...
+---
+name: bound_mode
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = COPY $tt_l1
+    PseudoRET
+...
+#--- false.mir
+--- |
+  declare void @llvm.riscv.tt.bound.sfpnop()
+  define void @bound_mode() "tensix-executor"="trisc1" {
+    call void @llvm.riscv.tt.bound.sfpnop()
+    ret void
+  }
+...
+---
+name: bound_mode
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = COPY $tt_l1
+    PseudoRET
+...
+#--- copy.mir
+--- |
+  define void @copy_guard() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: copy_guard
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = COPY $tt_l1
+    PseudoRET
+...

@@ -1,0 +1,238 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/valid.mir -o - | FileCheck %s --check-prefix=GPR
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/port.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/mop.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/clear.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/source.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/early.mir -o - | FileCheck %s --check-prefix=EARLY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/undef.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/overlap.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/zero.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ZERO
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/executor.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXECUTOR
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/missing-executor.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXECUTOR
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/remote.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMOTE
+#
+# Ordinary port and MOP issue belongs in a bound function. Its scalar scratch
+# must remain scalar: complete native implicit effects alone cannot certify
+# an LReg disguised as an ordinary GPR result or field input. Disable the
+# optional pass-time MachineVerifier to exercise the production boundary.
+# The MIR parser itself always runs MachineVerifier; the four register-class
+# negatives are rejected there before this pass, with its crash diagnostic.
+# MachineInstr::addOperand also restores descriptor-required early-clobber
+# flags omitted in MIR. Check that normalization as a positive; the overlap
+# negative omits the same flag and must still reject its destructive scratch.
+#
+# GPR-LABEL: name: scalar_issue
+# GPR: early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13,
+# GPR: early-clobber $x5, early-clobber $x6 = PseudoTTSETADCMop 2, 1, 0, 0, 1,
+# GPR: early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3,
+# GPR: $tt_l0 = TTSFPMOVAll $tt_c9,
+# GPR-LABEL: name: virtual_scalar_issue
+# GPR: early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSETADCPort 0,
+# EARLY-LABEL: name: port_missing_early_clobber
+# EARLY: early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0,
+# CLASS: Illegal physical register for instruction
+# CLASS: $tt_l0 is not a GPR register.
+# ROLE: bound Tensix SFPU operand does not match its native register role
+# OVERLAP: bound Tensix SFPU early-clobber operand overlaps another operand
+# ZERO: bound Tensix SFPU scalar scratch must be writable
+# EXECUTOR: bound Tensix SFPU requires a TRISC executor
+# REMOTE: bound Tensix SFPU requires the local instruction port
+
+#--- valid.mir
+--- |
+  define void @scalar_issue() "tensix-executor"="trisc2" { ret void }
+  define void @virtual_scalar_issue() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: scalar_issue
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTSETADCMop 2, 1, 0, 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: virtual_scalar_issue
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    %0:gpr = COPY $x10
+    %1:gpr = COPY $x11
+    %2:gpr = COPY $x12
+    %3:gpr = COPY $x13
+    early-clobber %4:gpr, early-clobber %5:gpr, early-clobber %6:gpr = PseudoTTSETADCPort 0, %0, %1, %2, %3, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- port.mir
+--- |
+  define void @port_hidden_lreg() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: port_hidden_lreg
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $tt_l0, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- mop.mir
+--- |
+  define void @mop_hidden_lreg() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: mop_hidden_lreg
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $tt_l0, early-clobber $x6 = PseudoTTSETADCMop 2, 1, 0, 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- clear.mir
+--- |
+  define void @clear_hidden_lreg() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: clear_hidden_lreg
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $tt_l0, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- source.mir
+--- |
+  define void @port_lreg_scalar_field() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: port_lreg_scalar_field
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $tt_l0, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- early.mir
+--- |
+  define void @port_missing_early_clobber() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: port_missing_early_clobber
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- undef.mir
+--- |
+  define void @port_undefined_scalar_field() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: port_undefined_scalar_field
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, undef $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- overlap.mir
+--- |
+  define void @port_destroyed_scalar_field() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: port_destroyed_scalar_field
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $x10, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- zero.mir
+--- |
+  define void @clear_discarded_scratch() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: clear_discarded_scratch
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $x0, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- executor.mir
+--- |
+  define void @wrong_executor() "tensix-executor"="brisc" { ret void }
+...
+---
+name: wrong_executor
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- missing-executor.mir
+--- |
+  define void @missing_executor() { ret void }
+...
+---
+name: missing_executor
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- remote.mir
+--- |
+  define void @remote_port_from_trisc() "tensix-executor"="trisc2" { ret void }
+...
+---
+name: remote_port_from_trisc
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 1, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

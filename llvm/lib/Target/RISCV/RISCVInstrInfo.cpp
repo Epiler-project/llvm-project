@@ -516,6 +516,17 @@ void RISCVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  bool RenamableDest, bool RenamableSrc) const {
   const TargetRegisterInfo *TRI = STI.getRegisterInfo();
   RegState KillFlag = getKillRegState(KillSrc);
+  if (MBB.getParent()
+          ->getInfo<RISCVMachineFunctionInfo>()
+          ->usesBoundTensixSFPU() &&
+      (RISCV::SFPRReadRegClass.contains(DstReg) ||
+       RISCV::SFPRReadRegClass.contains(SrcReg))) {
+    auto &MF = *MBB.getParent();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(), "bound SFPU cannot synthesize a register copy"));
+    return;
+  }
   if (RISCV::SFPRRegClass.contains(DstReg) &&
       RISCV::SFPRReadRegClass.contains(SrcReg)) {
     BuildMI(MBB, MBBI, DL, get(RISCV::TTSFPMOVAll), DstReg)
