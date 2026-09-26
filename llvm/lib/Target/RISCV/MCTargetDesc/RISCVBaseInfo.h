@@ -964,6 +964,10 @@ enum class TensixInstructionPort : uint8_t {
 };
 
 uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port);
+// Validate only logical fields. Register slots may be absent for symbolic
+// bound-contract queries; this is not complete MC instruction admission.
+Error verifyTensixMCInstructionFields(const MCInst &MI,
+                                      const MCInstrInfo &MCII);
 Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
                                 const MCRegisterInfo &MRI);
 

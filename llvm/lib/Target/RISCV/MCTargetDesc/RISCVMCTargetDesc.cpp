@@ -17,6 +17,7 @@
 #include "RISCVMCAsmInfo.h"
 #include "RISCVMCObjectFileInfo.h"
 #include "RISCVTargetStreamer.h"
+#include "RISCVTensixBoundContract.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -69,6 +70,16 @@ static MCInstrInfo *createRISCVMCInstrInfo() {
   MCInstrInfo *X = new MCInstrInfo();
   InitRISCVMCInstrInfo(X);
   return X;
+}
+
+std::unique_ptr<MCInstrInfo> llvm::RISCV::createTensixBoundMCInstrInfo() {
+  return std::unique_ptr<MCInstrInfo>(createRISCVMCInstrInfo());
+}
+
+std::unique_ptr<MCRegisterInfo> llvm::RISCV::createTensixBoundMCRegisterInfo() {
+  auto Info = std::make_unique<MCRegisterInfo>();
+  InitRISCVMCRegisterInfo(Info.get(), RISCV::X1);
+  return Info;
 }
 
 static MCRegisterInfo *createRISCVMCRegisterInfo(const Triple &TT) {

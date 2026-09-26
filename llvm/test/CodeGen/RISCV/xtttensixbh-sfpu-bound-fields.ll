@@ -5,18 +5,19 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/vector-field.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=TIE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/vector-mode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=MODE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/immediate.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=IMM
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/stochrnd.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=IMM
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/stochrnd.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DESCALE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/offset-range.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=OFFSET
 ; RUN: not llc -mtriple=riscv32 %t/feature.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=FEATURE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/attribute.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=ATTRIBUTE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/constant.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CONSTANT
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/carrier.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CARRIER
 ; RESERVED: bound SFPU logical field operand 1 must be in [0, 0]
-; CONFIG: bound SFPU configuration mask does not match its mode
+; CONFIG: SFPCONFIG mode 8 mask must select even lane bits
 ; FIXED: bound SFPU fixed register group does not match the instruction
 ; TIE: bound SFPU destructive tie requires identical physical registers
 ; MODE: bound SFPU unsupported mode
-; IMM: bound SFPU logical field operand
+; IMM: Tensix immediate operand must fit in 16 unsigned bits
+; DESCALE: Tensix floating conversion requires zero descale; integer descale must fit five bits
 ; OFFSET: bound Dst offset must be proven in [0, 1023]
 ; FEATURE: Tensix intrinsic requires +xtttensixbh
 ; ATTRIBUTE: Tensix intrinsic requires a tensix-executor function attribute

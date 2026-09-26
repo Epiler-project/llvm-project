@@ -123,8 +123,8 @@ getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index) {
   return lookupTensixInstructionField(Info.IntrinsicID, Index);
 }
 
-Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
-                                const MCRegisterInfo &MRI) {
+Error verifyTensixMCInstructionFields(const MCInst &MI,
+                                      const MCInstrInfo &MCII) {
   const TensixEncoding *Encoding = getTensixEncoding(MI.getOpcode());
   if (!Encoding)
     return Error::success();
@@ -148,17 +148,8 @@ Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
   for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
     const MCOperand &Op = MI.getOperand(I);
     const MCOperandInfo &Info = Desc.operands()[I];
-    if (Info.RegClass >= 0) {
-      if (!Op.isReg() || !MRI.getRegClass(Info.RegClass).contains(Op.getReg()))
-        return createStringError(
-            "invalid register for Tensix instruction operand");
-      int Tied = Desc.getOperandConstraint(I, MCOI::TIED_TO);
-      if (Tied >= 0 && (!MI.getOperand(Tied).isReg() ||
-                        MI.getOperand(Tied).getReg() != Op.getReg()))
-        return createStringError(
-            "Tensix destination and passthrough must be tied");
+    if (Info.RegClass >= 0)
       continue;
-    }
     if (!Op.isImm())
       return createStringError(
           "Tensix instruction requires immediate operands");
@@ -272,6 +263,28 @@ Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
     break;
   default:
     break;
+  }
+  return Error::success();
+}
+
+Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
+                                const MCRegisterInfo &MRI) {
+  if (Error E = verifyTensixMCInstructionFields(MI, MCII))
+    return E;
+  if (!getTensixEncoding(MI.getOpcode()))
+    return Error::success();
+  const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
+  for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
+    const MCOperandInfo &Info = Desc.operands()[I];
+    if (Info.RegClass < 0)
+      continue;
+    const MCOperand &Op = MI.getOperand(I);
+    if (!Op.isReg() || !MRI.getRegClass(Info.RegClass).contains(Op.getReg()))
+      return createStringError("invalid register for Tensix instruction operand");
+    int Tied = Desc.getOperandConstraint(I, MCOI::TIED_TO);
+    if (Tied >= 0 && (!MI.getOperand(Tied).isReg() ||
+                      MI.getOperand(Tied).getReg() != Op.getReg()))
+      return createStringError("Tensix destination and passthrough must be tied");
   }
   return Error::success();
 }
