@@ -1,8 +1,16 @@
 ; RUN: split-file %s %t
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/snapshot.ll -o - | FileCheck %s --check-prefixes=EXPLICIT-SNAPSHOT,SHARED-CC
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/snapshot.ll -o /dev/null
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/underflow.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNDERFLOW
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/merge.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=MERGE
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/underflow.ll -o - | FileCheck %s --check-prefix=INCOMING-CC
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/underflow.ll -o - | FileCheck %s --check-prefix=INCOMING-CC
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/merge.ll -o - | FileCheck %s --check-prefix=CC-LOOP
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/merge.ll -o - | FileCheck %s --check-prefix=CC-LOOP
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/state.ll -o - | FileCheck %s --check-prefix=STATE
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/state.ll -o - | FileCheck %s --check-prefix=STATE
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/branch.ll -o - | FileCheck %s --check-prefix=CC-BRANCH
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/branch.ll -o - | FileCheck %s --check-prefix=CC-BRANCH
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/invalid-push.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CC-FIELD
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/invalid-pop.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CC-FIELD
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/loop.ll -o - | FileCheck %s --check-prefix=LOOP
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/loop.ll -o /dev/null
 ; RUN: opt -S -mtriple=riscv32 -mattr=+xtttensixbh -passes='default<O3>' %t/loop.ll | FileCheck %s --check-prefix=LOOP-IR
@@ -46,14 +54,25 @@ define void @snapshot() "tensix-executor"="trisc2" {
 }
 ;--- underflow.ll
 declare void @llvm.riscv.tt.bound.sfppopc(i32 immarg, i32 immarg)
-; UNDERFLOW: CC stack underflow
+; Bound ingress preserves the authored physical state. It does not infer an
+; empty incoming CC stack or synthesize a matching push.
+; INCOMING-CC-LABEL: underflow:
+; INCOMING-CC: .word 0x20000002
+; INCOMING-CC-NOT: .word
+; INCOMING-CC: ret
 define void @underflow() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 0)
   ret void
 }
 ;--- merge.ll
 declare void @llvm.riscv.tt.bound.sfppushc(i32 immarg, i32 immarg)
-; MERGE: CC stack depth disagrees at CFG join or backedge
+; A source-authored loop need not have a statically balanced CC depth.
+; CC-LOOP-LABEL: merge:
+; CC-LOOP: .word 0x1c000002
+; CC-LOOP-NOT: .word
+; CC-LOOP: bnez
+; CC-LOOP-NOT: .word
+; CC-LOOP: ret
 define void @merge(i1 %again) "tensix-executor"="trisc0" {
 entry:
   br label %loop
@@ -61,7 +80,7 @@ loop:
   call void @llvm.riscv.tt.bound.sfppushc(i32 0, i32 0)
   br i1 %again, label %loop, label %exit
 exit:
-  unreachable
+  ret void
 }
 ;--- loop.ll
 declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
@@ -85,5 +104,80 @@ body:
   br i1 %again, label %body, label %exit
 exit:
   call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 3)
+  ret void
+}
+
+;--- state.ll
+declare void @llvm.riscv.tt.setc16(i32 immarg, i32 immarg)
+declare void @llvm.riscv.tt.setc16.port(i32 immarg, i32, i32)
+declare void @llvm.riscv.tt.nop()
+declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+; STATE-LABEL: static_state:
+; STATE: .word 0xc8000006
+; STATE-NEXT: .word 0x08000000
+; STATE-NEXT: .word 0x08000000
+; STATE-NEXT: .word 0x08000000
+; STATE-NEXT: .word 0xf0002409
+; STATE-NOT: .word
+; STATE: ret
+define void @static_state() "tensix-executor"="trisc1" {
+  call void @llvm.riscv.tt.setc16(i32 1, i32 0)
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  ret void
+}
+; Port configuration still requires defined, bounded machine fields, but
+; its value and target bank are source-controlled.
+; STATE-LABEL: dynamic_state:
+; STATE: sw
+; STATE: .word 0x08000000
+; STATE-NEXT: .word 0x08000000
+; STATE-NEXT: .word 0x08000000
+; STATE-NEXT: .word 0xf0002409
+; STATE-NOT: .word
+; STATE: ret
+define void @dynamic_state(i32 noundef %input) "tensix-executor"="trisc2" {
+  %state = and i32 %input, 1
+  call void @llvm.riscv.tt.setc16.port(i32 0, i32 %state, i32 0)
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  ret void
+}
+
+;--- branch.ll
+declare void @llvm.riscv.tt.bound.sfppushc(i32 immarg, i32 immarg)
+declare void @llvm.riscv.tt.bound.sfppopc(i32 immarg, i32 immarg)
+; CC-BRANCH-LABEL: branch:
+; CC-BRANCH: .word 0x1c000002
+; CC-BRANCH-NOT: .word
+; CC-BRANCH: .word 0x20000002
+; CC-BRANCH-NOT: .word
+; CC-BRANCH: ret
+define void @branch(i1 %condition) "tensix-executor"="trisc0" {
+entry:
+  br i1 %condition, label %push, label %join
+push:
+  call void @llvm.riscv.tt.bound.sfppushc(i32 0, i32 0)
+  br label %join
+join:
+  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 0)
+  ret void
+}
+
+;--- invalid-push.ll
+declare void @llvm.riscv.tt.bound.sfppushc(i32 immarg, i32 immarg)
+; CC-FIELD: must be in [0, 0]
+define void @invalid_push() "tensix-executor"="trisc1" {
+  call void @llvm.riscv.tt.bound.sfppushc(i32 1, i32 0)
+  ret void
+}
+;--- invalid-pop.ll
+declare void @llvm.riscv.tt.bound.sfppopc(i32 immarg, i32 immarg)
+define void @invalid_pop() "tensix-executor"="trisc1" {
+  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 1)
   ret void
 }

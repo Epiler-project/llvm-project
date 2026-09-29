@@ -1151,7 +1151,7 @@ def TTRMWCIB0 : TensixOrdinaryInst<"RMWCIB0", 0xb3,
     (ins uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask),
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
-    [255, 255, 255]> {
+    [223, 255, 255]> {
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1168,7 +1168,7 @@ def TTRMWCIB1 : TensixOrdinaryInst<"RMWCIB1", 0xb4,
     (ins uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask),
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
-    [255, 255, 255]> {
+    [223, 255, 255]> {
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1185,7 +1185,7 @@ def TTRMWCIB2 : TensixOrdinaryInst<"RMWCIB2", 0xb5,
     (ins uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask),
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
-    [255, 255, 255]> {
+    [223, 255, 255]> {
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1202,7 +1202,7 @@ def TTRMWCIB3 : TensixOrdinaryInst<"RMWCIB3", 0xb6,
     (ins uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask),
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
-    [255, 255, 255]> {
+    [223, 255, 255]> {
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;

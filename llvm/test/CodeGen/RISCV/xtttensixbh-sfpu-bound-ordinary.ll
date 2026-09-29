@@ -104,6 +104,51 @@ define void @bound_with_explicit_replay() "tensix-executor"="trisc0" {
   ret void
 }
 
+; An authored SFPU drain keeps its exact condition, full thread block, and
+; ordinary NOP witness through both ISel and the O0/O2 native pipelines.
+; L2 remains live across the first drain; neither physical binding nor the
+; following store can acquire a repair copy, spill, or SFPU temporary.
+; This is a native codegen regression, not whole-program mixed admission,
+; Dst initialization, or a RISC-side observation/visibility proof.
+declare void @llvm.riscv.tt.stallwait(i32 immarg, i32 immarg)
+define void @bound_with_sfpu_completion() "tensix-executor"="trisc1" {
+; ISEL-LABEL: name: bound_with_sfpu_completion
+; ISEL-NOT: class: sfpr
+; ISEL-NOT: PseudoTTBound
+; ISEL: $tt_l2 = TTSFPMOVAll $tt_c9,
+; ISEL-NEXT: TTSTALLWAIT 2048, 511,
+; ISEL-NEXT: TTNOP
+; ISEL-NEXT: TTSFPSTORE $tt_l2, 8, 0, 3,
+; ISEL-NEXT: TTSTALLWAIT 2048, 511,
+; ISEL-NEXT: TTNOP
+; ISEL-NEXT: PseudoRET
+; NATIVE-LABEL: bound_with_sfpu_completion:
+; NATIVE-NOT: sw
+; NATIVE-NOT: lw
+; NATIVE-NOT: .word
+; NATIVE: .word 0xf0002489
+; STALLWAIT has raw opcode 0xa2, stall_res at bit 15, wait_res at bit 0.
+; rol32(0xa2000000 | (0x1ff << 15) | 0x800, 2) = 0x8bfe2002.
+; TTNOP is raw 0x02000000, distinct from the SFPU-local hazard NOP.
+; NEXT checks require exactly the authored native sequence and physical L2.
+; NATIVE-NEXT: .word 0x8bfe2002
+; NATIVE-NEXT: .word 0x08000000
+; NATIVE-NEXT: .word 0xc88c0021
+; NATIVE-NEXT: .word 0x8bfe2002
+; NATIVE-NEXT: .word 0x08000000
+; NATIVE-NEXT: ret
+; NATIVE-NOT: .word
+; NATIVE-NOT: sw
+; NATIVE-NOT: lw
+  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 9)
+  call void @llvm.riscv.tt.stallwait(i32 2048, i32 511)
+  call void @llvm.riscv.tt.nop()
+  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 3)
+  call void @llvm.riscv.tt.stallwait(i32 2048, i32 511)
+  call void @llvm.riscv.tt.nop()
+  ret void
+}
+
 ;--- unsafe-replay.ll
 ; Explicit physical operands do not by themselves give an authored SFPU
 ; recording a preservation ABI. Only the separately verified automatic SFPU

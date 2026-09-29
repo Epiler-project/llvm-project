@@ -29,6 +29,36 @@ def RISCVTensixEncodingTable : GenericTable {
   let PrimaryKeyName = "getTensixEncoding";
 }
 
+// Project the actual register-class value type for MC-level geometry clients.
+class TensixRegisterGeometry<RegisterClass RC> {
+  string ClassID = "RISCV::" # !cast<string>(RC) # "RegClassID";
+  string ValueType = "MVT::" # !cast<string>(!head(RC.RegTypes));
+}
+foreach RC = [SFPR, SFPCR, SFPRRead] in
+  def : TensixRegisterGeometry<RC>;
+def RISCVTensixRegisterGeometryTable : GenericTable {
+  let FilterClass = "TensixRegisterGeometry";
+  let CppTypeName = "NativeRegisterGeometry";
+  let Fields = ["ClassID", "ValueType"];
+  string TypeOf_ClassID = "code";
+  string TypeOf_ValueType = "code";
+}
+
+// Read contents facts from the same physical definitions as register identity.
+// Writable CRegs do not inherit software initialization from their class.
+class TensixRegisterContents<TensixRegister R> {
+  string RegisterID = "RISCV::" # !cast<string>(R);
+  bit ImmutableInitialized = R.ImmutableInitialized;
+}
+foreach R = !instances<TensixRegister>() in
+  def : TensixRegisterContents<R>;
+def RISCVTensixRegisterContentsTable : GenericTable {
+  let FilterClass = "TensixRegisterContents";
+  let CppTypeName = "NativeRegisterContents";
+  let Fields = ["RegisterID", "ImmutableInitialized"];
+  string TypeOf_RegisterID = "code";
+}
+
 let Predicates = [HasVendorXTTTensixBH], hasSideEffects = 1, isNotDuplicable = 1,
     mayLoad = 0, mayStore = 1, hasNoSchedulingInfo = 1 in {
 // This instruction consumes the loaded scalar even though its result is zero.

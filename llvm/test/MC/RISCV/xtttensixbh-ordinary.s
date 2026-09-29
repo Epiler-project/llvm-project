@@ -164,17 +164,17 @@ ttreplay 1, 7, 1023, 1023
 # CHECK: ttresourcedecl 15, 511, 2047{{ *}}# encoding: [0xfc,0xff,0xff,0x17]
 ttresourcedecl 15, 511, 2047
 
-# CHECK: ttrmwcib0 255, 255, 255{{ *}}# encoding: [0xfe,0xff,0xff,0xcf]
-ttrmwcib0 255, 255, 255
+# CHECK: ttrmwcib0 223, 255, 255{{ *}}# encoding: [0x7e,0xff,0xff,0xcf]
+ttrmwcib0 223, 255, 255
 
-# CHECK: ttrmwcib1 255, 255, 255{{ *}}# encoding: [0xfe,0xff,0xff,0xd3]
-ttrmwcib1 255, 255, 255
+# CHECK: ttrmwcib1 223, 255, 255{{ *}}# encoding: [0x7e,0xff,0xff,0xd3]
+ttrmwcib1 223, 255, 255
 
-# CHECK: ttrmwcib2 255, 255, 255{{ *}}# encoding: [0xfe,0xff,0xff,0xd7]
-ttrmwcib2 255, 255, 255
+# CHECK: ttrmwcib2 223, 255, 255{{ *}}# encoding: [0x7e,0xff,0xff,0xd7]
+ttrmwcib2 223, 255, 255
 
-# CHECK: ttrmwcib3 255, 255, 255{{ *}}# encoding: [0xfe,0xff,0xff,0xdb]
-ttrmwcib3 255, 255, 255
+# CHECK: ttrmwcib3 223, 255, 255{{ *}}# encoding: [0x7e,0xff,0xff,0xdb]
+ttrmwcib3 223, 255, 255
 
 # CHECK: ttrstdma{{ *}}# encoding: [0x01,0x00,0x00,0x10]
 ttrstdma

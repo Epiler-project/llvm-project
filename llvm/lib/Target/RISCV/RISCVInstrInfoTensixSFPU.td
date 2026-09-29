@@ -31,7 +31,11 @@ def TTSFPABS : TensixUnary<0x7d, "ttsfpabs", 0x0003>;
 def TTSFPLZ : TensixUnary<0x81, "ttsfplz", 0x5555> {
   let Defs = [TT_CC, TT_ISSUE];
 }
-def TTSFPCAST : TensixUnary<0x90, "ttsfpcast", 0x000f>;
+def TTSFPCAST : TensixUnary<0x90, "ttsfpcast", 0x000f> {
+  // The shared descriptor conservatively includes the stochastic mode's PRNG.
+  let Uses = [TT_CC, TT_CONFIG, TT_ISSUE, TT_PRNG];
+  let Defs = [TT_ISSUE, TT_PRNG];
+}
 
 class TensixSetField<bits<8> Opcode, string Name, bits<16> Modes>
     : TensixSSAInst<Opcode, (outs SFPR:$dst),
@@ -110,6 +114,9 @@ class TensixStochRound<string Name, bit Immediate>
   let Constraints = "$dst = $old";
   let ModeOperandIndex = 4;
   let AllowedModes = !if(Immediate, 0x30cf, 0x0030);
+  // Blackhole advances PRNG before selecting even nearest/zero rounding.
+  let Uses = [TT_CC, TT_CONFIG, TT_ISSUE, TT_PRNG];
+  let Defs = [TT_ISSUE, TT_PRNG];
 }
 def TTSFPSTOCHRNDI : TensixStochRound<"ttsfpstochrnd.i", 1>;
 def TTSFPSTOCHRNDV : TensixStochRound<"ttsfpstochrnd.v", 0>;

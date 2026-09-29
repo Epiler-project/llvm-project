@@ -307,7 +307,8 @@ public:
     if (!Repair)
       if (Error E = verifyTensixReplay(MF))
         return Fail(toString(std::move(E)));
-    bool Uses = MF.getInfo<RISCVMachineFunctionInfo>()->usesTensixSFPU();
+    bool Bound = Info->usesBoundTensixSFPU();
+    bool Uses = Info->usesTensixSFPU();
     for (const auto &BB : MF)
       for (const auto &MI : BB.instrs())
         Uses |= isSFPU(MI);
@@ -324,19 +325,23 @@ public:
           return Fail("inline assembly has no verified Tensix SFPU preservation ABI");
         if (MI.isCall())
           return Fail("machine call has no verified Tensix SFPU preservation ABI");
-        if (MI.getOpcode() == RISCV::TTSETC16 &&
+        if (!Bound && MI.getOpcode() == RISCV::TTSETC16 &&
             MI.getOperand(1).getImm() == 0 && MI.getOperand(0).getImm() != 0)
           return Fail("Tensix SFPU fused StateID issue is not implemented");
-        // The IR verifier proves StateID legality before port field constants
-        // become scalar GPRs. The port pseudo retains its full state effects.
+        // Legacy transformations require state zero, which the IR verifier
+        // checks before port fields become scalar GPRs. Bound ingress keeps
+        // source-authored state changes; both forms retain full state effects.
         for (const auto &MO : MI.operands())
           if (MO.isReg() && MO.getReg().isVirtual() &&
               RISCV::SFPRReadRegClass.hasSubClassEq(
                   MF.getRegInfo().getRegClass(MO.getReg())))
             return Fail("unallocated SFPU register reached final legality");
       }
-    if (Error E = verifyCC(MF))
-      return Fail(toString(std::move(E)));
+    // Stack lifecycle is source-owned for bound operations. Keep the legacy
+    // local-stack precondition without imposing it on physical issue streams.
+    if (!Bound)
+      if (Error E = verifyCC(MF))
+        return Fail(toString(std::move(E)));
     bool Modified = false;
     if (Repair && ST.hasVendorXTTTensixBH() &&
         MF.getTarget().getOptLevel() != CodeGenOptLevel::None &&

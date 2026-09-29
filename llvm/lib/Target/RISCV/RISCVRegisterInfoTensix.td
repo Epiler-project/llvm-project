@@ -7,11 +7,17 @@ let Namespace = "RISCV" in {
   class TensixRegister<bits<4> Encoding, string Name> : Register<Name> {
     let HWEncoding{3-0} = Encoding;
     let DwarfNumbers = [-1];
+    // Hardware-defined contents, independent of software setup and numerical
+    // value. C15 is initialized even though its lanes contain different values.
+    bit ImmutableInitialized = 0;
   }
   foreach I = 0-7 in
     def TT_L#I : TensixRegister<I, "l"#I>;
   foreach I = 8-15 in
-    def TT_C#I : TensixRegister<I, "c"#I>;
+    def TT_C#I : TensixRegister<I, "c"#I> {
+      let ImmutableInitialized =
+          !or(!eq(I, 8), !eq(I, 9), !eq(I, 10), !eq(I, 15));
+    }
   // Macro staging is not ninth-register allocation capacity.
   def TT_STAGE : Register<"ttstage">;
   def TT_CC : Register<"ttcc">;
@@ -19,6 +25,7 @@ let Namespace = "RISCV" in {
   def TT_CONFIG : Register<"ttconfig">;
   def TT_DST : Register<"ttdst">;
   def TT_ISSUE : Register<"ttissue">;
+  def TT_PRNG : Register<"ttprng">;
 }
 
 def SFPR : RISCVRegisterClass<[v32i32], 1024,
@@ -43,6 +50,6 @@ def SFPStage : RISCVRegisterClass<[v32i32], 1024, (add TT_STAGE)> {
 }
 def SFPState : RISCVRegisterClass<[untyped], 32,
                                 (add TT_CC, TT_CCSTACK, TT_CONFIG,
-                                     TT_DST, TT_ISSUE)> {
+                                     TT_DST, TT_ISSUE, TT_PRNG)> {
   let isAllocatable = 0;
 }

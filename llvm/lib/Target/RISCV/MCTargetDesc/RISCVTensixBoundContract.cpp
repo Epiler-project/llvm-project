@@ -7,6 +7,7 @@
 #include "RISCVBaseInfo.h"
 #include "RISCVMCTargetDesc.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
@@ -19,6 +20,18 @@ namespace {
 using Role = TensixBoundArgumentRole;
 using Access = TensixSFPUAccess;
 using ValueKind = TensixBoundValueKind;
+
+struct NativeRegisterGeometry {
+  unsigned ClassID;
+  MVT::SimpleValueType ValueType;
+};
+struct NativeRegisterContents {
+  unsigned RegisterID;
+  bool ImmutableInitialized;
+};
+#define GET_RISCVTensixRegisterGeometryTable_IMPL
+#define GET_RISCVTensixRegisterContentsTable_IMPL
+#include "RISCVGenSearchableTables.inc"
 
 // The formal ABI-to-ingress mapping owns no encoding or machine constraints.
 constexpr TensixBoundInstruction Instructions[] = {
@@ -274,15 +287,19 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
     break;
   case RISCV::PseudoTTBoundSFPAND:
     Select(RISCV::TTSFPAND, {0, 1, 2});
+    Old();
     break;
   case RISCV::PseudoTTBoundSFPOR:
     Select(RISCV::TTSFPOR, {0, 1, 2});
+    Old();
     break;
   case RISCV::PseudoTTBoundSFPXOR:
     Select(RISCV::TTSFPXOR, {0, 1, 2});
+    Old();
     break;
   case RISCV::PseudoTTBoundSFPNOT:
     Select(RISCV::TTSFPNOT, {0, 1, 1});
+    Old();
     break;
   case RISCV::PseudoTTBoundSFPSHFT2:
     if (Error E = Zero(3))
@@ -442,6 +459,8 @@ Expected<TensixSFPUResource> architecturalResource(MCRegister Register) {
     return TensixSFPUState::Dst;
   case RISCV::TT_ISSUE:
     return TensixSFPUState::Issue;
+  case RISCV::TT_PRNG:
+    return TensixSFPUState::PRNG;
   default:
     return invalid("native descriptor names an unknown architectural effect");
   }
@@ -533,7 +552,8 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
                   [](const auto &A, const auto &B) {
                     return A.Argument == B.Argument && A.Role == B.Role &&
                            A.AllowedRegisters == B.AllowedRegisters &&
-                           A.FixedRegister == B.FixedRegister;
+                           A.FixedRegister == B.FixedRegister &&
+                           A.Footprint == B.Footprint;
                   });
         if (Common->Roles != Current->Roles || !SameRegisters ||
             !sameConstraints(Common->Constraints, Current->Constraints) ||
@@ -561,6 +581,146 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
   TensixBoundSFPUContract Contract;
   Contract.ID = ID;
   Contract.Roles.assign(Args.size(), Role::LogicalImmediate);
+  if (Native.Opcode == RISCV::TTSFPMOVAll) {
+    Contract.Transfer = {TensixSFPUTransferKind::Identity,
+                         0,
+                         0xffffffffu,
+                         0xffffffffu,
+                         false,
+                         false,
+                         false,
+                         false};
+  } else if (Native.Opcode == RISCV::TTSFPLOADI) {
+    if (Args.size() != 4 || Args[3].Kind != ValueKind::Constant)
+      return invalid("SFPLOADI transfer requires a constant mode");
+    switch (Args[3].Constant) {
+    case 0:
+    case 1:
+    case 2:
+    case 4:
+      Contract.Transfer = {TensixSFPUTransferKind::ImmediateFull,
+                           0,
+                           0xffffffffu,
+                           0xffffffffu,
+                           true,
+                           true,
+                           true,
+                           true};
+      break;
+    case 8:
+      Contract.Transfer = {TensixSFPUTransferKind::ImmediateUpperHalf,
+                           0x0000ffffu,
+                           0xffff0000u,
+                           0xffff0000u,
+                           true,
+                           true,
+                           true,
+                           true};
+      break;
+    case 10:
+      Contract.Transfer = {TensixSFPUTransferKind::ImmediateLowerHalf,
+                           0xffff0000u,
+                           0x0000ffffu,
+                           0x0000ffffu,
+                           true,
+                           true,
+                           true,
+                           true};
+      break;
+    default:
+      return invalid("SFPLOADI transfer has an unsupported mode");
+    }
+  } else if (Native.Opcode == RISCV::TTSFPMOV ||
+             Native.Opcode == RISCV::TTSFPMOVNeg) {
+    // Masked SFPMOV preserves the old destination in inactive lanes. A copy
+    // propagates source bit-knownness; negation consumes the source
+    // numerically, so its active lanes require all source bits initialized.
+    Contract.Transfer = {TensixSFPUTransferKind::Identity,
+                         0u,
+                         0xffffffffu,
+                         0xffffffffu,
+                         true,
+                         true,
+                         true,
+                         true};
+    if (Native.Opcode == RISCV::TTSFPMOVNeg) {
+      Contract.Transfer.Kind = TensixSFPUTransferKind::LaneWise;
+      Contract.Transfer.Inputs.push_back({2, 0xffffffffu});
+    }
+  } else if (Native.Opcode == RISCV::TTSFPADD ||
+             Native.Opcode == RISCV::TTSFPMUL) {
+    // Direct MAD-unit forms read both arithmetic inputs in active lanes.
+    // The old destination is only the inactive-lane passthrough; C10 (one)
+    // or C9 (zero) remains an independent native fixed-register read effect.
+    // The descriptors receive only direct mode bits 0..1, never indirect
+    // source/destination selection. This proves initialized bits, not a
+    // different floating-point algorithm or rounding contract.
+    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
+                         0u,
+                         0xffffffffu,
+                         0xffffffffu,
+                         true,
+                         true,
+                         true,
+                         true,
+                         {{2, 0xffffffffu}, {3, 0xffffffffu}}};
+  } else if (Native.Opcode == RISCV::TTSFPARECIP) {
+    if (Args[3].Kind != ValueKind::Constant)
+      return invalid("SFPARECIP transfer requires a constant mode");
+    // Blackhole SFPARECIP writes all VD bits in every enabled lane. VC is
+    // the numerical input in all three modes; conditional reciprocal also
+    // tests VB.i32 < 0. The native bound descriptor ties VB to the old VD,
+    // so that mode demands its sign bit, not an active-lane passthrough.
+    // Inactive lanes still preserve the complete old destination under CC
+    // and ROW_MASK. These are bit masks, not register widths or counts.
+    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
+                         0u,
+                         0xffffffffu,
+                         0xffffffffu,
+                         true,
+                         true,
+                         true,
+                         true,
+                         {{2, 0xffffffffu}}};
+    if (Args[3].Constant == 1)
+      Contract.Transfer.Inputs.push_back({1, 0x80000000u});
+  } else if (Native.Opcode == RISCV::TTSFPIADD ||
+             Native.Opcode == RISCV::TTSFPISUB ||
+             Native.Opcode == RISCV::TTSFPAND ||
+             Native.Opcode == RISCV::TTSFPOR ||
+             Native.Opcode == RISCV::TTSFPXOR) {
+    // These vector forms leave CC unchanged. Active lanes consume both the
+    // tied old destination and C numerically, then overwrite all result bits;
+    // inactive lanes preserve the old destination under CC and ROW_MASK.
+    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
+                         0u,
+                         0xffffffffu,
+                         0xffffffffu,
+                         true,
+                         true,
+                         true,
+                         true,
+                         {{1, 0xffffffffu}, {2, 0xffffffffu}}};
+  } else if (Native.Opcode == RISCV::TTSFPNOT) {
+    // This bound form aliases native old and C to the same ABI argument.
+    // It is one numerical input in active lanes and passthrough in inactive
+    // lanes; knowing the old bits must not bypass the numerical dependency.
+    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
+                         0u,
+                         0xffffffffu,
+                         0xffffffffu,
+                         true,
+                         true,
+                         true,
+                         true,
+                         {{1, 0xffffffffu}}};
+  }
+  // SFPMOV mode 2 copies all u32 lane contents independently of LaneEnabled.
+  // Other selected forms still require their live CC/configuration and bit
+  // coverage analysis, including CONFIG broadcasts and partial LOADI modes.
+  const auto Footprint = Native.Opcode == RISCV::TTSFPMOVAll
+                             ? TensixSFPURegisterFootprint::WholeRegister
+                             : TensixSFPURegisterFootprint::StateDependent;
 
   auto FindRegister = [&](unsigned Argument) -> TensixBoundRegisterArgument * {
     auto It = find_if(Contract.Registers, [Argument](const auto &Reg) {
@@ -588,8 +748,9 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
         Existing->Role = ArgumentRole;
       return Error::success();
     }
-    Contract.Registers.push_back(
-        {Argument, ArgumentRole, SmallVector<uint32_t, 16>(Allowed), Fixed});
+    Contract.Registers.push_back({Argument, ArgumentRole,
+                                  SmallVector<uint32_t, 16>(Allowed), Fixed,
+                                  Footprint});
     return Error::success();
   };
   auto ProjectOperand = [&](unsigned Argument, unsigned Operand) -> Error {
@@ -791,6 +952,84 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
   }
   if (Error E = verifyTensixMCInstructionFields(Fields, instructions()))
     return std::move(E);
+  // Derive lane transitions only after validating the actual logical fields.
+  // Effective CC is !Enable || Flags; preserving or toggling Enable must not
+  // be confused with overwriting that effective predicate.
+  if (Native.Opcode == RISCV::TTSFPENCC) {
+    const unsigned Value = Args[0].Constant;
+    const unsigned Mode = Args[1].Constant;
+    using Update = TensixSFPUConditionEnableUpdate;
+    Update Enable = Update::Preserve;
+    if (Mode & 2)
+      Enable = (Value & 1) ? Update::Enable : Update::Disable;
+    else if (Mode & 1)
+      Enable = Update::Invert;
+    Contract.LaneControl =
+        TensixSFPUConditionUpdate{Enable, (Mode & 8) ? bool(Value & 2) : true};
+  } else if (Native.Opcode == RISCV::TTSFPCONFIGReset) {
+    // Configuration low bits are cleared under the first eight columns' CC
+    // predicates, independently of the current Configuration ROW_MASK field.
+    Contract.LaneControl =
+        TensixSFPULaneConfigReset{8, true, true, true, true, true, true, true};
+  }
+
+  // This is an explicit configuration receiver, independent of numerical
+  // transfer support. Adding a transfer must not silently prove that a new
+  // instruction or mode has no configuration requirements.
+  switch (Native.Opcode) {
+  case RISCV::TTSFPMOVAll:
+  case RISCV::TTSFPMOV:
+  case RISCV::TTSFPMOVNeg:
+  case RISCV::TTSFPIADD:
+  case RISCV::TTSFPISUB:
+  case RISCV::TTSFPAND:
+  case RISCV::TTSFPOR:
+  case RISCV::TTSFPXOR:
+  case RISCV::TTSFPADD:
+  case RISCV::TTSFPMUL:
+  case RISCV::TTSFPARECIP:
+  case RISCV::TTSFPNOT: {
+    // TEN-2932 affects the actual write, not its source or tied-old input.
+    // These selected descriptors have one write at bound ABI argument zero.
+    auto *Destination = FindRegister(0);
+    if (Desc.getNumDefs() != 1 || !Native.Operands.front().Argument ||
+        *Native.Operands.front().Argument != 0 || !Destination ||
+        Destination->Role != Role::WriteLReg)
+      return invalid("configuration receiver requires one actual destination");
+    Contract.Configuration.emplace();
+    Contract.Configuration->Requirements.push_back(
+        {Destination->Argument,
+         TensixSFPUConfigurationField::EnableDestIndex,
+         {4, 5, 6, 7}});
+    break;
+  }
+  case RISCV::TTSFPLOADI:
+    // SFPLOADI is exempt from TEN-2932, but only these received modes have a
+    // complete configuration contract in this bounded subset.
+    switch (Args[3].Constant) {
+    case 0:
+    case 8:
+    case 10:
+      Contract.Configuration.emplace();
+      break;
+    default:
+      break;
+    }
+    break;
+  case RISCV::TTSFPLOAD:
+  case RISCV::TTSFPSTORE:
+    // SFPLOAD is exempt from TEN-2932; SFPSTORE reads its LReg operand and
+    // writes Dst. Neither has an EnableDestIndex restriction on that operand.
+    Contract.Configuration.emplace();
+    break;
+  case RISCV::TTSFPENCC:
+  case RISCV::TTSFPCONFIGReset:
+  case RISCV::TTSFPNOP:
+    Contract.Configuration.emplace();
+    break;
+  default:
+    break;
+  }
   return Contract;
 }
 
@@ -830,4 +1069,51 @@ Expected<bool> RISCV::tensixSFPURegistersOverlap(uint32_t First,
   if (!FirstRegister || !SecondRegister)
     return invalid("invalid architectural register number");
   return MRI.regsOverlap(FirstRegister, SecondRegister);
+}
+
+Expected<TensixSFPURegisterGeometry>
+RISCV::getTensixSFPURegisterGeometry(uint32_t Number) {
+  const auto &MRI = registers();
+  MCRegister Register;
+  for (MCRegister Reg : MRI.getRegClass(RISCV::SFPRReadRegClassID))
+    if (registerNumber(Reg) == Number)
+      Register = Reg;
+  if (!Register)
+    return invalid("invalid architectural register number");
+  std::optional<TensixSFPURegisterGeometry> Geometry;
+  for (const auto &Entry : RISCVTensixRegisterGeometryTable) {
+    const auto &Class = MRI.getRegClass(Entry.ClassID);
+    if (!Class.contains(Register))
+      continue;
+    MVT Type(Entry.ValueType);
+    if (!Type.isFixedLengthVector() ||
+        Type.getFixedSizeInBits() != Class.getSizeInBits())
+      return invalid("native register class has unsupported geometry");
+    TensixSFPURegisterGeometry Current{Type.getVectorNumElements(),
+                                       uint32_t(Type.getScalarSizeInBits())};
+    if (Geometry && (Geometry->NumLanes != Current.NumLanes ||
+                     Geometry->BitsPerLane != Current.BitsPerLane))
+      return invalid("native register classes have incompatible geometry");
+    Geometry = Current;
+  }
+  if (!Geometry)
+    return invalid("native register geometry is unavailable");
+  return *Geometry;
+}
+
+Expected<TensixSFPURegisterContents>
+RISCV::getTensixSFPURegisterContents(uint32_t Number) {
+  auto Geometry = getTensixSFPURegisterGeometry(Number);
+  if (!Geometry)
+    return Geometry.takeError();
+  MCRegister Register = getTensixSFPURegister(Number);
+  auto Entry =
+      find_if(RISCVTensixRegisterContentsTable, [&](const auto &Entry) {
+        return Entry.RegisterID == Register.id();
+      });
+  if (Entry == std::end(RISCVTensixRegisterContentsTable))
+    return invalid("native register contents are unavailable");
+  return Entry->ImmutableInitialized
+             ? TensixSFPURegisterContents::ImmutableInitialized
+             : TensixSFPURegisterContents::Unknown;
 }

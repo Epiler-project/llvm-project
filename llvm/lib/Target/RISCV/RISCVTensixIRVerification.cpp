@@ -372,9 +372,10 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
   Attribute ExecutorAttr = F.getFnAttribute("tensix-executor");
   StringRef Executor = ExecutorAttr.isStringAttribute()
                            ? ExecutorAttr.getValueAsString() : StringRef();
-  bool UsesSFPU = llvm::any_of(instructions(F), [](const Instruction &I) {
+  bool UsesLegacySFPU = llvm::any_of(instructions(F), [](const Instruction &I) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);
-    return II && isTensixSFPUIntrinsic(II->getIntrinsicID());
+    return II && isTensixSFPUIntrinsic(II->getIntrinsicID()) &&
+           !isTensixBoundSFPUIntrinsic(II->getIntrinsicID());
   });
   for (Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
@@ -487,9 +488,10 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
       if (Mop && !cast<ConstantInt>(II->getArgOperand(First))->isZero())
         return invalid(F, "MOP replay slot must execute, not record");
     }
-    // StateID changes alter the meaning of subsequent SFPU instructions. Until
-    // a typed state propagation contract exists, admit only explicit state 0.
-    if (UsesSFPU && Info->IntrinsicID == Intrinsic::riscv_tt_setc16) {
+    // Legacy value lowering relies on state zero for compiler-created SFPU
+    // operations. Bound ingress preserves authored state changes and fixed
+    // operands; the field and definedness checks above still apply to it.
+    if (UsesLegacySFPU && Info->IntrinsicID == Intrinsic::riscv_tt_setc16) {
       const auto *Config = dyn_cast<ConstantInt>(II->getArgOperand(First + 1));
       const auto *Value = dyn_cast<ConstantInt>(II->getArgOperand(First));
       if (!Config || (Config->isZero() && (!Value || !Value->isZero())))
@@ -809,8 +811,12 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
     }
     return invalid(F, "call has no verified SFPU preservation ABI");
   }
-  if (Error E = verifyCCStack(F))
-    return std::move(E);
+  // Legacy value transformations require a balanced local CC stack. Bound
+  // instructions retain source-owned stack effects, including incoming state
+  // and unequal path depths; codegen must not infer or repair that lifecycle.
+  if (Legacy)
+    if (Error E = verifyCCStack(F))
+      return std::move(E);
   return Facts;
 }
 
