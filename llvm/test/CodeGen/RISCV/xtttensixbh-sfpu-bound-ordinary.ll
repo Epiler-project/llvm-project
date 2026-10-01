@@ -5,6 +5,8 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/valid.ll -o - | FileCheck %s --check-prefix=NATIVE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/unsafe-replay.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPLAY-REJECT
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 %t/unsafe-replay.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPLAY-REJECT
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/raw-bound-replay.ll -o - | FileCheck %s --check-prefix=RAW-REPLAY
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/raw-bound-replay.ll -o - | FileCheck %s --check-prefix=RAW-REPLAY
 ;
 ; A bound SFPU scope retains ordinary native issue, local dynamic instruction
 ; ports, complete MOP programming and ordinary scalar stack memory. GPR
@@ -149,17 +151,38 @@ define void @bound_with_sfpu_completion() "tensix-executor"="trisc1" {
   ret void
 }
 
-;--- unsafe-replay.ll
-; Explicit physical operands do not by themselves give an authored SFPU
-; recording a preservation ABI. Only the separately verified automatic SFPU
-; recording owner may admit that body.
-; REPLAY-REJECT: SFPU replay recording requires a typed SSA preservation ABI
+;--- raw-bound-replay.ll
+; The explicit replay normalizer now receives the local bound physical ABI.
+; This record-only body retains its one recorded word at both optimization
+; levels. Numerical execution effects and invalid raw ranges have independent
+; coverage in bound-explicit-replay-{record-only,invalid}.
 declare void @llvm.riscv.tt.replay(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.record.end()
 declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-define void @unsafe_bound_replay() "tensix-executor"="trisc2" {
+define void @raw_bound_replay() "tensix-executor"="trisc2" {
+; RAW-REPLAY-LABEL: raw_bound_replay:
+; RAW-REPLAY-NOT: .word
+; RAW-REPLAY: .word 0x10000044
+; RAW-REPLAY-NEXT: .word 0xf0002409
+; RAW-REPLAY-NEXT: ret
+; RAW-REPLAY-NOT: .word
   call void @llvm.riscv.tt.replay(i32 1, i32 0, i32 1, i32 0)
   call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.riscv.tt.replay.record.end()
+  ret void
+}
+
+; A replay recording that still carries the retired SFPU intrinsic ABI is
+; rejected before selection. The bound ordinary path must not silently infer
+; a virtual carrier or synthesize a copy/spill to make the recording legal.
+;--- unsafe-replay.ll
+; REPLAY-REJECT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfpencc
+declare void @llvm.riscv.tt.replay(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.riscv.tt.replay.record.end()
+declare void @llvm.riscv.tt.sfpencc(i32, i32)
+define void @unsafe_bound_replay() "tensix-executor"="trisc2" {
+  call void @llvm.riscv.tt.replay(i32 1, i32 0, i32 1, i32 0)
+  call void @llvm.riscv.tt.sfpencc(i32 0, i32 0)
   call void @llvm.riscv.tt.replay.record.end()
   ret void
 }

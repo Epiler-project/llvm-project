@@ -1,10 +1,9 @@
 ; RUN: split-file %s %t
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/eight.ll -o /dev/null
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/eight.ll -o /dev/null
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/nine.ll -o /dev/null 2>&1 | FileCheck %s
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 %t/nine.ll -o /dev/null 2>&1 | FileCheck %s
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 %t/fixed.ll -o /dev/null 2>&1 | FileCheck %s
-; CHECK: {{register allocation|register pressure}}
+; The selector still accepts authored SSA before the physical-ingress boundary.
+; The final compiler rejects all virtual SFPU values, independent of pressure;
+; that boundary diagnostic is covered by xtttensixbh-sfpu-physical-ingress.mir.
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/eight.ll -o /dev/null
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=finalize-isel %t/eight.ll -o /dev/null
 
 ;--- eight.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)

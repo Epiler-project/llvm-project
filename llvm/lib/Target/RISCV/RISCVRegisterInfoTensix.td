@@ -30,7 +30,10 @@ let Namespace = "RISCV" in {
 
 def SFPR : RISCVRegisterClass<[v32i32], 1024,
                              (add (sequence "TT_L%u", 0, 7))> {
+  // Physical native instructions use this class for register facts. No
+  // selector or allocator may create virtual SFPU values from it.
   let Size = 1024;
+  let isAllocatable = 0;
   let DecoderMethod = "DecodeTensixLReg";
 }
 def SFPCR : RISCVRegisterClass<[v32i32], 1024,

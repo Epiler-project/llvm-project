@@ -1,0 +1,58 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-sfpu-physical-ingress %t/virtual.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-sfpu-physical-ingress %t/scalar.mir -o - | FileCheck %s --check-prefix=SCALAR
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-sfpu-physical-ingress %t/bound.mir -o - | FileCheck %s --check-prefix=BOUND
+
+# The SFPU value path is retired. Producers must enter machine code with
+# physical SFPU/LReg operands; ordinary scalar virtual registers remain the
+# responsibility of the generic RISC-V allocator.
+# VIRTUAL: error: {{.*}}Tensix SFPU requires bound physical registers; virtual SFPU allocation is retired
+# SCALAR-LABEL: name: scalar_virtual
+# SCALAR: %0:gpr = COPY $x10
+# BOUND-LABEL: name: bound_physical
+# BOUND: $tt_l0 = TTSFPMOVAll $tt_c9,
+
+#--- virtual.mir
+--- |
+  define void @virtual_sfpr() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: virtual_sfpr
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    %0:sfpr = COPY $tt_l0
+    PseudoRET
+...
+
+#--- scalar.mir
+--- |
+  define void @scalar_virtual() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_virtual
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    %0:gpr = COPY $x10
+    PseudoRET
+...
+
+#--- bound.mir
+--- |
+  define void @bound_physical() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: bound_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

@@ -55,6 +55,9 @@ def int_riscv_tt_bound_sfpencc : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfppushc : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfppopc : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfpconfig_creg : TensixBoundIntrinsic<4>;
+// Authored LReg0 data, even-bit column mask, and mode 8. VD is fixed to 15;
+// this form neither initializes the source nor changes CC implicitly.
+def int_riscv_tt_bound_sfpconfig_lane : TensixBoundIntrinsic<3>;
 def int_riscv_tt_bound_sfpnop : TensixBoundIntrinsic<0>;
 def int_riscv_tt_bound_sfpcompc : TensixBoundIntrinsic<0>;
 def int_riscv_tt_bound_sfpconfig_reset : TensixBoundIntrinsic<0>;

@@ -43,12 +43,6 @@ RISCVMachineFunctionInfo::RISCVMachineFunctionInfo(const Function &F,
       continue;
     UsesTensixSFPU = true;
     UsesBoundTensixSFPU |= isTensixBoundSFPUIntrinsic(II->getIntrinsicID());
-    if (II->getIntrinsicID() != Intrinsic::riscv_tt_lreg_read &&
-        II->getIntrinsicID() != Intrinsic::riscv_tt_lreg_write)
-      continue;
-    const auto *Index = dyn_cast<ConstantInt>(II->getArgOperand(0));
-    if (Index && Index->getValue().ult(8))
-      TensixFixedLRegs |= 1u << Index->getZExtValue();
   }
 
   if (const auto *CFB = mdconst::extract_or_null<ConstantInt>(

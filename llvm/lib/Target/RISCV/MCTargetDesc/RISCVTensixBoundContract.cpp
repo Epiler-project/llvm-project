@@ -77,6 +77,8 @@ constexpr TensixBoundInstruction Instructions[] = {
     {Intrinsic::riscv_tt_bound_sfppopc, RISCV::PseudoTTBoundSFPPOPC, 2},
     {Intrinsic::riscv_tt_bound_sfpconfig_creg,
      RISCV::PseudoTTBoundSFPCONFIGCReg, 4},
+    {Intrinsic::riscv_tt_bound_sfpconfig_lane,
+     RISCV::PseudoTTBoundSFPCONFIGLane, 3},
     {Intrinsic::riscv_tt_bound_sfpnop, RISCV::PseudoTTBoundSFPNOP, 0},
     {Intrinsic::riscv_tt_bound_sfpcompc, RISCV::PseudoTTBoundSFPCOMPC, 0},
     {Intrinsic::riscv_tt_bound_sfpconfig_reset,
@@ -405,6 +407,16 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
       return invalid("invalid fixed writable CReg operand");
     break;
   }
+  case RISCV::PseudoTTBoundSFPCONFIGLane: {
+    Select(RISCV::TTSFPCONFIGLane, {1, 2});
+    auto Stage = inClass(instructions().get(Map.Native.Opcode).implicit_uses(),
+                         RISCV::SFPRRegClassID);
+    if (Stage.size() != 1)
+      return invalid(
+          "lane configuration descriptor lacks its unique stage input");
+    Map.Fixed.push_back({0, Stage[0], Role::FixedGroupRead, Access::Read});
+    break;
+  }
   case RISCV::PseudoTTBoundSFPNOP:
     Select(RISCV::TTSFPNOP, {});
     break;
@@ -647,6 +659,22 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
       Contract.Transfer.Kind = TensixSFPUTransferKind::LaneWise;
       Contract.Transfer.Inputs.push_back({2, 0xffffffffu});
     }
+  } else if (Native.Opcode == RISCV::TTSFPSHFT2 &&
+             Args[4].Kind == ValueKind::Constant && Args[4].Constant == 3) {
+    // SUBVEC_SHFLROR1 reads the pre-instruction VC snapshot and rotates
+    // within each group of eight lanes. LaneEnabled selects destinations;
+    // a disabled source lane can still supply another active destination.
+    // Mode 4 remains a legal native instruction without this transfer summary.
+    Contract.Transfer = {TensixSFPUTransferKind::LanePermutation,
+                         0u,
+                         0xffffffffu,
+                         0xffffffffu,
+                         true,
+                         true,
+                         true,
+                         true};
+    for (unsigned Lane = 0; Lane != 32; ++Lane)
+      Contract.Transfer.SourceLanes.push_back((Lane & 7) ? Lane - 1 : Lane + 7);
   } else if (Native.Opcode == RISCV::TTSFPADD ||
              Native.Opcode == RISCV::TTSFPMUL) {
     // Direct MAD-unit forms read both arithmetic inputs in active lanes.
@@ -1024,6 +1052,7 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     break;
   case RISCV::TTSFPENCC:
   case RISCV::TTSFPCONFIGReset:
+  case RISCV::TTSFPCONFIGLane:
   case RISCV::TTSFPNOP:
     Contract.Configuration.emplace();
     break;

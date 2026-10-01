@@ -78,9 +78,11 @@ add_llvm_target(RISCVCodeGen
   RISCVTensixLowering.cpp
   RISCVTensixBoundLowering.cpp
   RISCVTensixBoundVerification.cpp
+  RISCVTensixSFPUPhysicalIngress.cpp
   RISCVTensixReplay.cpp
+  RISCVTensixExplicitReplay.cpp
+  RISCVTensixReplayTemplate.cpp
   RISCVTensixReplaySelection.cpp
-  RISCVTensixRegisterAllocation.cpp
   RISCVVectorMaskDAGMutation.cpp
   RISCVVectorPeephole.cpp
   RISCVVLOptimizer.cpp

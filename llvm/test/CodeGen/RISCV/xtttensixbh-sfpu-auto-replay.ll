@@ -1,13 +1,12 @@
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=riscv-tensix-hazards,1 %s -o - | FileCheck %s --check-prefix=SELECT
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=riscv-tensix-hazards,1 %s -o - | FileCheck %s --check-prefix=SELECT
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -riscv-tensix-enable-replay-selection=false -stop-after=riscv-tensix-hazards,1 %s -o - | FileCheck %s --check-prefix=PLAIN
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -riscv-tensix-enable-replay-selection=false -stop-after=riscv-tensix-hazards,1 %s -o - | FileCheck %s --check-prefix=PLAIN
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -filetype=obj %s -o /dev/null
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %s -o /dev/null
+; Legacy LLVM SSA cannot enter automatic replay: physical SFPU operands must
+; be authored upstream. Physical replay selection is covered by
+; xtttensixbh-sfpu-auto-replay.mir and the bound-float replay tests.
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
+; REJECT: Tensix SFPU requires bound physical registers
 
-; This is authored straight-line arithmetic, not an unrolled source loop.
-; Only the machine selector can create the typed automatic replay pseudo.
-; The ordinary explicit-recording rejection remains in replay-invalid.ll.
+; This is retained as a negative compatibility test for the retired virtual
+; SFPU path. It must never be used as evidence for physical replay selection.
 ; Both inputs are independent Dst values. The original full-lane value remains
 ; live after the masked arithmetic, so replay must preserve its allocation.
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
@@ -23,45 +22,6 @@ declare void @llvm.riscv.tt.sfppopc(i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.sfpstore(<32 x i32>, i32, i32 immarg, i32 immarg)
 
 define void @masked_arithmetic_with_snapshot() "tensix-executor"="trisc1" {
-; SELECT-LABEL: name: masked_arithmetic_with_snapshot
-; SELECT: TTSFPLOAD
-; SELECT: TTSFPLOAD
-; SELECT: TTSFPPUSHC
-; SELECT: TTSFPSETCCNE
-; SELECT: PseudoTTSFPUReplay 1, 1, 6, 0,
-; SELECT-NEXT: {{.*}} = TTSFPIADD
-; SELECT-NEXT: {{.*}} = TTSFPXOR
-; SELECT-NEXT: {{.*}} = TTSFPAND
-; SELECT-NEXT: {{.*}} = TTSFPOR
-; SELECT-NEXT: {{.*}} = TTSFPXOR
-; SELECT-NEXT: {{.*}} = TTSFPIADD
-; SELECT-NEXT: PseudoTTReplayRecordEnd
-; SELECT-NEXT: TTSFPNOP
-; SELECT-NEXT: PseudoTTSFPUReplay 0, 0, 6, 0,
-; SELECT-NEXT: TTSFPNOP
-; SELECT-NEXT: TTSFPPOPC
-; SELECT: TTSFPSTORE {{.*}}, 2, 0, 4,
-; SELECT: TTSFPSTORE {{.*}}, 3, 0, 4,
-; SELECT: PseudoRET
-; PLAIN-LABEL: name: masked_arithmetic_with_snapshot
-; PLAIN-NOT: PseudoTTSFPUReplay
-; PLAIN: TTSFPSETCCNE
-; PLAIN: TTSFPIADD
-; PLAIN-NEXT: {{.*}} = TTSFPXOR
-; PLAIN-NEXT: {{.*}} = TTSFPAND
-; PLAIN-NEXT: {{.*}} = TTSFPOR
-; PLAIN-NEXT: {{.*}} = TTSFPXOR
-; PLAIN-NEXT: {{.*}} = TTSFPIADD
-; PLAIN-NEXT: {{.*}} = TTSFPIADD
-; PLAIN-NEXT: {{.*}} = TTSFPXOR
-; PLAIN-NEXT: {{.*}} = TTSFPAND
-; PLAIN-NEXT: {{.*}} = TTSFPOR
-; PLAIN-NEXT: {{.*}} = TTSFPXOR
-; PLAIN-NEXT: {{.*}} = TTSFPIADD
-; PLAIN-NEXT: TTSFPPOPC
-; PLAIN: TTSFPSTORE {{.*}}, 2, 0, 4,
-; PLAIN: TTSFPSTORE {{.*}}, 3, 0, 4,
-; PLAIN: PseudoRET
   call void @llvm.riscv.tt.sfpencc(i32 3, i32 10)
   %zero = call <32 x i32> @llvm.riscv.tt.creg.read(i32 9)
   %old = call <32 x i32> @llvm.riscv.tt.sfpload(<32 x i32> %zero, i32 0, i32 0, i32 4)

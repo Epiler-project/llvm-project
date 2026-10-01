@@ -1,0 +1,135 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/partial-safe.mir -o %t/partial-safe.normalized.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/partial-safe.normalized.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/partial-invalid.mir -o %t/partial-invalid.normalized.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/partial-invalid.normalized.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=INTERNAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/partial-invalid.normalized.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=INTERNAL
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/record-only.mir -o %t/record-only.normalized.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/record-only.normalized.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=BOUNDARY
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/record-only.normalized.mir -o %t/record-only.repaired.mir
+# RUN: FileCheck %s --check-prefix=RECORD-ONLY < %t/record-only.repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-bound-verify,riscv-tensix-hazards %t/record-only.repaired.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/record-and-execute.mir -o %t/record-and-execute.normalized.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/record-and-execute.normalized.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=BOUNDARY
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/record-and-execute.normalized.mir -o %t/record-and-execute.repaired.mir
+# RUN: FileCheck %s --check-prefix=RECORD-EXECUTE < %t/record-and-execute.repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-bound-verify,riscv-tensix-hazards %t/record-and-execute.repaired.mir -o /dev/null
+#
+# The registered run-pass instance verifies. The legacy pipeline's first
+# hazards instance repairs, selected with start-before/stop-after as in the
+# existing SFPU hazard tests. Normalize symbolic native MIR first, so no test
+# hardcodes private opcode or physical-register numbers in recorded payloads.
+#
+# Each original recording in the partial-overwrite pair is internally safe:
+# slots5..6 are MAD,NOP, then slot6 becomes IADD. Executing only slot6 is safe.
+# Executing slots5..6 composes MAD,IADD, which needs an authored internal gap.
+# Both verify and repair must reject that selected sequence. Repair must not
+# insert an extra captured word or change its declared length.
+# INTERNAL: explicit SFPU replay template requires an authored hazard gap
+# BOUNDARY: unresolved Tensix SFPU MAD to IADD destination hazard
+#
+# A NOP captured record-only must not clear the earlier executing MAD. The
+# one required executing NOP belongs after the end marker, before IADD.
+# RECORD-ONLY-LABEL: name: record_only_keeps_pending
+# RECORD-ONLY: $tt_l0 = TTSFPMAD
+# RECORD-ONLY-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 5,
+# RECORD-ONLY-NEXT: PseudoTTSFPURecordWord
+# RECORD-ONLY-NEXT: PseudoTTReplayRecordEnd
+# RECORD-ONLY-NEXT: TTSFPNOP
+# RECORD-ONLY-NEXT: $tt_l0 = TTSFPIADD
+# RECORD-ONLY-NEXT: PseudoRET
+#
+# A record-and-execute body really consumes L0. Its entry gap must precede
+# the header, so the recorded body still contains exactly its one IADD.
+# RECORD-EXECUTE-LABEL: name: record_and_execute_entry_gap
+# RECORD-EXECUTE: $tt_l0 = TTSFPMAD
+# RECORD-EXECUTE-NEXT: TTSFPNOP
+# RECORD-EXECUTE-NEXT: PseudoTTExplicitSFPUReplay 1, 1, 1, 7,
+# RECORD-EXECUTE-NEXT: $tt_l0 = TTSFPIADD
+# RECORD-EXECUTE-NEXT: PseudoTTReplayRecordEnd
+# RECORD-EXECUTE-NEXT: PseudoRET
+
+#--- partial-safe.mir
+--- |
+  define void @partial_safe_slice() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: partial_safe_slice
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- partial-invalid.mir
+--- |
+  define void @partial_composed_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: partial_composed_hazard
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- record-only.mir
+--- |
+  define void @record_only_keeps_pending() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_only_keeps_pending
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- record-and-execute.mir
+--- |
+  define void @record_and_execute_entry_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_and_execute_entry_gap
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 1, 1, 7, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

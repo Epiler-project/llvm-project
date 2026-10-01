@@ -11,6 +11,45 @@ using namespace llvm;
 using namespace llvm::RISCV;
 
 namespace {
+TEST(RISCVTensixTransfer, RotateKeepsMaskedBitPreservingTransfer) {
+  auto Contract =
+      getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfpshft2,
+                                 {{TensixBoundValueKind::Constant, 0},
+                                  {TensixBoundValueKind::Constant, 0},
+                                  {TensixBoundValueKind::Constant, 1},
+                                  {TensixBoundValueKind::Constant, 0},
+                                  {TensixBoundValueKind::Constant, 3}});
+  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  const auto &Facts = Contract->getTransferFacts();
+  EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LanePermutation);
+  EXPECT_EQ(Facts.SourceLanes, (SmallVector<uint32_t, 0>{
+                                   7,  0,  1,  2,  3,  4,  5,  6,  15, 8,  9,
+                                   10, 11, 12, 13, 14, 23, 16, 17, 18, 19, 20,
+                                   21, 22, 31, 24, 25, 26, 27, 28, 29, 30}));
+  EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
+  EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
+  EXPECT_EQ(Facts.DemandedOldBits, 0u);
+  EXPECT_TRUE(Facts.Inputs.empty());
+  EXPECT_TRUE(Facts.RequiresLaneEnable);
+  EXPECT_TRUE(Facts.PreservesInactiveLanes);
+  EXPECT_TRUE(Facts.RequiresConditionState);
+  EXPECT_TRUE(Facts.RequiresRowMaskState);
+}
+
+TEST(RISCVTensixTransfer, ShiftModeRemainsLegalWithoutPermutationSummary) {
+  auto Contract =
+      getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfpshft2,
+                                 {{TensixBoundValueKind::Constant, 6},
+                                  {TensixBoundValueKind::Constant, 6},
+                                  {TensixBoundValueKind::Constant, 5},
+                                  {TensixBoundValueKind::Constant, 0},
+                                  {TensixBoundValueKind::Constant, 4}});
+  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  EXPECT_EQ(Contract->getTransferFacts().Kind,
+            TensixSFPUTransferKind::Unsupported);
+  EXPECT_TRUE(Contract->getTransferFacts().SourceLanes.empty());
+}
+
 class RISCVTensixFloatBinaryTransferTest
     : public testing::TestWithParam<std::tuple<Intrinsic::ID, int64_t>> {
 protected:

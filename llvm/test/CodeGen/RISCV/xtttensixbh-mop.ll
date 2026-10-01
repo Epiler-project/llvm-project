@@ -42,3 +42,31 @@ define void @mop_template() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.mop(i32 0, i32 0, i32 1)
   ret void
 }
+
+; A cleared slot must contain the architectural NOP word, not zero. MOP
+; template 1 recognizes only opcode 0x02 as disabling its second loop slot.
+; Configuration stores receive raw 0x02000000, not rotated 0x08000000.
+define void @mop_clear_nop() "tensix-executor"="trisc1" {
+; CHECK-LABEL: mop_clear_nop:
+; CHECK: lui [[CLEAR_WORD:[a-z0-9]+]], 8192
+; CHECK-NEXT: lui [[CLEAR_ADDR:[a-z0-9]+]], 1047424
+; CHECK-NEXT: sw [[CLEAR_WORD]], 24([[CLEAR_ADDR]])
+; CHECK-NEXT: ret
+; ISEL-LABEL: name: mop_clear_nop
+; ISEL: PseudoTTMOPClear 6
+  call void @llvm.riscv.tt.mop.clear(i32 6)
+  ret void
+}
+
+; Explicit NOP programming must have the same configuration payload.
+define void @mop_explicit_nop() "tensix-executor"="trisc1" {
+; CHECK-LABEL: mop_explicit_nop:
+; CHECK: lui [[NOP_WORD:[a-z0-9]+]], 8192
+; CHECK-NEXT: lui [[NOP_ADDR:[a-z0-9]+]], 1047424
+; CHECK-NEXT: sw [[NOP_WORD]], 24([[NOP_ADDR]])
+; CHECK-NEXT: ret
+; ISEL-LABEL: name: mop_explicit_nop
+; ISEL: PseudoTTNOPMop 6
+  call void @llvm.riscv.tt.nop.mop(i32 6)
+  ret void
+}

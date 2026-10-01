@@ -6,6 +6,7 @@
 #include "RISCV.h"
 #include "RISCVTargetMachine.h"
 #include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixReplay.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -38,63 +39,32 @@
 using namespace llvm;
 
 bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
-  if (isTensixBoundSFPUIntrinsic(ID))
-    return true;
-  switch (ID) {
-  case Intrinsic::riscv_tt_sfparecip:
-  case Intrinsic::riscv_tt_sfpexexp:
-  case Intrinsic::riscv_tt_sfpexman:
-  case Intrinsic::riscv_tt_sfpabs:
-  case Intrinsic::riscv_tt_sfplz:
-  case Intrinsic::riscv_tt_sfpcast:
-  case Intrinsic::riscv_tt_sfpsetexp_i:
-  case Intrinsic::riscv_tt_sfpsetexp_v:
-  case Intrinsic::riscv_tt_sfpsetman_i:
-  case Intrinsic::riscv_tt_sfpsetman_v:
-  case Intrinsic::riscv_tt_sfpsetsgn_i:
-  case Intrinsic::riscv_tt_sfpsetsgn_v:
-  case Intrinsic::riscv_tt_sfpand:
-  case Intrinsic::riscv_tt_sfpor:
-  case Intrinsic::riscv_tt_sfpxor:
-  case Intrinsic::riscv_tt_sfpnot:
-  case Intrinsic::riscv_tt_sfpiadd_i:
-  case Intrinsic::riscv_tt_sfpshft_i:
-  case Intrinsic::riscv_tt_sfpshft_v:
-  case Intrinsic::riscv_tt_sfpshft2:
-  case Intrinsic::riscv_tt_sfpstochrnd_i:
-  case Intrinsic::riscv_tt_sfpstochrnd_v:
-  case Intrinsic::riscv_tt_sfplut:
-  case Intrinsic::riscv_tt_sfpswap:
-  case Intrinsic::riscv_tt_sfptransp:
-  case Intrinsic::riscv_tt_sfploadi:
-  case Intrinsic::riscv_tt_sfpload:
-  case Intrinsic::riscv_tt_sfpstore:
-  case Intrinsic::riscv_tt_sfpadd:
-  case Intrinsic::riscv_tt_sfpmad:
-  case Intrinsic::riscv_tt_sfpmul:
-  case Intrinsic::riscv_tt_sfpiadd:
-  case Intrinsic::riscv_tt_sfpmov:
-  case Intrinsic::riscv_tt_lreg_read:
-  case Intrinsic::riscv_tt_lreg_write:
-  case Intrinsic::riscv_tt_creg_read:
-  case Intrinsic::riscv_tt_sfpencc:
-  case Intrinsic::riscv_tt_sfpsetcc:
-  case Intrinsic::riscv_tt_sfppushc:
-  case Intrinsic::riscv_tt_sfppopc:
-  case Intrinsic::riscv_tt_sfpnop:
-  case Intrinsic::riscv_tt_sfpcompc:
-  case Intrinsic::riscv_tt_sfpconfig_creg:
-  case Intrinsic::riscv_tt_sfpconfig_reset:
-    return true;
-  default:
+  return isTensixBoundSFPUIntrinsic(ID);
+}
+
+bool llvm::isRetiredTensixSFPUIntrinsicName(StringRef Name) {
+  if (!Name.starts_with("llvm.riscv.tt."))
     return false;
-  }
+  // The explicit bound ABI is the only supported SFPU call family.  All
+  // historical vector-carrier and implicit LReg/CReg forms share these
+  // prefixes; classify them before intrinsic selection so textual IR cannot
+  // silently become an external call or a legacy selector input.
+  if (Name.starts_with("llvm.riscv.tt.bound."))
+    return false;
+  return Name.starts_with("llvm.riscv.tt.sfp") ||
+         Name.starts_with("llvm.riscv.tt.lreg.") ||
+         Name.starts_with("llvm.riscv.tt.creg.");
 }
 
 bool llvm::RISCV::isTensixIntrinsic(Intrinsic::ID ID) {
   return isTensixSFPUIntrinsic(ID) || getTensixInstructionByIntrinsic(ID) ||
          ID == Intrinsic::riscv_tt_dependent_use ||
          ID == Intrinsic::riscv_tt_mop_clear ||
+         ID == Intrinsic::riscv_tt_mop_control_write ||
+         ID == Intrinsic::riscv_tt_replay_template_begin ||
+         ID == Intrinsic::riscv_tt_replay_template_end ||
+         ID == Intrinsic::riscv_tt_replay_template_execute ||
+         ID == Intrinsic::riscv_tt_replay_template_mop ||
          ID == Intrinsic::riscv_tt_replay_record_end;
 }
 
@@ -139,30 +109,6 @@ Error range(const IntrinsicInst &II, unsigned Index, uint64_t Lower,
   return Error::success();
 }
 
-Error signedRange(const IntrinsicInst &II, unsigned Index, int64_t Lower,
-                  int64_t Upper) {
-  const auto *CI = dyn_cast<ConstantInt>(II.getArgOperand(Index));
-  if (!CI || CI->getSExtValue() < Lower || CI->getSExtValue() > Upper)
-    return invalid(*II.getFunction(), "signed immediate operand " + Twine(Index) +
-        " must be in [" + Twine(Lower) + ", " + Twine(Upper) + "]");
-  return Error::success();
-}
-
-Error mode(const IntrinsicInst &II, unsigned Index,
-           std::initializer_list<uint64_t> Modes) {
-  auto Value = immediate(II, Index);
-  if (!Value)
-    return Value.takeError();
-  if (!llvm::is_contained(Modes, *Value))
-    return invalid(*II.getFunction(), "unsupported instruction mode " +
-                                         Twine(*Value) + " for '" +
-                                         II.getCalledFunction()->getName() +
-                                         "'");
-  return Error::success();
-}
-
-// Prove definedness separately from the address range. Range information alone
-// cannot distinguish a ten-bit value from a ten-bit poison value.
 static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
   if (!I.getType()->isIntegerTy() ||
       !(isa<PHINode>(I) || isa<BinaryOperator>(I) || isa<CastInst>(I) ||
@@ -366,17 +312,131 @@ ConstantRange refineWithRelatedInductions(const SCEV *Expr,
   return Bounds;
 }
 
+// SCEV can bound an induction and the operands of a bitwise expression while
+// representing the expression itself as unknown. LVI alone need not recover
+// the induction's bounds. Compose their facts at this issuing instruction,
+// without expanding PHI backedges or relying on later IR optimization.
+ConstantRange refineWithScalarExpressions(Value *Root, ConstantRange Bounds,
+                                         IntrinsicInst &Use,
+                                         ScalarEvolution &SE,
+                                         LazyValueInfo &LVI) {
+  constexpr unsigned NodeBudget = 128;
+  unsigned Remaining = NodeBudget;
+  // This cache is local to one issuing use. Path constraints must not be
+  // reused at another instruction or on a different incoming edge.
+  DenseMap<Value *, ConstantRange> Ranges;
+  std::function<ConstantRange(Value *)> Visit = [&](Value *V) -> ConstantRange {
+    auto It = Ranges.find(V);
+    if (It != Ranges.end())
+      return It->second;
+    ConstantRange Unknown =
+        ConstantRange::getFull(V->getType()->getIntegerBitWidth());
+    if (!Remaining)
+      return Unknown;
+    --Remaining;
+    // A revisited active node is conservative even if the supported scalar
+    // expression set is extended in the future. PHIs are leaves below.
+    Ranges.try_emplace(V, Unknown);
+    ConstantRange Result = SE.getUnsignedRange(SE.getSCEV(V)).intersectWith(
+        LVI.getConstantRange(V, &Use, /*UndefAllowed=*/false),
+        ConstantRange::Unsigned);
+    if (auto *BO = dyn_cast<BinaryOperator>(V)) {
+      switch (BO->getOpcode()) {
+      case Instruction::Add:
+      case Instruction::Sub:
+      case Instruction::Mul:
+      case Instruction::Shl:
+      case Instruction::LShr:
+      case Instruction::AShr:
+      case Instruction::And:
+      case Instruction::Or:
+      case Instruction::Xor: {
+        ConstantRange Left = Visit(BO->getOperand(0));
+        ConstantRange Right = Visit(BO->getOperand(1));
+        // Use modular transfer, not the overload that assumes arithmetic
+        // flags. Definedness, including shift validity and poison, remains
+        // the independent obligation checked before this range refinement.
+        Result = Result.intersectWith(Left.binaryOp(BO->getOpcode(), Right),
+                                      ConstantRange::Unsigned);
+        break;
+      }
+      default:
+        break;
+      }
+    }
+    Ranges.find(V)->second = Result;
+    return Result;
+  };
+  return Bounds.intersectWith(Visit(Root), ConstantRange::Unsigned);
+}
+
+Error verifyReplayTemplates(Function &F, DominatorTree &DT) {
+  DenseMap<uint32_t, const IntrinsicInst *> Producers, Ends;
+  SmallVector<std::pair<uint32_t, const IntrinsicInst *>, 4> Executions;
+  for (const BasicBlock &BB : F) {
+    const IntrinsicInst *Active = nullptr;
+    uint32_t ActiveID = 0;
+    for (const Instruction &I : BB) {
+      const auto *II = dyn_cast<IntrinsicInst>(&I);
+      auto Kind = II ? II->getIntrinsicID() : Intrinsic::not_intrinsic;
+      if (Kind == Intrinsic::riscv_tt_replay_template_begin ||
+          Kind == Intrinsic::riscv_tt_replay_template_end ||
+          Kind == Intrinsic::riscv_tt_replay_template_execute ||
+          Kind == Intrinsic::riscv_tt_replay_template_mop) {
+        auto Identity = immediate(*II, 0);
+        if (!Identity)
+          return Identity.takeError();
+        uint32_t ID = *Identity;
+        if (Kind == Intrinsic::riscv_tt_replay_template_begin) {
+          if (Active || !Producers.try_emplace(ID, II).second)
+            return invalid(F, "replay template requires one non-nested producer");
+          Active = II;
+          ActiveID = ID;
+        } else if (Kind == Intrinsic::riscv_tt_replay_template_end) {
+          if (!Active || ActiveID != ID)
+            return invalid(F, "replay template end does not match its producer");
+          Ends.try_emplace(ID, II);
+          Active = nullptr;
+        } else {
+          if (Active)
+            return invalid(F, "replay template cannot contain an execute or MOP reference");
+          Executions.emplace_back(ID, II);
+        }
+        continue;
+      }
+      if (Active &&
+          (I.isTerminator() || (isa<CallBase>(I) && !II) ||
+           (II && !RISCV::isTensixIntrinsic(Kind) && I.mayHaveSideEffects()) ||
+           (!II && I.mayReadOrWriteMemory())))
+        return invalid(F, "replay template body cannot cross scalar control or "
+                          "observable memory/call effects");
+    }
+    if (Active)
+      return invalid(F, "replay template requires an end in its basic block");
+  }
+  for (auto [ID, Execute] : Executions) {
+    auto End = Ends.find(ID);
+    if (End == Ends.end() || !DT.dominates(End->second, Execute))
+      return invalid(F, "replay template execute requires a dominating record");
+  }
+  return Error::success();
+}
+
 Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
                   AssumptionCache &AC, DominatorTree &DT) {
+  if (Error E = verifyReplayTemplates(F, DT))
+    return E;
   LazyValueInfo LVI(&F, &AC);
+  for (Instruction &I : instructions(F)) {
+    auto *Call = dyn_cast<CallBase>(&I);
+    const Function *Callee = Call ? Call->getCalledFunction() : nullptr;
+    if (Callee && isRetiredTensixSFPUIntrinsicName(Callee->getName()))
+      return invalid(F, "unsupported Tensix intrinsic ABI: " +
+                             Callee->getName());
+  }
   Attribute ExecutorAttr = F.getFnAttribute("tensix-executor");
   StringRef Executor = ExecutorAttr.isStringAttribute()
                            ? ExecutorAttr.getValueAsString() : StringRef();
-  bool UsesLegacySFPU = llvm::any_of(instructions(F), [](const Instruction &I) {
-    const auto *II = dyn_cast<IntrinsicInst>(&I);
-    return II && isTensixSFPUIntrinsic(II->getIntrinsicID()) &&
-           !isTensixBoundSFPUIntrinsic(II->getIntrinsicID());
-  });
   for (Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !RISCV::isTensixIntrinsic(II->getIntrinsicID()))
@@ -407,6 +467,41 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
     }
     if (ID == Intrinsic::riscv_tt_replay_record_end)
       continue;
+    if (ID == Intrinsic::riscv_tt_replay_template_begin) {
+      if (Error E = range(*II, 1, 0, 1))
+        return E;
+      if (Error E = range(*II, 2, 0, 1))
+        return E;
+      auto Placement = immediate(*II, 2);
+      auto Start = immediate(*II, 3);
+      if (!Placement)
+        return Placement.takeError();
+      if (!Start)
+        return Start.takeError();
+      if ((*Placement == 0 && *Start != 0) || *Start >= TensixReplaySlotCount)
+        return invalid(F, "replay template requires canonical automatic "
+                          "placement or a valid fixed start");
+      continue;
+    }
+    if (ID == Intrinsic::riscv_tt_replay_template_end ||
+        ID == Intrinsic::riscv_tt_replay_template_execute)
+      continue;
+    if (ID == Intrinsic::riscv_tt_replay_template_mop) {
+      if (Executor == "brisc")
+        return invalid(F, "MOP slot programming requires a TRISC executor");
+      if (Error E = range(*II, 1, 2, 8))
+        return E;
+      continue;
+    }
+    if (ID == Intrinsic::riscv_tt_mop_control_write) {
+      if (Executor == "brisc")
+        return invalid(F, "MOP control programming requires a TRISC executor");
+      if (Error E = range(*II, 0, 0, 1))
+        return E;
+      if (!isDefinedOffset(II->getArgOperand(1), *II, SE, AC, DT))
+        return invalid(F, "MOP control value must be defined and non-poison");
+      continue;
+    }
     if (ID == Intrinsic::riscv_tt_mop_clear) {
       if (Executor == "brisc")
         return invalid(F, "MOP slot programming requires a TRISC executor");
@@ -465,6 +560,10 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
           Bounds.getUnsignedMax().ugt(Field->MaxValue))
         Bounds = refineWithRelatedInductions(FieldValue, Bounds, *II, SE, LVI,
                                               AC, DT);
+      if (!Bounds.isEmptySet() &&
+          Bounds.getUnsignedMax().ugt(Field->MaxValue))
+        Bounds = refineWithScalarExpressions(const_cast<Value *>(V), Bounds,
+                                             *II, SE, LVI);
       if (Bounds.isEmptySet() ||
           (Bounds.getUnsignedMax().ugt(Field->MaxValue) &&
            !SE.isKnownPredicateAt(
@@ -488,15 +587,6 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
       if (Mop && !cast<ConstantInt>(II->getArgOperand(First))->isZero())
         return invalid(F, "MOP replay slot must execute, not record");
     }
-    // Legacy value lowering relies on state zero for compiler-created SFPU
-    // operations. Bound ingress preserves authored state changes and fixed
-    // operands; the field and definedness checks above still apply to it.
-    if (UsesLegacySFPU && Info->IntrinsicID == Intrinsic::riscv_tt_setc16) {
-      const auto *Config = dyn_cast<ConstantInt>(II->getArgOperand(First + 1));
-      const auto *Value = dyn_cast<ConstantInt>(II->getArgOperand(First));
-      if (!Config || (Config->isZero() && (!Value || !Value->isZero())))
-        return invalid(F, "Tensix SFPU StateID configuration must be static zero");
-    }
   }
   return Error::success();
 }
@@ -504,235 +594,34 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
 Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
                       AssumptionCache &AC, DominatorTree &DT,
                       TensixSFPUFunctionFacts &Facts) {
-  if (isTensixBoundSFPUIntrinsic(II.getIntrinsicID())) {
-    if (Error E = verifyTensixBoundSFPUIntrinsic(II))
-      return E;
-    if (auto Index = getTensixBoundDstOffsetOperand(II.getIntrinsicID())) {
-      Value *OffsetValue = II.getArgOperand(*Index);
-      if (!isDefinedOffset(OffsetValue, II, SE, AC, DT))
-        return invalid(*II.getFunction(),
-                       "bound Dst offset must be defined and non-poison");
-      const SCEV *Offset = SE.getSCEV(OffsetValue);
-      if (SE.getUnsignedRange(Offset).getUnsignedMax().ugt(1023))
-        return invalid(*II.getFunction(),
-                       "bound Dst offset must be proven in [0, 1023]");
-    }
-    return Error::success();
-  }
-  switch (II.getIntrinsicID()) {
-  case Intrinsic::riscv_tt_sfparecip:
-    return mode(II, 2, {0, 1, 2});
-  case Intrinsic::riscv_tt_sfpexexp:
-    return mode(II, 2, {0, 1, 2, 3, 8, 9, 10, 11});
-  case Intrinsic::riscv_tt_sfpexman:
-  case Intrinsic::riscv_tt_sfpabs:
-    return mode(II, 2, {0, 1});
-  case Intrinsic::riscv_tt_sfplz:
-    return mode(II, 2, {0, 2, 4, 6, 8, 10, 12, 14});
-  case Intrinsic::riscv_tt_sfpcast:
-    return range(II, 2, 0, 3);
-  case Intrinsic::riscv_tt_sfpsetexp_i:
-    if (Error E = range(II, 2, 0, 255))
-      return E;
-    return mode(II, 3, {1, 3});
-  case Intrinsic::riscv_tt_sfpsetman_i:
-    if (Error E = range(II, 2, 0, 4095))
-      return E;
-    return mode(II, 3, {1});
-  case Intrinsic::riscv_tt_sfpsetsgn_i:
-    if (Error E = range(II, 2, 0, 1))
-      return E;
-    return mode(II, 3, {1});
-  case Intrinsic::riscv_tt_sfpsetexp_v:
-    return mode(II, 3, {0, 2});
-  case Intrinsic::riscv_tt_sfpsetman_v:
-  case Intrinsic::riscv_tt_sfpsetsgn_v:
-    return mode(II, 3, {0});
-  case Intrinsic::riscv_tt_sfpand:
-  case Intrinsic::riscv_tt_sfpor:
-  case Intrinsic::riscv_tt_sfpxor:
-  case Intrinsic::riscv_tt_sfpnot:
-  case Intrinsic::riscv_tt_sfptransp:
-    return Error::success();
-  case Intrinsic::riscv_tt_sfpiadd_i:
-    if (Error E = signedRange(II, 1, -2048, 2047))
-      return E;
-    return mode(II, 2, {1, 5, 9});
-  case Intrinsic::riscv_tt_sfpshft_i:
-    if (Error E = signedRange(II, 1, -2048, 2047))
-      return E;
-    return mode(II, 2, {1, 3, 5, 7});
-  case Intrinsic::riscv_tt_sfpshft_v:
-    return mode(II, 2, {0, 2});
-  case Intrinsic::riscv_tt_sfpshft2:
-    if (Error E = range(II, 2, 0, 0))
-      return E;
-    return mode(II, 3, {3, 4});
-  case Intrinsic::riscv_tt_sfpstochrnd_i: {
-    if (Error E = range(II, 3, 0, 7))
-      return E;
-    if (Error E = range(II, 4, 0, 2))
-      return E;
-    auto Mod = cast<ConstantInt>(II.getArgOperand(3))->getZExtValue();
-    return range(II, 2, 0, Mod == 4 || Mod == 5 ? 31 : 0);
-  }
-  case Intrinsic::riscv_tt_sfpstochrnd_v:
-    if (Error E = mode(II, 3, {4, 5}))
-      return E;
-    return range(II, 4, 0, 2);
-  case Intrinsic::riscv_tt_sfplut:
-    return mode(II, 5, {0, 4});
-  case Intrinsic::riscv_tt_sfpswap:
-    return range(II, 2, 0, 9);
-  case Intrinsic::riscv_tt_sfploadi:
-    if (Error E = range(II, 1, 0, 65535))
-      return E;
-    return mode(II, 2, {0, 1, 2, 4, 8, 10});
-  case Intrinsic::riscv_tt_sfpload:
-  case Intrinsic::riscv_tt_sfpstore: {
-    if (Error E = range(II, 2, 0, 7))
-      return E;
-    // SRCB format 0 selects the configured SFPU destination format. Raw
-    // format 4 preserves payload bits required by Dst copies. Neither may be
-    // collapsed to FP32 format 3: their conversion semantics differ.
-    if (Error E = mode(II, 3, {0, 2, 3, 4}))
-      return E;
-    if (!isDefinedOffset(II.getArgOperand(1), II, SE, AC, DT))
-      return invalid(*II.getFunction(), "Dst offset must be defined and non-poison");
-    const SCEV *Offset = SE.getSCEV(II.getArgOperand(1));
-    if (SE.getUnsignedRange(Offset).getUnsignedMax().ugt(1023))
-      return invalid(*II.getFunction(),
-                     "Dst offset must be proven in [0, 1023]");
-    return Error::success();
-  }
-  case Intrinsic::riscv_tt_sfpadd:
-    return range(II, 3, 0, 3);
-  case Intrinsic::riscv_tt_sfpmad:
-    return range(II, 4, 0, 3);
-  case Intrinsic::riscv_tt_sfpmul:
-    return range(II, 3, 0, 3);
-  case Intrinsic::riscv_tt_sfpiadd:
-    return mode(II, 2, {0, 2, 4, 6, 8, 10});
-  case Intrinsic::riscv_tt_sfpmov:
-    return mode(II, 2, {0, 1, 2});
-  case Intrinsic::riscv_tt_lreg_read:
-  case Intrinsic::riscv_tt_lreg_write: {
-    if (Error E = range(II, 0, 0, 7))
-      return E;
-    Facts.ExplicitFixedLRegs |=
-        uint8_t(1u << cast<ConstantInt>(II.getArgOperand(0))->getZExtValue());
-    return Error::success();
-  }
-  case Intrinsic::riscv_tt_creg_read:
-    return range(II, 0, 8, 15);
-  case Intrinsic::riscv_tt_sfpencc:
-    if (Error E = range(II, 0, 0, 3))
-      return E;
-    return mode(II, 1, {0, 1, 2, 8, 9, 10});
-  case Intrinsic::riscv_tt_sfpsetcc:
-    if (Error E = range(II, 1, 0, 0))
-      return E;
-    return mode(II, 2, {0, 2, 4, 6});
-  case Intrinsic::riscv_tt_sfppushc:
-  case Intrinsic::riscv_tt_sfppopc:
-    if (Error E = range(II, 0, 0, 0))
-      return E;
-    return range(II, 1, 0, 0);
-  case Intrinsic::riscv_tt_sfpnop:
-    return Error::success();
-  case Intrinsic::riscv_tt_sfpcompc:
-  case Intrinsic::riscv_tt_sfpconfig_reset:
-    return Error::success();
-  case Intrinsic::riscv_tt_sfpconfig_creg: {
-    auto Dest = immediate(II, 1);
-    if (!Dest)
-      return Dest.takeError();
-    if (*Dest < 11 || *Dest > 14)
-      return invalid(*II.getFunction(),
-                       "SFPCONFIG CReg destination must be in [11, 14]");
-    if (Error E = range(II, 2, 0, 65535))
-      return E;
-    auto Mask = immediate(II, 2);
-    if (!Mask)
-      return Mask.takeError();
-    auto Mod = immediate(II, 3);
-    if (!Mod)
-      return Mod.takeError();
-    if (*Mod == 0) {
-      if (*Mask != 0)
-        return invalid(*II.getFunction(),
-                       "SFPCONFIG mode 0 requires a zero mask");
-    } else if (*Mod == 8) {
-      if ((*Mask & ~uint64_t(0x5555)) != 0)
-        return invalid(*II.getFunction(),
-                       "SFPCONFIG mode 8 mask must select even lane bits");
-    } else {
-      return invalid(*II.getFunction(),
-                     "unsupported SFPCONFIG CReg mode");
-    }
-    return Error::success();
-  }
-  default:
-    llvm_unreachable("expected admitted SFPU intrinsic");
-  }
-}
-
-Error verifyCCStack(Function &F) {
-  if (F.empty())
-    return Error::success();
-  DenseMap<const BasicBlock *, unsigned> EntryDepth;
-  SmallVector<const BasicBlock *> Worklist;
-  EntryDepth.try_emplace(&F.getEntryBlock(), 0);
-  Worklist.push_back(&F.getEntryBlock());
-  while (!Worklist.empty()) {
-    const BasicBlock *BB = Worklist.pop_back_val();
-    unsigned Depth = EntryDepth.lookup(BB);
-    for (const Instruction &I : *BB) {
-      auto *II = dyn_cast<IntrinsicInst>(&I);
-      if (!II)
-        continue;
-      if (II->getIntrinsicID() == Intrinsic::riscv_tt_sfppushc ||
-          II->getIntrinsicID() == Intrinsic::riscv_tt_bound_sfppushc) {
-        if (Depth == 8)
-          return invalid(F, "CC stack depth exceeds 8");
-        ++Depth;
-      } else if (II->getIntrinsicID() == Intrinsic::riscv_tt_sfppopc ||
-                 II->getIntrinsicID() == Intrinsic::riscv_tt_bound_sfppopc) {
-        if (Depth == 0)
-          return invalid(F, "CC stack underflow");
-        --Depth;
-      }
-    }
-    if (isa<ReturnInst>(BB->getTerminator()) && Depth != 0)
-      return invalid(F, "CC stack must be empty at return");
-    for (const BasicBlock *Successor : successors(BB)) {
-      auto [It, Inserted] = EntryDepth.try_emplace(Successor, Depth);
-      if (Inserted)
-        Worklist.push_back(Successor);
-      else if (It->second != Depth)
-        return invalid(F, "CC stack depth disagrees at CFG join or backedge");
-    }
-  }
+  (void)SE;
+  (void)AC;
+  (void)DT;
+  if (!isTensixBoundSFPUIntrinsic(II.getIntrinsicID()))
+    return invalid(*II.getFunction(), "unsupported Tensix intrinsic ABI: " +
+                   II.getCalledFunction()->getName());
+  if (Error E = verifyTensixBoundSFPUIntrinsic(II))
+    return E;
   return Error::success();
 }
+
 } // namespace
 
 Expected<TensixSFPUFunctionFacts>
 llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
-                              AssumptionCache &AC, DominatorTree &DT) {
+                               AssumptionCache &AC, DominatorTree &DT) {
   TensixSFPUFunctionFacts Facts;
-  bool Bound = false, Legacy = false;
+  bool Bound = false;
   for (const Instruction &I : instructions(F)) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !isTensixSFPUIntrinsic(II->getIntrinsicID()))
       continue;
-    if (isTensixBoundSFPUIntrinsic(II->getIntrinsicID()))
-      Bound = true;
-    else
-      Legacy = true;
+    Bound = isTensixBoundSFPUIntrinsic(II->getIntrinsicID()) || Bound;
   }
-  if (Bound && Legacy)
-    return invalid(F, "bound and legacy SFPU ingress cannot share a function");
+
+  // The physical bound ABI cannot leak an old vector carrier through the
+  // function boundary. Ordinary RVV functions are not sent through this
+  // verifier unless they also contain a Tensix intrinsic.
   if (containsCarrier(F.getReturnType()))
     return invalid(F, "SFPU carrier cannot cross the return ABI");
   for (const Argument &Arg : F.args())
@@ -743,36 +632,21 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
     auto *II = dyn_cast<IntrinsicInst>(&I);
     bool SFPU = II && isTensixSFPUIntrinsic(II->getIntrinsicID());
     Facts.UsesSFPU |= SFPU;
-    bool AggregateResult = SFPU &&
-        (II->getIntrinsicID() == Intrinsic::riscv_tt_sfpswap ||
-         II->getIntrinsicID() == Intrinsic::riscv_tt_sfptransp);
-    bool Extract = false;
-    if (const auto *EV = dyn_cast<ExtractValueInst>(&I))
-      if (const auto *Source = dyn_cast<IntrinsicInst>(EV->getAggregateOperand()))
-        Extract = EV->getNumIndices() == 1 &&
-            (Source->getIntrinsicID() == Intrinsic::riscv_tt_sfpswap ||
-             Source->getIntrinsicID() == Intrinsic::riscv_tt_sfptransp);
     bool Carrier = containsCarrier(I.getType());
     for (Value *Input : I.operands()) {
       if (!containsCarrier(Input->getType()))
         continue;
       Carrier = true;
-      // The initial ingress requires explicit initialized snapshots. It does
-      // not invent a full-lane proof to justify poison/undef passthroughs.
       if (isa<Constant>(Input))
         return invalid(F, "SFPU carrier constants require explicit target initialization");
-      if (!isCarrier(Input->getType()) && !Extract)
+      if (!isCarrier(Input->getType()))
         return invalid(F, "SFPU carrier cannot be nested in an aggregate");
     }
-    if (auto *AI = dyn_cast<AllocaInst>(&I))
-      Carrier |= containsCarrier(AI->getAllocatedType());
     if (Bound && Carrier)
-      return invalid(
-          F, "bound SFPU ingress cannot contain an unbound carrier or PHI");
-    if (Carrier && !SFPU && !isa<PHINode>(I) && !Extract)
+      return invalid(F, "bound SFPU ingress cannot contain an unbound carrier or PHI");
+    if (Carrier && !SFPU && !isa<PHINode>(I))
       return invalid(F, "SFPU carrier is only legal in target intrinsics and PHI");
-    if (containsCarrier(I.getType()) && !isCarrier(I.getType()) &&
-        !AggregateResult)
+    if (containsCarrier(I.getType()) && !isCarrier(I.getType()))
       return invalid(F, "SFPU carrier cannot be nested in an aggregate");
     if (SFPU) {
       if (II->hasOperandBundles())
@@ -785,8 +659,10 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
   if (!Facts.UsesSFPU)
     return Facts;
   for (Instruction &I : instructions(F)) {
-    // Includes indirect calls, inline assembly, invokes and callbr. Scalar ABI
-    // does not prove preservation of the fixed/CC/SFPU state of this function.
+    // Includes indirect calls, inline assembly, invokes and callbr. Scalar
+    // calls do not prove preservation of the fixed SFPU state of this
+    // function, so only direct Tensix intrinsics and inert LLVM intrinsics
+    // are admitted around a bound SFPU region.
     if (!isa<CallBase>(I))
       continue;
     auto *II = dyn_cast<IntrinsicInst>(&I);
@@ -811,12 +687,6 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
     }
     return invalid(F, "call has no verified SFPU preservation ABI");
   }
-  // Legacy value transformations require a balanced local CC stack. Bound
-  // instructions retain source-owned stack effects, including incoming state
-  // and unequal path depths; codegen must not infer or repair that lifecycle.
-  if (Legacy)
-    if (Error E = verifyCCStack(F))
-      return std::move(E);
   return Facts;
 }
 

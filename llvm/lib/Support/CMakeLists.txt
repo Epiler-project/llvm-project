@@ -280,6 +280,7 @@ add_llvm_component_library(LLVMSupport
   SuffixTree.cpp
   SystemUtils.cpp
   TarWriter.cpp
+  TensixMOPSequence.cpp
   TextEncoding.cpp
   ThreadPool.cpp
   TimeProfiler.cpp

@@ -1,0 +1,117 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-explicit-replay %t/ambiguous.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=AMBIGUOUS
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/valid.mir -o %t/normalized.mir
+# RUN: %python %t/mutate.py %t/normalized.mir %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/missing.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/duplicate.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/extra.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/record-effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RECORD-EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/payload.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+#
+# Occupancy alone does not establish which instruction an execution issues:
+# both predecessors below record slot 4, but with different destinations.
+#
+# Mutation cases start from normalized symbolic native MIR. Do not hardcode
+# private native opcode or MC physical-register enumeration values. Run only
+# the verifier after mutation: normalization must not repair missing, extra
+# or duplicated effects and thereby conceal a broken intermediate form.
+# Disable the optional generic verifier so the bound verifier owns these
+# semantic errors; required base implicit operands remain intact.
+#
+# AMBIGUOUS: SFPU replay execution has differing or unknown templates on incoming paths
+# EFFECTS: explicit SFPU replay execution physical effects differ from its reaching words
+# RECORD-EFFECTS: record-only word must have only issue ordering effects
+# PAYLOAD: explicit SFPU record payload has the wrong native operand count
+
+#--- ambiguous.mir
+--- |
+  define void @ambiguous_predecessors() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: ambiguous_predecessors
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    TTREPLAY 0, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- valid.mir
+--- |
+  define void @effects() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: effects
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- mutate.py
+import re
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text().splitlines(keepends=True)
+directory = Path(sys.argv[2])
+execute = [i for i, line in enumerate(lines)
+           if "PseudoTTExplicitSFPUReplay 0, 0, 1, 4," in line]
+record = [i for i, line in enumerate(lines) if "PseudoTTSFPURecordWord " in line]
+assert len(execute) == len(record) == 1, (execute, record)
+execute, record = execute[0], record[0]
+
+def write(name, index, replacement):
+    changed = lines.copy()
+    changed[index] = replacement
+    (directory / (name + ".mir")).write_text("".join(changed))
+
+def add_effect(line, effect):
+    instruction, separator, memory = line.rstrip("\n").partition(" :: ")
+    return instruction + ", " + effect + separator + memory + "\n"
+
+missing, count = re.subn(r", implicit-def(?: dead)? \$tt_l0(?=,|\s*(?:::|$))",
+                         "", lines[execute])
+assert count == 1, lines[execute]
+write("missing", execute, missing)
+assert len(re.findall(r"\bimplicit(?: killed)? \$tt_c9\b", lines[execute])) == 1
+write("duplicate", execute, add_effect(lines[execute], "implicit $tt_c9"))
+assert "$tt_l7" not in lines[execute]
+write("extra", execute, add_effect(lines[execute], "implicit-def $tt_l7"))
+write("record-effects", record, add_effect(lines[record], "implicit-def $tt_l0"))
+
+# Delete one explicit native operand while preserving the opcode and all
+# issue-ordering operands. The variadic payload is structurally valid MIR,
+# but it cannot reconstruct the original native instruction descriptor.
+payload, effects = lines[record].split(", implicit", 1)
+prefix, fields = payload.split("PseudoTTSFPURecordWord ", 1)
+fields = fields.split(", ")
+assert len(fields) == 3, fields
+write("payload", record,
+      prefix + "PseudoTTSFPURecordWord " + ", ".join(fields[:-1]) + ", implicit" + effects)

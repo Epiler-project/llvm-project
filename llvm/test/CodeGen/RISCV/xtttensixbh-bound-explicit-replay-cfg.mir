@@ -1,0 +1,161 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/input.mir -o %t/normalized.mir
+# RUN: FileCheck %s --input-file=%t/normalized.mir
+# RUN: %python %t/check.py %t/normalized.mir
+#
+# Explicit recordings name slots, not instruction addresses. Equal native
+# words recorded by different predecessors must merge. Replacing one slot
+# preserves its neighbours; execution effects come from the selected current
+# slice, not from the complete original recording or the last record header.
+# An authored NOP-only template is legal even without a numerical result.
+#
+# Start with symbolic native operands. Normalization owns private payload
+# opcode/register numbers; neither input nor oracle hardcodes those numbers.
+# The Python oracle compares exact effect multisets, including duplicates,
+# using only the public physical registers read/written by MOVAll and NOP.
+#
+# CHECK-LABEL: name: same_word_predecessors
+# CHECK: BNE $x10, $x0, %bb.2
+# CHECK: PseudoBR %bb.1
+# CHECK: bb.1:
+# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 1, 4,
+# CHECK-SAME: :: (volatile load store (s32), align 8)
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: PseudoBR %bb.3
+# CHECK: bb.2:
+# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 1, 4,
+# CHECK-SAME: :: (volatile load store (s32))
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: PseudoBR %bb.3
+# CHECK: bb.3:
+# CHECK: PseudoTTExplicitSFPUReplay 0, 0, 1, 4,
+# CHECK-SAME: :: (volatile load store (s32), align 16)
+# CHECK-NEXT: PseudoRET
+# CHECK-LABEL: name: partial_overwrite_selected_slice
+# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 2, 5,
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 6,
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 6,
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 5,
+# CHECK-NEXT: PseudoRET
+# CHECK-LABEL: name: nop_only
+# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 1, 31,
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 31,
+# CHECK-NEXT: PseudoRET
+
+#--- input.mir
+--- |
+  define void @same_word_predecessors() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @partial_overwrite_selected_slice() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @nop_only() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: same_word_predecessors
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32), align 8)
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    TTREPLAY 0, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32), align 16)
+    PseudoRET
+...
+---
+name: partial_overwrite_selected_slice
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: nop_only
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 31, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 31, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- check.py
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text()
+bodies = dict(re.findall(r"^name:\s+(\w+).*?^body:\s+\|\n(.*?)(?=^\.\.\.)",
+                         text, re.MULTILINE | re.DOTALL))
+base = (["tt_config", "tt_issue"], ["tt_issue"])
+mov_l0 = (["tt_c9", "tt_config", "tt_issue"], ["tt_issue", "tt_l0"])
+mov_l2 = (["tt_c9", "tt_config", "tt_issue"], ["tt_issue", "tt_l2"])
+expected = {
+    "same_word_predecessors": ([base, base, mov_l0], 2),
+    "partial_overwrite_selected_slice": ([base, base, mov_l2, mov_l0], 3),
+    "nop_only": ([base, base], 1),
+}
+
+def effects(line):
+    uses = re.findall(r"\bimplicit(?: killed)? \$(\w+)", line)
+    defs = re.findall(r"\bimplicit-def(?: dead)? \$(\w+)", line)
+    return sorted(uses), sorted(defs)
+
+assert bodies.keys() == expected.keys(), bodies.keys()
+for name, (headers, word_count) in expected.items():
+    body = bodies[name]
+    actual_headers = [line for line in body.splitlines()
+                      if "PseudoTTExplicitSFPUReplay " in line]
+    assert [effects(line) for line in actual_headers] == headers, (name, actual_headers)
+    words = [line for line in body.splitlines() if "PseudoTTSFPURecordWord " in line]
+    assert len(words) == word_count, (name, words)
+    for line in words:
+        assert effects(line) == (["tt_issue"], ["tt_issue"]), line
+        assert " = " not in line, line
+    assert "TTSFPMOVAll " not in body and "TTSFPNOP " not in body, body
+    assert "TTREPLAY " not in body, body
+
+# Equal predecessor words must have equal canonical payloads regardless of
+# where they were recorded and of the record header's memory alignment.
+words = [line.strip() for line in bodies["same_word_predecessors"].splitlines()
+         if "PseudoTTSFPURecordWord " in line]
+assert words[0] == words[1], words

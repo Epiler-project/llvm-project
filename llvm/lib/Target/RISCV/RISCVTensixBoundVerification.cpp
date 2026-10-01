@@ -8,6 +8,7 @@
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixReplay.h"
+#include "RISCVTensixReplayTemplate.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -44,6 +45,8 @@ bool isNativeIssue(const MachineInstr &MI) {
          RISCV::getTensixMachineInfoByPort(MI.getOpcode()) ||
          RISCV::getTensixMachineInfoByMop(MI.getOpcode()) ||
          MI.getOpcode() == RISCV::PseudoTTMOPClear ||
+         MI.getOpcode() == RISCV::PseudoTTMOPControlWrite ||
+         MI.getOpcode() == RISCV::PseudoTTMOPControlWriteImm ||
          MI.getOpcode() == RISCV::PseudoTTReplayRecordEnd;
 }
 
@@ -264,6 +267,8 @@ public:
     const auto &MRI = MF.getRegInfo();
     const auto &TII = *ST.getInstrInfo();
     const auto &TRI = *ST.getRegisterInfo();
+    if (Error E = verifyTensixReplayTemplates(MF))
+      return Fail(toString(std::move(E)));
     for (const MachineBasicBlock &MBB : MF)
       for (const MachineInstr &MI : MBB.instrs()) {
         if (MI.isDebugInstr())
@@ -296,9 +301,22 @@ public:
               "bound Tensix SFPU cannot contain generic register copies");
         if (TouchesSFPU && MI.isPHI())
           return Fail("bound Tensix SFPU cannot contain register PHIs");
+        // The complete prepared template was independently checked above.
+        // Its execution effects depend on its exact body, not a fixed opcode
+        // descriptor; record-only payload has no numerical effects here.
+        if (MI.getOpcode() == RISCV::PseudoTTReplayTemplateBegin ||
+            MI.getOpcode() == RISCV::PseudoTTReplayTemplateEnd ||
+            MI.getOpcode() == RISCV::PseudoTTReplayTemplateExecute ||
+            MI.getOpcode() == RISCV::PseudoTTReplayTemplateMop ||
+            MI.getOpcode() == RISCV::PseudoTTReplayTemplateWord ||
+            MI.getOpcode() == RISCV::PseudoTTReplayTemplateDstWord)
+          continue;
         // Automatic replay's variable effects come from its exact recording,
         // independently reconstructed below; they are not the fixed descriptor.
-        if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay)
+        if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
+            MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+            MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
+            MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord)
           continue;
         if (!isNativeIssue(MI)) {
           if (TouchesSFPU)
@@ -306,8 +324,13 @@ public:
                         "machine operation");
           continue;
         }
-        if (Error E = verifyTensixMachineEffects(MI))
-          return Fail(toString(std::move(E)));
+        // MOP effects belong to the independently reconstructed execution
+        // graph below. Ordinary MOPs are checked against the native descriptor
+        // there; SFPU MOPs require their exact selected-word effects.
+        if (MI.getOpcode() != RISCV::TTMOP &&
+            MI.getOpcode() != RISCV::PseudoTTMOPPort)
+          if (Error E = verifyTensixMachineEffects(MI))
+            return Fail(toString(std::move(E)));
         if (isDstPort(MI)) {
           if (Error E = verifyDstPort(MI, MRI, TII, TRI))
             return Fail(toString(std::move(E)));

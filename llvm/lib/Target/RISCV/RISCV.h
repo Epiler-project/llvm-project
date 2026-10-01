@@ -38,16 +38,16 @@ FunctionPass *createRISCVTensixIRVerificationPass(bool Supported = true);
 void initializeRISCVTensixIRVerificationPass(PassRegistry &);
 FunctionPass *createRISCVTensixBoundVerificationPass();
 void initializeRISCVTensixBoundVerificationPass(PassRegistry &);
-FunctionPass *createRISCVTensixNoSpillPass();
-void initializeRISCVTensixNoSpillPass(PassRegistry &);
-FunctionPass *createRISCVTensixAllocatedPass();
-void initializeRISCVTensixAllocatedPass(PassRegistry &);
+FunctionPass *createRISCVTensixSFPUPhysicalIngressPass();
+void initializeRISCVTensixSFPUPhysicalIngressPass(PassRegistry &);
 FunctionPass *createRISCVTensixCopyCCCleanupPass();
 void initializeRISCVTensixCopyCCCleanupPass(PassRegistry &);
 FunctionPass *createRISCVTensixHazardsPass(bool Repair);
 void initializeRISCVTensixHazardsPass(PassRegistry &);
 FunctionPass *createRISCVTensixReplaySelectionPass();
 void initializeRISCVTensixReplaySelectionPass(PassRegistry &);
+FunctionPass *createRISCVTensixExplicitReplayPass();
+void initializeRISCVTensixExplicitReplayPass(PassRegistry &);
 class RISCVTensixReplaySelectionPass
     : public OptionalPassInfoMixin<RISCVTensixReplaySelectionPass> {
 public:

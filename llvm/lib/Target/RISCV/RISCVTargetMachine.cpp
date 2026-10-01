@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVTargetMachine.h"
+#include "RISCVTensixReplayTemplate.h"
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVMachineScheduler.h"
@@ -120,11 +121,13 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeGlobalISel(*PR);
   initializeRISCVTensixIRVerificationPass(*PR);
   initializeRISCVTensixBoundVerificationPass(*PR);
-  initializeRISCVTensixNoSpillPass(*PR);
-  initializeRISCVTensixAllocatedPass(*PR);
+  initializeRISCVTensixSFPUPhysicalIngressPass(*PR);
   initializeRISCVTensixCopyCCCleanupPass(*PR);
   initializeRISCVTensixHazardsPass(*PR);
   initializeRISCVTensixReplaySelectionPass(*PR);
+  initializeRISCVTensixExplicitReplayPass(*PR);
+  initializeRISCVTensixReplayTemplatePreparePass(*PR);
+  initializeRISCVTensixReplayTemplateFinalizePass(*PR);
   initializeRISCVO0PreLegalizerCombinerPass(*PR);
   initializeRISCVPreLegalizerCombinerPass(*PR);
   initializeRISCVPostLegalizerCombinerPass(*PR);
@@ -337,11 +340,6 @@ public:
       : RegisterRegAllocBase(N, D, C) {}
 };
 
-static bool onlyAllocateTensixReg(const TargetRegisterInfo &TRI,
-                                  const MachineRegisterInfo &MRI, Register Reg) {
-  return RISCV::SFPRRegClass.hasSubClassEq(MRI.getRegClass(Reg));
-}
-
 static bool onlyAllocateRVVReg(const TargetRegisterInfo &TRI,
                                const MachineRegisterInfo &MRI,
                                const Register Reg) {
@@ -397,6 +395,10 @@ class RISCVPassConfig : public TargetPassConfig {
 public:
   RISCVPassConfig(RISCVTargetMachine &TM, PassManagerBase &PM)
       : TargetPassConfig(TM, PM) {
+    // Bound custom inserters have materialized physical operands. Normalize
+    // record-only words before machine SSA passes can treat them as executed.
+    insertPass(&FinalizeISelID, createRISCVTensixReplayTemplatePreparePass());
+    insertPass(&FinalizeISelID, createRISCVTensixExplicitReplayPass());
     if (TM.getOptLevel() != CodeGenOptLevel::None)
       substitutePass(&PostRASchedulerID, &PostMachineSchedulerID);
     setEnableSinkAndFold(EnableSinkFold);
@@ -457,10 +459,6 @@ FunctionPass *RISCVPassConfig::createRVVRegAllocPass(bool Optimized) {
 }
 
 bool RISCVPassConfig::addRegAssignAndRewriteFast() {
-  addPass(createRISCVTensixNoSpillPass());
-  addPass(createGreedyRegisterAllocator(onlyAllocateTensixReg));
-  addPass(createVirtRegRewriter(false));
-  addPass(createRISCVTensixAllocatedPass());
   addPass(createRVVRegAllocPass(false));
   addPass(createRISCVInsertVSETVLIPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
@@ -470,10 +468,6 @@ bool RISCVPassConfig::addRegAssignAndRewriteFast() {
 }
 
 bool RISCVPassConfig::addRegAssignAndRewriteOptimized() {
-  addPass(createRISCVTensixNoSpillPass());
-  addPass(createGreedyRegisterAllocator(onlyAllocateTensixReg));
-  addPass(createVirtRegRewriter(false));
-  addPass(createRISCVTensixAllocatedPass());
   addPass(createRVVRegAllocPass(true));
   addPass(createVirtRegRewriter(false));
   addPass(createRISCVInsertVSETVLIPass());
@@ -599,6 +593,7 @@ void RISCVPassConfig::addPreEmitPass() {
   // basic block alignment. It must be done before Branch Relaxation to
   // prevent the adjusted offset exceeding the branch range.
   addPass(createRISCVIndirectBranchTrackingPass());
+  addPass(createRISCVTensixReplayTemplateFinalizePass());
   addPass(createRISCVTensixHazardsPass(true));
   addPass(createRISCVTensixReplaySelectionPass());
   addPass(&BranchRelaxationPassID);
@@ -661,6 +656,7 @@ void RISCVPassConfig::addMachineSSAOptimization() {
 
 void RISCVPassConfig::addPreRegAlloc() {
   addPass(createRISCVTensixBoundVerificationPass());
+  addPass(createRISCVTensixSFPUPhysicalIngressPass());
   addPass(createRISCVExpandPseudoPreRALegacyPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None) {
     addPass(createRISCVMergeBaseOffsetOptPass());

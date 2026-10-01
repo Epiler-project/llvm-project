@@ -1,0 +1,754 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_rerecord_allows_reuse.mir -o %t/raw_mop_rerecord_allows_reuse.out.mir
+# RUN: FileCheck %s --check-prefix=CASE13 --input-file=%t/raw_mop_rerecord_allows_reuse.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_rerecord_backedge.mir -o %t/raw_mop_rerecord_backedge.out.mir
+# RUN: FileCheck %s --check-prefix=CASE14 --input-file=%t/raw_mop_rerecord_backedge.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_partial_rerecord.mir -o %t/raw_mop_partial_rerecord.out.mir
+# RUN: FileCheck %s --check-prefix=CASE15 --input-file=%t/raw_mop_partial_rerecord.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/remote_raw_stream_does_not_pin_local.mir -o %t/remote_raw_stream_does_not_pin_local.out.mir
+# RUN: FileCheck %s --check-prefix=CASE16 --input-file=%t/remote_raw_stream_does_not_pin_local.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/fixed_hazard_word_supplies_raw_slice.mir -o %t/fixed_hazard_word_supplies_raw_slice.out.mir
+# RUN: FileCheck %s --check-prefix=CASE17 --input-file=%t/fixed_hazard_word_supplies_raw_slice.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/automatic_avoids_live_raw.mir -o %t/automatic_avoids_live_raw.out.mir
+# RUN: FileCheck %s --check-prefix=CASE1 --input-file=%t/automatic_avoids_live_raw.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/automatic_reuses_dead_raw.mir -o %t/automatic_reuses_dead_raw.out.mir
+# RUN: FileCheck %s --check-prefix=CASE2 --input-file=%t/automatic_reuses_dead_raw.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/automatic_avoids_future_raw_write.mir -o %t/automatic_avoids_future_raw_write.out.mir
+# RUN: FileCheck %s --check-prefix=CASE3 --input-file=%t/automatic_avoids_future_raw_write.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/fixed_reuse_after_symbolic_death.mir -o %t/fixed_reuse_after_symbolic_death.out.mir
+# RUN: FileCheck %s --check-prefix=CASE4 --input-file=%t/fixed_reuse_after_symbolic_death.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_partial_overwrite_preserved.mir -o %t/raw_partial_overwrite_preserved.out.mir
+# RUN: FileCheck %s --check-prefix=CASE5 --input-file=%t/raw_partial_overwrite_preserved.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_same_words_diamond.mir -o %t/raw_same_words_diamond.out.mir
+# RUN: FileCheck %s --check-prefix=CASE6 --input-file=%t/raw_same_words_diamond.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_live_occupancy.mir -o %t/raw_mop_live_occupancy.out.mir
+# RUN: FileCheck %s --check-prefix=CASE7 --input-file=%t/raw_mop_live_occupancy.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_clear_allows_reuse.mir -o %t/raw_mop_clear_allows_reuse.out.mir
+# RUN: FileCheck %s --check-prefix=CASE8 --input-file=%t/raw_mop_clear_allows_reuse.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_backedge_occupancy.mir -o %t/raw_mop_backedge_occupancy.out.mir
+# RUN: FileCheck %s --check-prefix=CASE9 --input-file=%t/raw_mop_backedge_occupancy.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_mop_loop_rebind_allows_reuse.mir -o %t/raw_mop_loop_rebind_allows_reuse.out.mir
+# RUN: FileCheck %s --check-prefix=CASE10 --input-file=%t/raw_mop_loop_rebind_allows_reuse.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/fixed_record_feeds_raw_execution.mir -o %t/fixed_record_feeds_raw_execution.out.mir
+# RUN: FileCheck %s --check-prefix=CASE11 --input-file=%t/fixed_record_feeds_raw_execution.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-replay-template-finalize,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/raw_partial_overwrite_dead_symbolic.mir -o %t/raw_partial_overwrite_dead_symbolic.out.mir
+# RUN: FileCheck %s --check-prefix=CASE12 --input-file=%t/raw_partial_overwrite_dead_symbolic.out.mir
+#
+# Raw and structured replay share physical storage, but neither a textual
+# last use nor function-long range pinning describes its CFG lifetime.
+# Every raw read keeps its existing current-contents semantics. Structured
+# handles keep their record identity until their actual future uses end.
+# There is deliberately no loop unrolling in these MIR fixtures.
+#
+# A live two-word raw recording constrains automatic placement.
+# CASE1-LABEL: name: automatic_avoids_live_raw
+# CASE1: PseudoTTExplicitSFPUReplay 1, 0, 2, 0,
+# CASE1: PseudoTTExplicitSFPUReplay 1, 0, 1, 2,
+# CASE1: PseudoTTExplicitSFPUReplay 0, 0, 1, 2,
+# CASE1: PseudoTTExplicitSFPUReplay 0, 0, 2, 0,
+#
+# Physical contents without a future consumer do not pin slots forever.
+# CASE2-LABEL: name: automatic_reuses_dead_raw
+# CASE2: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE2: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE2: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE2: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+#
+# Looking only at raw contents at a template begin misses later clobbers.
+# CASE3-LABEL: name: automatic_avoids_future_raw_write
+# CASE3: PseudoTTExplicitSFPUReplay 1, 0, 1, 1,
+# CASE3: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE3: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE3: PseudoTTExplicitSFPUReplay 0, 0, 1, 1,
+#
+# Authored rerecording may reuse the range after symbolic consumption ends.
+# CASE4-LABEL: name: fixed_reuse_after_symbolic_death
+# CASE4: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE4: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE4: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE4: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE4: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE4: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+#
+# A disjoint symbolic template must not erase existing raw slice semantics.
+# CASE5-LABEL: name: raw_partial_overwrite_preserved
+# CASE5: PseudoTTExplicitSFPUReplay 1, 0, 2, 5,
+# CASE5: PseudoTTExplicitSFPUReplay 1, 0, 1, 31,
+# CASE5: PseudoTTExplicitSFPUReplay 1, 0, 1, 6,
+# CASE5: PseudoTTExplicitSFPUReplay 0, 0, 1, 6,
+# CASE5-SAME: implicit-def $tt_l3
+# CASE5: PseudoTTExplicitSFPUReplay 0, 0, 1, 5,
+# CASE5-SAME: implicit-def $tt_l0
+# CASE5: PseudoTTExplicitSFPUReplay 0, 0, 1, 31,
+#
+# Equal raw words arriving through a diamond keep one occupied physical slot.
+# CASE6-LABEL: name: raw_same_words_diamond
+# CASE6: bb.1:
+# CASE6: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE6: bb.2:
+# CASE6: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE6: bb.3:
+# CASE6: PseudoTTExplicitSFPUReplay 1, 0, 1, 1,
+# CASE6: PseudoTTExplicitSFPUReplay 0, 0, 1, 1,
+# CASE6: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+#
+# A raw MOP reference keeps its actual physical range live until execution.
+# CASE7-LABEL: name: raw_mop_live_occupancy
+# CASE7: TTREPLAY 1, 0, 1, 0,
+# CASE7: PseudoTTREPLAYMop 3, 0, 0, 1, 0,
+# CASE7: PseudoTTExplicitSFPUReplay 1, 0, 1, 1,
+# CASE7: PseudoTTExplicitSFPUReplay 0, 0, 1, 1,
+# CASE7: TTMOP 0, 0, 1,
+#
+# Clearing a raw MOP slot kills its pending storage demand.
+# CASE8-LABEL: name: raw_mop_clear_allows_reuse
+# CASE8: TTMOP 0, 0, 1,
+# CASE8: PseudoTTMOPClear 3,
+# CASE8: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE8: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+#
+# A raw MOP consumer on a real backedge prevents lexical last-use reuse.
+# CASE9-LABEL: name: raw_mop_backedge_occupancy
+# CASE9: bb.1:
+# CASE9: TTMOP 0, 0, 1,
+# CASE9: PseudoTTExplicitSFPUReplay 1, 0, 1, 1,
+# CASE9: BNE $x10, $x0, %bb.1
+#
+# Per-slot MOP demand must preserve killed loop generations rather than pin all reaching identities.
+# CASE10-LABEL: name: raw_mop_loop_rebind_allows_reuse
+# CASE10: bb.1:
+# CASE10: TTMOP 0, 0, 1,
+# CASE10: PseudoTTMOPClear 3,
+# CASE10: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE10: PseudoTTREPLAYMop 3, 0, 0, 1, 0,
+# CASE10: BNE $x10, $x0, %bb.1
+#
+# Fixed authored replacement changes the current raw contents; a raw read is not tied to the former record identity.
+# CASE11-LABEL: name: fixed_record_feeds_raw_execution
+# CASE11: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE11: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE11: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE11-SAME: implicit $tt_c10
+# CASE11-SAME: implicit-def $tt_l1
+# CASE11: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+#
+# Raw overwrite may replace one word of a dead symbolic generation, preserving the other word for a raw read.
+# CASE12-LABEL: name: raw_partial_overwrite_dead_symbolic
+# CASE12: PseudoTTExplicitSFPUReplay 1, 0, 2, 5,
+# CASE12: PseudoTTExplicitSFPUReplay 0, 0, 2, 5,
+# CASE12: PseudoTTExplicitSFPUReplay 1, 0, 1, 6,
+# CASE12: PseudoTTExplicitSFPUReplay 0, 0, 2, 5,
+# CASE12-SAME: implicit-def $tt_l0
+# CASE12-SAME: implicit-def $tt_l3
+#
+# A persistent raw MOP binding consumes the next contents generation after rerecording.
+# CASE13-LABEL: name: raw_mop_rerecord_allows_reuse
+# CASE13: TTMOP 0, 0, 1,
+# CASE13: PseudoTTExplicitSFPUReplay 1, 0, 32, 0,
+# CASE13: PseudoTTExplicitSFPUReplay 0, 0, 32, 0,
+# CASE13: TTREPLAY 1, 0, 1, 0,
+# CASE13: TTMOP 0, 0, 1,
+#
+# A contents-generation kill must also survive a real loop backedge without clearing the binding.
+# CASE14-LABEL: name: raw_mop_rerecord_backedge
+# CASE14: bb.1:
+# CASE14: TTMOP 0, 0, 1,
+# CASE14: PseudoTTExplicitSFPUReplay 1, 0, 32, 0,
+# CASE14: PseudoTTExplicitSFPUReplay 0, 0, 32, 0,
+# CASE14: TTREPLAY 1, 0, 1, 0,
+# CASE14: BNE $x10, $x0, %bb.1
+#
+# Only the overwritten part of a pending raw MOP range can be reused.
+# CASE15-LABEL: name: raw_mop_partial_rerecord
+# CASE15: TTMOP 0, 0, 1,
+# CASE15: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE15: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE15: PseudoTTExplicitSFPUReplay 1, 0, 2, 2,
+# CASE15: PseudoTTExplicitSFPUReplay 0, 0, 2, 2,
+# CASE15: TTREPLAY 1, 0, 1, 0,
+# CASE15: TTMOP 0, 0, 1,
+#
+# Storage demand follows the existing stream identity rather than a global range mask.
+# CASE16-LABEL: name: remote_raw_stream_does_not_pin_local
+# CASE16: PseudoTTREPLAYPort 1, 1, 0, 1, 0,
+# CASE16: PseudoTTExplicitSFPUReplay 1, 0, 1, 0,
+# CASE16: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
+# CASE16: PseudoTTREPLAYPort 1, 0, 0, 1, 0,
+#
+# The middle word after MAD hazard repair is a NOP, so its raw slice must not inherit IADD LReg effects.
+# CASE17-LABEL: name: fixed_hazard_word_supplies_raw_slice
+# CASE17: PseudoTTExplicitSFPUReplay 1, 0, 3, 29,
+# CASE17: PseudoTTExplicitSFPUReplay 0, 0, 1, 30,
+# CASE17-SAME: implicit $tt_issue{{$}}
+# CASE17: PseudoTTExplicitSFPUReplay 0, 0, 1, 31,
+# CASE17-SAME: implicit-def $tt_l0
+#
+#--- automatic_avoids_live_raw.mir
+--- |
+  define void @automatic_avoids_live_raw() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: automatic_avoids_live_raw
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 2, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 501, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 501, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 501, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 2, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- automatic_reuses_dead_raw.mir
+--- |
+  define void @automatic_reuses_dead_raw() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: automatic_reuses_dead_raw
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 502, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 502, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 502, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- automatic_avoids_future_raw_write.mir
+--- |
+  define void @automatic_avoids_future_raw_write() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: automatic_avoids_future_raw_write
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTReplayTemplateBegin 503, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 503, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 503, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- fixed_reuse_after_symbolic_death.mir
+--- |
+  define void @fixed_reuse_after_symbolic_death() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: fixed_reuse_after_symbolic_death
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTReplayTemplateBegin 504, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 504, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 504, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 505, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 505, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 505, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_partial_overwrite_preserved.mir
+--- |
+  define void @raw_partial_overwrite_preserved() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_partial_overwrite_preserved
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 506, 0, 1, 31, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 506, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 506, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_same_words_diamond.mir
+--- |
+  define void @raw_same_words_diamond() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_same_words_diamond
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    PseudoTTReplayTemplateBegin 507, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 507, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 507, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_mop_live_occupancy.mir
+--- |
+  define void @raw_mop_live_occupancy() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_live_occupancy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 508, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 508, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 508, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_mop_clear_allows_reuse.mir
+--- |
+  define void @raw_mop_clear_allows_reuse() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_clear_allows_reuse
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 509, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 509, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 509, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_mop_backedge_occupancy.mir
+--- |
+  define void @raw_mop_backedge_occupancy() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_backedge_occupancy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 510, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 510, implicit $tt_issue, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+
+#--- raw_mop_loop_rebind_allows_reuse.mir
+--- |
+  define void @raw_mop_loop_rebind_allows_reuse() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_loop_rebind_allows_reuse
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 511, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 511, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 511, 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+
+#--- fixed_record_feeds_raw_execution.mir
+--- |
+  define void @fixed_record_feeds_raw_execution() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: fixed_record_feeds_raw_execution
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 512, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 512, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 512, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_partial_overwrite_dead_symbolic.mir
+--- |
+  define void @raw_partial_overwrite_dead_symbolic() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_partial_overwrite_dead_symbolic
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTReplayTemplateBegin 513, 0, 1, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 513, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 513, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_mop_rerecord_allows_reuse.mir
+--- |
+  define void @raw_mop_rerecord_allows_reuse() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_rerecord_allows_reuse
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 514, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 514, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 514, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw_mop_rerecord_backedge.mir
+--- |
+  define void @raw_mop_rerecord_backedge() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_rerecord_backedge
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 515, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 515, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 515, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+
+#--- raw_mop_partial_rerecord.mir
+--- |
+  define void @raw_mop_partial_rerecord() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_mop_partial_rerecord
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 2, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTREPLAYMop 3, 0, 0, 2, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 516, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 516, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 516, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 519, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 519, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 519, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTMOP 0, 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- remote_raw_stream_does_not_pin_local.mir
+--- |
+  define void @remote_raw_stream_does_not_pin_local() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: remote_raw_stream_does_not_pin_local
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: false
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTREPLAYPort 1, 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTNOPPort 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 517, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 517, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 517, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTREPLAYPort 1, 0, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- fixed_hazard_word_supplies_raw_slice.mir
+--- |
+  define void @fixed_hazard_word_supplies_raw_slice() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: fixed_hazard_word_supplies_raw_slice
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTReplayTemplateBegin 518, 0, 1, 29, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 518, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 30, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 31, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

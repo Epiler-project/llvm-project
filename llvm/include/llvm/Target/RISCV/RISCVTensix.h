@@ -124,6 +124,7 @@ enum class TensixSFPUTransferKind : uint8_t {
   ImmediateUpperHalf,
   ImmediateLowerHalf,
   LaneWise,
+  LanePermutation,
 };
 struct TensixSFPUTransferInput {
   unsigned Argument;
@@ -147,6 +148,10 @@ struct TensixSFPUTransferFacts {
   // Each entry retains one actual bound ABI argument. LaneWise results are
   // known only when every demanded input bit in that active lane is known.
   SmallVector<TensixSFPUTransferInput, 3> Inputs;
+  // For LanePermutation only: destination lane -> source lane. This complete
+  // permutation is owned by the native instruction semantics. Inactive
+  // destinations preserve their own old lane, not the mapped source lane.
+  SmallVector<uint32_t, 0> SourceLanes;
 };
 
 enum class TensixSFPUConditionEnableUpdate : uint8_t {

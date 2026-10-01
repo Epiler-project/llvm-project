@@ -10,7 +10,7 @@ declare void @llvm.riscv.tt.incrwc(i32 immarg, i32 immarg, i32 immarg, i32 immar
 declare void @llvm.riscv.tt.nop()
 declare void @llvm.riscv.tt.replay(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.record.end()
-declare void @llvm.riscv.tt.sfpnop()
+declare void @llvm.riscv.tt.bound.sfpnop()
 
 ; The source contains six existing instructions. Mining saves one word:
 ; record+execute, the three original words, then one replay word. It creates
@@ -168,11 +168,11 @@ define void @sfpu_is_not_mined() "tensix-executor"="trisc1" {
 ; SELECT-NOT: .word 0x100000
 ; SELECT-COUNT-6: .word 0x3c000002
 ; SELECT-NEXT: ret
-  call void @llvm.riscv.tt.sfpnop()
-  call void @llvm.riscv.tt.sfpnop()
-  call void @llvm.riscv.tt.sfpnop()
-  call void @llvm.riscv.tt.sfpnop()
-  call void @llvm.riscv.tt.sfpnop()
-  call void @llvm.riscv.tt.sfpnop()
+  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.riscv.tt.bound.sfpnop()
   ret void
 }

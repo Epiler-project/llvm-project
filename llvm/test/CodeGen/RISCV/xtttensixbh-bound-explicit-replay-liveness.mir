@@ -1,0 +1,35 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %s -o %t.once.mir
+# RUN: FileCheck %s --input-file=%t.once.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t.once.mir -o %t.twice.mir
+# RUN: FileCheck %s --input-file=%t.twice.mir
+#
+# The raw replay descriptor does not read L1. After normalization execution
+# reads its current value, so an earlier dead source definition must survive.
+# Recording executes its native body here; it is not record-only payload.
+# CHECK-LABEL: name: replay_reads_new_source
+# CHECK: PseudoTTExplicitSFPUReplay 1, 1, 1, 5,
+# CHECK-NEXT: $tt_l0 = TTSFPMOVAll $tt_l1,
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: {{^    }}$tt_l1 = TTSFPMOVAll $tt_c9,
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 5,
+# CHECK-SAME: implicit $tt_l1
+# CHECK-SAME: implicit-def $tt_l0
+# CHECK-NEXT: PseudoRET
+--- |
+  define void @replay_reads_new_source() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: replay_reads_new_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 1, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    dead $tt_l1 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

@@ -7,8 +7,6 @@
 namespace llvm {
 class SelectionDAG;
 class RISCVSubtarget;
-SDValue lowerTensixSFPUIntrinsic(SDValue Op, SelectionDAG &DAG,
-                                const RISCVSubtarget &ST);
 SDValue lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
                                     const RISCVSubtarget &ST);
 } // namespace llvm

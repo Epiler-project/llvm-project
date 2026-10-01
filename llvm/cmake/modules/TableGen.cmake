@@ -24,7 +24,8 @@ function(tablegen project ofn)
   # Filter out any empty include items.
   list(REMOVE_ITEM tblgen_includes "")
 
-  # Use depfile instead of globbing arbitrary *.td(s) for Ninja. We force
+  # Use depfiles instead of globbing arbitrary *.td(s) for Ninja and Makefiles.
+  # Makefile generators support DEPFILE since CMake 3.20. We force
   # CMake versions older than v3.30 on Windows to use the fallback behavior
   # due to a depfile parsing bug on Windows paths in versions prior to 3.30.
   # https://gitlab.kitware.com/cmake/cmake/-/issues/25943
@@ -33,7 +34,7 @@ function(tablegen project ofn)
   # generated, and this behavior was fixed in CMake commit
   # e04a352cca523eba2ac0d60063a3799f5bb1c69e.
   cmake_policy(GET CMP0116 cmp0116_state)
-  if(CMAKE_GENERATOR MATCHES "Ninja" AND cmp0116_state STREQUAL NEW
+  if(CMAKE_GENERATOR MATCHES "Ninja|Makefiles" AND cmp0116_state STREQUAL NEW
      AND NOT (CMAKE_HOST_WIN32 AND CMAKE_VERSION VERSION_LESS 3.30)
      AND NOT (CMAKE_VERSION VERSION_LESS 3.23))
     # CMake emits build targets as relative paths but Ninja doesn't identify
@@ -49,7 +50,11 @@ function(tablegen project ofn)
   else()
     set(include_td_dirs "${tblgen_includes}")
     list(TRANSFORM include_td_dirs APPEND "/*.td")
-    file(GLOB global_tds ${include_td_dirs})
+    # Includes may be nested arbitrarily below an include root. Reconfigure
+    # on additions as well, so a newly included file remains a dependency on
+    # subsequent builds. This conservative path is only for hosts/generators
+    # that cannot consume the precise depfile above.
+    file(GLOB_RECURSE global_tds CONFIGURE_DEPENDS ${include_td_dirs})
     set(additional_cmdline
       -o ${CMAKE_CURRENT_BINARY_DIR}/${ofn}
       )

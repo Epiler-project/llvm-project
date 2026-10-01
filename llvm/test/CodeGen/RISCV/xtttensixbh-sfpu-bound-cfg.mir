@@ -1,7 +1,7 @@
 # RUN: split-file %s %t
 # RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/valid.mir -o - | FileCheck %s --check-prefix=CFG-BINDING
 # RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/scalar.mir -o - | FileCheck %s --check-prefix=SCALAR
-# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/legacy.mir -o - | FileCheck %s --check-prefix=LEGACY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-sfpu-physical-ingress %t/legacy.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=LEGACY
 # RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/valid.mir -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=PIPELINE
 # RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/virtual.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL
 # RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/copy.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=COPY
@@ -26,7 +26,8 @@
 # The bound verifier is independent of -verify-machineinstrs and of IR
 # admission. A malformed direct MIR entry must fail before generic PHI,
 # two-address or register allocation can repair it. Scalar virtual registers
-# and the separately admitted legacy carrier path remain unaffected.
+# remain valid, while the retired SFPU value-carrier path is rejected by the
+# physical-ingress verifier.
 # Missing required fixed operands are already rejected by the MIR parser;
 # extra and duplicate physical effects exercise the independent machine check.
 #
@@ -51,8 +52,7 @@
 # SCALAR: %[[NEXT]]:gpr = ADDI %[[CURRENT]], -1
 # SCALAR-LABEL: name: dynamic_port
 # SCALAR: $tt_l0, early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSFPLOAD $tt_l0, %{{[0-9]+}}, 0, 4,
-# LEGACY-LABEL: name: legacy_carrier
-# LEGACY: %0:sfpr = COPY $tt_l0
+# LEGACY: error: {{.*}}Tensix SFPU requires bound physical registers; virtual SFPU allocation is retired
 # PIPELINE-LABEL: <bound_cfg>:
 # PIPELINE: ttsfpmov.all l0, c9
 # PIPELINE: ttsfpadd l0, l0, c10, 0
@@ -373,7 +373,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    $tt_l0 = TTSFPLOAD $tt_l0, 0, 0, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOAD $tt_l0, 0, 0, 7, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 

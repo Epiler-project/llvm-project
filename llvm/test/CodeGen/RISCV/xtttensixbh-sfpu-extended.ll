@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -stop-after=finalize-isel -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ISEL
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ASM
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
+; REJECT: Tensix SFPU requires bound physical registers
 
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpsetexp.v(<32 x i32>, <32 x i32>, <32 x i32>, i32 immarg)
@@ -19,10 +20,6 @@ define void @independent_old() "tensix-executor"="trisc1" {
 ; ISEL: TTSFPARECIP
 ; ISEL: TTSFPIADDI
 ; ISEL: TTSFPSHFT2
-; ASM-LABEL: independent_old:
-; ASM-NOT: call
-; ASM: .word
-; ASM: ret
   %old = call <32 x i32> @llvm.riscv.tt.creg.read(i32 9)
   %base = call <32 x i32> @llvm.riscv.tt.creg.read(i32 10)
   %field = call <32 x i32> @llvm.riscv.tt.creg.read(i32 15)
@@ -46,9 +43,6 @@ define void @multiple_results() "tensix-executor"="trisc1" {
 ; ISEL: TTSFPTRANSP
 ; ISEL-SAME: implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3
 ; ISEL-SAME: implicit-def dead $tt_l4, implicit-def dead $tt_l5, implicit-def dead $tt_l6, implicit-def dead $tt_l7
-; ASM-LABEL: multiple_results:
-; ASM: .word 0x30000002
-; ASM: ret
   %a = call <32 x i32> @llvm.riscv.tt.creg.read(i32 8)
   %b = call <32 x i32> @llvm.riscv.tt.creg.read(i32 9)
   %c = call <32 x i32> @llvm.riscv.tt.creg.read(i32 10)
@@ -72,9 +66,6 @@ define void @lut_and_round() "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: lut_and_round
 ; ISEL: TTSFPLUT
 ; ISEL: TTSFPSTOCHRNDI
-; ASM-LABEL: lut_and_round:
-; ASM: .word 0x3c000002
-; ASM: ret
   %a = call <32 x i32> @llvm.riscv.tt.creg.read(i32 8)
   %b = call <32 x i32> @llvm.riscv.tt.creg.read(i32 9)
   %c = call <32 x i32> @llvm.riscv.tt.creg.read(i32 10)

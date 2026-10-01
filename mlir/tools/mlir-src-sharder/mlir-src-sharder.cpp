@@ -19,7 +19,8 @@ using namespace mlir;
 ///
 /// This functionality is generally only for the benefit of the build system,
 /// and is modeled after the same option in TableGen.
-static LogicalResult createDependencyFile(StringRef outputFilename,
+static LogicalResult createDependencyFile(StringRef inputFilename,
+                                          StringRef outputFilename,
                                           StringRef dependencyFile) {
   if (outputFilename == "-") {
     llvm::errs() << "error: the option -d must be used together with -o\n";
@@ -34,7 +35,13 @@ static LogicalResult createDependencyFile(StringRef outputFilename,
     return failure();
   }
 
-  outputFile->os() << outputFilename << ":\n";
+  outputFile->os() << outputFilename << ':';
+  // Match TableGen by recording the primary input even though CMake also
+  // lists it explicitly. CMake drops dependency rules without prerequisites,
+  // leaving an empty depfile that Ninja treats as dirty on every build.
+  if (inputFilename != "-")
+    outputFile->os() << ' ' << inputFilename;
+  outputFile->os() << '\n';
   outputFile->keep();
   return success();
 }
@@ -117,7 +124,8 @@ int main(int argc, char **argv) {
   // Always write the depfile, even if the main output hasn't changed. If it's
   // missing, Ninja considers the output dirty.
   if (!dependencyFilename.empty())
-    if (failed(createDependencyFile(outputFilename, dependencyFilename)))
+    if (failed(createDependencyFile(inputFilename, outputFilename,
+                                    dependencyFilename)))
       return 1;
 
   return 0;

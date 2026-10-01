@@ -8,6 +8,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -25,6 +26,10 @@ bool isSFPU(const MachineInstr &MI) {
   return RISCV::getTensixEncoding(MI.getOpcode()) &&
          !RISCV::getTensixMachineInfo(MI.getOpcode());
 }
+bool readsMatrixDst(const MachineInstr &MI) {
+  return MI.getOpcode() == RISCV::TTSFPLOAD ||
+         MI.getOpcode() == RISCV::PseudoTTSFPLOAD;
+}
 bool isIAdd(const MachineInstr &MI) {
   switch (MI.getOpcode()) {
   case RISCV::TTSFPIADDCCLT: case RISCV::TTSFPISUBCCLT:
@@ -41,6 +46,7 @@ bool readsL0ForConfig(const MachineInstr &MI) {
   case RISCV::TTSFPCONFIGC12:
   case RISCV::TTSFPCONFIGC13:
   case RISCV::TTSFPCONFIGC14:
+  case RISCV::TTSFPCONFIGLane:
     return true;
   default:
     return false;
@@ -53,6 +59,9 @@ unsigned lregBit(const MachineOperand &MO, const TargetRegisterInfo &TRI) {
   return 1u << TRI.getEncodingValue(MO.getReg());
 }
 bool isReplayExecution(const MachineInstr &MI) {
+  if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
+      MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay)
+    return MI.getOperand(0).getImm() == 0;
   if (MI.getOpcode() == RISCV::TTREPLAY)
     return MI.getOperand(0).getImm() == 0;
   if (MI.getOpcode() == RISCV::PseudoTTREPLAYPort)
@@ -67,14 +76,44 @@ unsigned readMask(const MachineInstr &MI, const TargetRegisterInfo &TRI) {
       Mask |= lregBit(MO, TRI);
   return Mask;
 }
+bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
+                   unsigned Pending) {
+  bool ReadsPendingL0 = readsL0ForConfig(MI) && (Pending & 1u);
+  bool ReadsPendingDest = isIAdd(MI) &&
+      (Pending & lregBit(MI.getOperand(0), TRI));
+  bool ReadsPendingShift = MI.getOpcode() == RISCV::TTSFPSHFT &&
+      (Pending & lregBit(MI.getOperand(0), TRI));
+  bool ReadsPendingSwap = MI.getOpcode() == RISCV::TTSFPSWAP &&
+      MI.getOperand(4).getImm() != 0 &&
+      (Pending & (lregBit(MI.getOperand(0), TRI) |
+                  lregBit(MI.getOperand(1), TRI)));
+  bool ReadsPendingShuffle = MI.getOpcode() == RISCV::TTSFPSHFT2 &&
+      (Pending & readMask(MI, TRI));
+  bool ReadsPendingLUT = isSFPU(MI) &&
+      ((Pending >> 8) & readMask(MI, TRI));
+  bool ReplayBoundary = isReplayExecution(MI) && Pending;
+  bool PipelineGap = (Pending & SFPUCooldown) && isSFPU(MI) &&
+                     MI.getOpcode() != RISCV::TTSFPNOP;
+  return ReadsPendingL0 || ReadsPendingDest || ReadsPendingShift ||
+         ReadsPendingSwap || ReadsPendingShuffle || ReadsPendingLUT ||
+         ReplayBoundary || PipelineGap;
+}
 unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
-                    unsigned Pending) {
-  // Automatic SFPU records contain only the verified one-cycle arithmetic
-  // subset. Their exact physical effects and length are rechecked before this
-  // final hazard analysis; explicit replay retains its conservative fence.
-  if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay &&
-      MI.getOperand(0).getImm() == 0)
-    return 0;
+                    unsigned Pending,
+                    const TensixSFPUReplayExecutionEffects *ReplayEffects =
+                        nullptr) {
+  // Reuse the replay verifier's exact preceding record, including its final
+  // physical MAD result. The execute pseudo's union of defs cannot identify
+  // which result is still pending, and it must not erase that dependency.
+  if ((MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
+       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) &&
+      MI.getOperand(0).getImm() == 0) {
+    assert(ReplayEffects && "SFPU replay requires verified effects");
+    auto It = ReplayEffects->find(&MI);
+    assert(It != ReplayEffects->end() && "missing SFPU replay effects");
+    MCRegister Result = It->second.PendingMADResult;
+    return Result ? 1u << TRI.getEncodingValue(Result) : 0;
+  }
   // Replay and MOP have finite validated instruction streams, but their final
   // SFPU producer may depend on control values. Fence the SFPU handoff instead
   // of guessing a producer from a source recipe or duplicating iterations.
@@ -96,7 +135,8 @@ unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
   return 0;
 }
 unsigned afterDstIssue(const MachineInstr &MI, unsigned Cycles) {
-  if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay &&
+  if ((MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
+       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) &&
       MI.getOperand(0).getImm() == 0) {
     unsigned Length = MI.getOperand(2).getImm();
     return Cycles > Length ? Cycles - Length : 0;
@@ -126,9 +166,20 @@ bool hasExternalIssueOwner(const MachineFunction &MF) {
           RISCV::getTensixMachineInfoByMop(MI.getOpcode()) ||
           MI.getOpcode() == RISCV::TTREPLAY ||
           MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
+          MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord ||
+          MI.getOpcode() == RISCV::PseudoTTReplayTemplateBegin ||
+          MI.getOpcode() == RISCV::PseudoTTReplayTemplateEnd ||
+          MI.getOpcode() == RISCV::PseudoTTReplayTemplateExecute ||
+          MI.getOpcode() == RISCV::PseudoTTReplayTemplateMop ||
+          MI.getOpcode() == RISCV::PseudoTTReplayTemplateWord ||
+          MI.getOpcode() == RISCV::PseudoTTReplayTemplateDstWord ||
           MI.getOpcode() == RISCV::TTMOP ||
           MI.getOpcode() == RISCV::TTMOP_CFG ||
           MI.getOpcode() == RISCV::PseudoTTMOPClear ||
+          MI.getOpcode() == RISCV::PseudoTTMOPControlWrite ||
+          MI.getOpcode() == RISCV::PseudoTTMOPControlWriteImm ||
           MI.getOpcode() == RISCV::PseudoTTReplayRecordEnd)
         return true;
   return false;
@@ -304,9 +355,31 @@ public:
           DiagnosticInfoUnsupported(MF.getFunction(), Message));
       return false;
     };
-    if (!Repair)
-      if (Error E = verifyTensixReplay(MF))
+    TensixSFPUReplayExecutionEffects ReplayEffects;
+    bool HasAutomaticReplay = any_of(MF, [](const MachineBasicBlock &BB) {
+      return any_of(BB, [](const MachineInstr &MI) {
+        return MI.getOpcode() == RISCV::PseudoTTSFPUReplay;
+      });
+    });
+    // Normal selection follows repair. A supplied automatic record still
+    // needs its exact effect summary before either repair or verification;
+    // final verification will reject any record length changed by repair.
+    if (!Repair || HasAutomaticReplay)
+      if (Error E = verifyTensixReplay(MF, &ReplayEffects))
         return Fail(toString(std::move(E)));
+    auto Explicit = analyzeTensixExplicitReplay(MF);
+    if (!Explicit)
+      return Fail(toString(Explicit.takeError()));
+    for (const auto &Entry : Explicit->ExecutionEffects)
+      ReplayEffects.try_emplace(Entry.first, Entry.second);
+    const auto &MOPExecutions = Explicit->MOPExecutions;
+    SmallPtrSet<const MachineInstr *, 32> RecordedBodies;
+    SmallPtrSet<const MachineInstr *, 8> ExecutedRecordHeaders;
+    for (const auto &Record : Explicit->Records) {
+      RecordedBodies.insert(Record.Body.begin(), Record.Body.end());
+      if (Record.ExecuteWhileLoading)
+        ExecutedRecordHeaders.insert(Record.Header);
+    }
     bool Bound = Info->usesBoundTensixSFPU();
     bool Uses = Info->usesTensixSFPU();
     for (const auto &BB : MF)
@@ -317,6 +390,54 @@ public:
     auto &ST = MF.getSubtarget<RISCVSubtarget>();
     const auto &TRI = *ST.getRegisterInfo();
     const auto &TII = *ST.getInstrInfo();
+    // Record-only payloads are not executed now, but their future issue order
+    // has the same hardware latency rules. Reconstruct through the native
+    // descriptor, then reuse exactly the normal transfer and gap predicates.
+    // The first Dst read's native issue position determines how much incoming
+    // Matrix latency the body can absorb. Derive it from actual final words,
+    // including authored/legalized NOPs; do not infer it from union effects.
+    // All currently admitted words are SFPU issues and none starts a Matrix
+    // write, so the existing length-based outgoing Dst transfer remains exact.
+    DenseMap<const MachineInstr *, unsigned> DstReadPrefixes;
+    auto verifyFutureHazards =
+        [&](ArrayRef<TensixRecordedWord> Words) -> Expected<unsigned> {
+      TensixReplayHazardState State;
+      unsigned DstPrefix = TensixReplaySlotCount;
+      for (auto [Index, Word] : enumerate(Words)) {
+        auto Rebuilt = createTensixRecordedInstruction(Word, MF);
+        if (!Rebuilt)
+          return Rebuilt.takeError();
+        MachineInstr *Future = *Rebuilt;
+        if (readsMatrixDst(*Future))
+          DstPrefix = std::min(DstPrefix, unsigned(Index));
+        bool NeedsGap = needsTensixReplayHazardGap(*Future, TRI, State);
+        State = advanceTensixReplayHazard(*Future, TRI, State);
+        MF.deleteMachineInstr(Future);
+        if (NeedsGap)
+          return createStringError(
+              "explicit SFPU replay template requires an authored hazard gap");
+      }
+      return DstPrefix;
+    };
+    for (const auto &Record : Explicit->Records) {
+      auto Prefix = verifyFutureHazards(Record.Words);
+      if (!Prefix)
+        return Fail(toString(Prefix.takeError()));
+      if (Record.ExecuteWhileLoading)
+        DstReadPrefixes.try_emplace(Record.Header, *Prefix);
+    }
+    // A selected range may combine words from partial overwrites. Checking
+    // each original recording alone does not establish the executed order.
+    for (const auto &Execution : Explicit->ExecutionWords) {
+      auto Prefix = verifyFutureHazards(Execution.second);
+      if (!Prefix)
+        return Fail(toString(Prefix.takeError()));
+      DstReadPrefixes.try_emplace(Execution.first, *Prefix);
+    }
+    for (const auto &[Instruction, Execution] : MOPExecutions)
+      if (Execution.Hazards.apply({}).RequiresGap)
+        return Fail("SFPU MOP selected words require an authored internal "
+                    "hazard gap across slots or hardware-loop edges");
     for (const auto &BB : MF)
       for (const auto &MI : BB.instrs()) {
         if (MI.isBundled())
@@ -362,7 +483,13 @@ public:
         DstEntry[&BB] = DstIncoming;
         unsigned Outgoing = Incoming;
         for (const auto &MI : BB) {
-          Outgoing = afterIssue(MI, TRI, Outgoing);
+          if (auto MOP = MOPExecutions.find(&MI); MOP != MOPExecutions.end()) {
+            auto Next = MOP->second.Hazards.apply({Outgoing, DstIncoming});
+            Outgoing = Next.State.SFPU;
+            DstIncoming = Next.State.DstCycles;
+            continue;
+          }
+          Outgoing = afterIssue(MI, TRI, Outgoing, &ReplayEffects);
           DstIncoming = afterDstIssue(MI, DstIncoming);
         }
         if (Exit.lookup(&BB) != Outgoing) {
@@ -380,25 +507,33 @@ public:
       unsigned DstPending = DstEntry.lookup(&BB);
       for (auto It = BB.begin(); It != BB.end(); ++It) {
         MachineInstr &MI = *It;
-        bool ReadsPendingL0 = readsL0ForConfig(MI) && (Pending & 1u);
-        bool ReadsPendingDest = isIAdd(MI) &&
-            (Pending & lregBit(MI.getOperand(0), TRI));
-        bool ReadsPendingShift = MI.getOpcode() == RISCV::TTSFPSHFT &&
-            (Pending & lregBit(MI.getOperand(0), TRI));
-        bool ReadsPendingSwap = MI.getOpcode() == RISCV::TTSFPSWAP &&
-            MI.getOperand(4).getImm() != 0 &&
-            (Pending & (lregBit(MI.getOperand(0), TRI) |
-                        lregBit(MI.getOperand(1), TRI)));
-        bool ReadsPendingShuffle = MI.getOpcode() == RISCV::TTSFPSHFT2 &&
-            (Pending & readMask(MI, TRI));
-        bool ReadsPendingLUT = isSFPU(MI) &&
-            ((Pending >> 8) & readMask(MI, TRI));
-        bool ReplayBoundary = isReplayExecution(MI) && Pending;
-        bool PipelineGap = (Pending & SFPUCooldown) && isSFPU(MI) &&
-                           MI.getOpcode() != RISCV::TTSFPNOP;
-        if (ReadsPendingL0 || ReadsPendingDest || ReadsPendingShift ||
-            ReadsPendingSwap || ReadsPendingShuffle || ReadsPendingLUT ||
-            ReplayBoundary || PipelineGap) {
+        if (auto MOP = MOPExecutions.find(&MI); MOP != MOPExecutions.end()) {
+          auto Next = MOP->second.Hazards.apply({Pending, DstPending});
+          if (Next.RequiresGap && !Repair)
+            return Fail("unresolved native pipeline dependency at SFPU MOP entry");
+          // Empty-entry internal hazards were rejected above. Repair only
+          // actual incoming dependencies; an outer fence cannot repair an
+          // unsafe Replay-to-slot or hardware-loop edge inside the expander.
+          while (Next.RequiresGap && (Pending || DstPending)) {
+            BuildMI(BB, It, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
+            Pending = 0;
+            DstPending = DstPending ? DstPending - 1 : 0;
+            Modified = true;
+            Next = MOP->second.Hazards.apply({Pending, DstPending});
+          }
+          if (Next.RequiresGap)
+            return Fail("SFPU MOP selected words require an authored internal "
+                        "hazard gap across slots or hardware-loop edges");
+          Pending = Next.State.SFPU;
+          DstPending = Next.State.DstCycles;
+          continue;
+        }
+        // The immutable authored body cannot absorb a newly inserted issue.
+        // Fence an executed record at its header, before capturing starts.
+        bool RecordBoundary = ExecutedRecordHeaders.contains(&MI) && Pending;
+        if (needsSFPUWait(MI, TRI, Pending) || RecordBoundary) {
+          if (RecordedBodies.contains(&MI))
+            return Fail("explicit SFPU replay template requires an authored hazard gap");
           if (!Repair)
             return Fail("unresolved Tensix SFPU MAD to IADD destination hazard");
           BuildMI(BB, It, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
@@ -406,18 +541,24 @@ public:
           DstPending = DstPending ? DstPending - 1 : 0;
           Modified = true;
         }
-        if ((MI.getOpcode() == RISCV::TTSFPLOAD ||
-             MI.getOpcode() == RISCV::PseudoTTSFPLOAD) && DstPending) {
+        unsigned DstPrefix = readsMatrixDst(MI) ? 0 : TensixReplaySlotCount;
+        if (auto Prefix = DstReadPrefixes.find(&MI);
+            Prefix != DstReadPrefixes.end())
+          DstPrefix = Prefix->second;
+        if (DstPending > DstPrefix) {
+          if (RecordedBodies.contains(&MI))
+            return Fail("explicit SFPU replay template requires an authored "
+                        "Dst hazard gap");
           if (!Repair)
             return Fail("unresolved Tensix matrix Dst write to SFPLOAD hazard");
-          while (DstPending) {
+          while (DstPending > DstPrefix) {
             BuildMI(BB, It, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
             --DstPending;
           }
           Pending = 0;
           Modified = true;
         }
-        Pending = afterIssue(MI, TRI, Pending);
+        Pending = afterIssue(MI, TRI, Pending, &ReplayEffects);
         DstPending = afterDstIssue(MI, DstPending);
       }
     }
@@ -425,6 +566,20 @@ public:
   }
 };
 } // namespace
+bool llvm::needsTensixReplayHazardGap(const MachineInstr &MI,
+                                     const TargetRegisterInfo &TRI,
+                                     TensixReplayHazardState State) {
+  return needsSFPUWait(MI, TRI, State.SFPU) ||
+         (readsMatrixDst(MI) && State.DstCycles);
+}
+
+TensixReplayHazardState llvm::advanceTensixReplayHazard(
+    const MachineInstr &MI, const TargetRegisterInfo &TRI,
+    TensixReplayHazardState State) {
+  return {afterIssue(MI, TRI, State.SFPU),
+          afterDstIssue(MI, State.DstCycles)};
+}
+
 char RISCVTensixHazards::ID = 0;
 INITIALIZE_PASS(RISCVTensixHazards, "riscv-tensix-hazards",
                 "Repair and verify Tensix SFPU machine hazards", false, false)

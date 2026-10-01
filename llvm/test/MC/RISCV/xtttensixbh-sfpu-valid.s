@@ -96,5 +96,17 @@ ttsfpstore l3, 513, 2, 4
 # ENC: ttsfpstore l0, 0, 0, 0 # encoding: [0x01,0x00,0x00,0xc8]
 # DIS: 74: {{.*}}ttsfpstore l0, 0, 0, 0
 ttsfpstore l0, 0, 0, 0
-# DIS: 78: {{.*}}ret
+# ENC: ttsfpload l0, 0, 0, 1 # encoding: [0x01,0x00,0x04,0xc0]
+# DIS: 78: {{.*}}ttsfpload l0, 0, 0, 1
+ttsfpload l0, 0, 0, 1
+# ENC: ttsfpload l7, 1023, 7, 1 # encoding: [0xfd,0x8f,0xc7,0xc1]
+# DIS: 7c: {{.*}}ttsfpload l7, 1023, 7, 1
+ttsfpload l7, 1023, 7, 1
+# ENC: ttsfpstore l0, 0, 7, 1 # encoding: [0x01,0x80,0x07,0xc8]
+# DIS: 80: {{.*}}ttsfpstore l0, 0, 7, 1
+ttsfpstore l0, 0, 7, 1
+# ENC: ttsfpstore l7, 1023, 7, 1 # encoding: [0xfd,0x8f,0xc7,0xc9]
+# DIS: 84: {{.*}}ttsfpstore l7, 1023, 7, 1
+ttsfpstore l7, 1023, 7, 1
+# DIS: 88: {{.*}}ret
 ret

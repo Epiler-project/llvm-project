@@ -107,6 +107,12 @@ SDValue llvm::lowerTensixBoundSFPUIntrinsic(SDValue Op, SelectionDAG &DAG,
   Results.push_back(MVT::Other);
   MachineSDNode *Node =
       DAG.getMachineNode(Opcode, DL, DAG.getVTList(Results), Operands);
+  if (Dynamic) {
+    auto *MMO = DAG.getMachineFunction().getMachineMemOperand(
+        MachinePointerInfo(),
+        MachineMemOperand::MOStore | MachineMemOperand::MOVolatile, 4, Align(4));
+    DAG.setNodeMemRefs(Node, {MMO});
+  }
   return SDValue(Node, Dynamic ? 2 : 0);
 }
 

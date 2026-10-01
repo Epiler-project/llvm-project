@@ -1,0 +1,60 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-selection,riscv-tensix-bound-verify %s -o - | FileCheck %s
+#
+# Two independently authored straight-line sequences include a real LReg
+# result, making them profitable if the explicit receiver were incorrectly
+# reused for automatic mining. All seven native state forms remain barriers.
+# No loop is expanded by the fixture or the tested pass.
+#
+# CHECK-LABEL: name: state_is_not_automatically_mined
+# CHECK-NOT: TTREPLAY
+# CHECK-NOT: PseudoTTSFPUReplay
+# CHECK: TTSFPENCC 0, 9,
+# CHECK: TTSFPCONFIGC11
+# CHECK: TTSFPCONFIGC12
+# CHECK: TTSFPCONFIGC13
+# CHECK: TTSFPCONFIGC14
+# CHECK: TTSFPCONFIGLane
+# CHECK: TTSFPCONFIGReset
+# CHECK: $tt_l2 = TTSFPIADD
+# CHECK-NOT: TTREPLAY
+# CHECK-NOT: PseudoTTSFPUReplay
+# CHECK: TTSFPENCC 0, 9,
+# CHECK: TTSFPCONFIGC11
+# CHECK: TTSFPCONFIGC12
+# CHECK: TTSFPCONFIGC13
+# CHECK: TTSFPCONFIGC14
+# CHECK: TTSFPCONFIGLane
+# CHECK: TTSFPCONFIGReset
+# CHECK: $tt_l2 = TTSFPIADD
+# CHECK-NOT: TTREPLAY
+# CHECK-NOT: PseudoTTSFPUReplay
+# CHECK: PseudoRET
+--- |
+  define void @state_is_not_automatically_mined() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: state_is_not_automatically_mined
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPENCC 0, 9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPCONFIGC11 21844, 8, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGC12 21844, 8, implicit $tt_l0, implicit $tt_c12, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c12, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGC13 21844, 8, implicit $tt_l0, implicit $tt_c13, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c13, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGC14 21844, 8, implicit $tt_l0, implicit $tt_c14, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c14, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGLane 21844, 8, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    $tt_l2 = TTSFPIADD $tt_l2, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 0, 9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPCONFIGC11 21844, 8, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGC12 21844, 8, implicit $tt_l0, implicit $tt_c12, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c12, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGC13 21844, 8, implicit $tt_l0, implicit $tt_c13, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c13, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGC14 21844, 8, implicit $tt_l0, implicit $tt_c14, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c14, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGLane 21844, 8, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    $tt_l2 = TTSFPIADD $tt_l2, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

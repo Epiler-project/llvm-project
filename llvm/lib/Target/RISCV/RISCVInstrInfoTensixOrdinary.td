@@ -79,6 +79,21 @@ class TensixOrdinaryMop<dag Inputs>
   let Defs = [TT_CONFIG, TT_ISSUE];
 }
 def PseudoTTMOPClear : TensixOrdinaryMop<(ins uimm8:$slot)>;
+def PseudoTTMOPControlWriteImm
+    : TensixOrdinaryMop<(ins uimm8:$cell, uimm32:$value)>;
+def PseudoTTMOPControlWrite
+    : Pseudo<(outs GPR:$address), (ins uimm8:$cell, GPR:$value), []> {
+  let Constraints = "@earlyclobber $address";
+  let Size = 8;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 0;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_CONFIG, TT_ISSUE];
+}
 // Post-RA automatic SFPU compression only. Physical value effects are derived
 // from the retained record and verified again before emission. This is not an
 // LLVM IR ingress for explicit SFPU recording.
@@ -95,6 +110,36 @@ def PseudoTTSFPUReplay : Pseudo<(outs),
   let Uses = [TT_CONFIG, TT_ISSUE];
   let Defs = [TT_ISSUE];
 }
+// Authored recordings are normalized before machine SSA optimization. The
+// normalizer derives exact physical effects for execution from recorded words.
+// Preserve the ordinary volatile memory operand on the control instruction.
+def PseudoTTExplicitSFPUReplay : Pseudo<(outs),
+    (ins uimm32:$load_mode, uimm32:$execute_while_loading,
+         uimm32:$len, uimm32:$start_idx), []> {
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
+// Record-only words carry native opcode/operand fields as immediates. Recording
+// these fields does not execute their numerical register reads or writes.
+def PseudoTTSFPURecordWord : Pseudo<(outs),
+    (ins uimm32:$opcode, variable_ops), []> {
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
 def PseudoTTReplayRecordEnd : Pseudo<(outs), (ins), []> {
   let Size = 0;
   let Predicates = [HasVendorXTTTensixBH];
@@ -106,6 +151,68 @@ def PseudoTTReplayRecordEnd : Pseudo<(outs), (ins), []> {
   let Uses = [TT_ISSUE];
   let Defs = [TT_ISSUE];
 }
+
+// Symbolic boundaries remain until post-RA finalization. The prepare pass
+// derives numerical effects only for execute and actually executed body words.
+class TensixReplayTemplateControl<dag Inputs, int Bytes>
+    : Pseudo<(outs), Inputs, []> {
+  let Size = Bytes;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
+def PseudoTTReplayTemplateBegin : TensixReplayTemplateControl<
+    (ins uimm32:$identity, uimm32:$mode, uimm32:$placement,
+         uimm32:$fixed_start), 4>;
+def PseudoTTReplayTemplateEnd : TensixReplayTemplateControl<
+    (ins uimm32:$identity), 0> {
+  let mayLoad = 0;
+  let mayStore = 0;
+  let Uses = [TT_ISSUE];
+}
+def PseudoTTReplayTemplateExecute : TensixReplayTemplateControl<
+    (ins uimm32:$identity), 4>;
+def PseudoTTReplayTemplateMop : TensixOrdinaryMop<
+    (ins uimm32:$identity, uimm8:$slot)>;
+def PseudoTTReplayTemplateWord : Pseudo<(outs),
+    (ins uimm32:$identity, uimm32:$opcode, variable_ops), []> {
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
+
+// Dynamic Dst fields are computed at record time. Physical LReg ids are
+// encoded fields, not numerical uses/defs; only offset is a live scalar input.
+class TensixDstRecordPayload<dag Inputs> : Pseudo<
+    (outs GPR:$word, GPR:$address), Inputs, []> {
+  let Size = 16;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 0;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_ISSUE];
+  let Defs = [TT_ISSUE];
+  let Constraints = "@earlyclobber $word,@earlyclobber $address";
+}
+def PseudoTTReplayTemplateDstWord : TensixDstRecordPayload<
+    (ins uimm32:$identity, uimm32:$opcode, uimm32:$reg, uimm32:$old,
+         GPR:$offset, uimm3:$addrmode, uimm4:$format)>;
+def PseudoTTSFPUDstRecordWord : TensixDstRecordPayload<
+    (ins uimm32:$opcode, uimm32:$reg, uimm32:$old,
+         GPR:$offset, uimm3:$addrmode, uimm4:$format)>;
 
 def PseudoTTADDDMAREGPort : TensixOrdinaryPort<
     (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opbisconst)>;

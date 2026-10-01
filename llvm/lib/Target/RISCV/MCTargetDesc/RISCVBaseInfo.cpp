@@ -222,7 +222,8 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
   case RISCV::TTSFPCONFIGC11:
   case RISCV::TTSFPCONFIGC12:
   case RISCV::TTSFPCONFIGC13:
-  case RISCV::TTSFPCONFIGC14: {
+  case RISCV::TTSFPCONFIGC14:
+  case RISCV::TTSFPCONFIGLane: {
     uint64_t Mask = MI.getOperand(0).getImm();
     unsigned Mode = MI.getOperand(1).getImm();
     if (Mode == 0 && Mask != 0)

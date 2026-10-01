@@ -1,0 +1,82 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %s -o %t.once.mir
+# RUN: FileCheck %s --input-file=%t.once.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t.once.mir -o %t.twice.mir
+# RUN: FileCheck %s --input-file=%t.twice.mir
+#
+# Record-only state bodies never execute. Earlier CC/CReg/config definitions
+# must remain live and incoming kill annotations must be invalidated, including
+# registers that do not appear among the recorded word's explicit fields.
+# A second normalization must be idempotent.
+#
+# CHECK-LABEL: name: structured_state_without_execute
+# CHECK: TTSFPENCC 1, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+# CHECK-NEXT: TTSFPCONFIGC11 0, 0, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+# CHECK-NEXT: PseudoTTReplayTemplateBegin 801, 0, 0, 0,
+# CHECK-NEXT: PseudoTTReplayTemplateWord 801,
+# CHECK-NOT: $tt_cc
+# CHECK-NEXT: PseudoTTReplayTemplateWord 801,
+# CHECK-NOT: $tt_c11
+# CHECK-NEXT: PseudoTTReplayTemplateWord 801,
+# CHECK-NOT: $tt_l0
+# CHECK-NEXT: PseudoTTReplayTemplateWord 801,
+# CHECK-NOT: $tt_config
+# CHECK-NEXT: PseudoTTReplayTemplateEnd 801,
+# CHECK-NEXT: $tt_l2 = TTSFPMOV $tt_l2, $tt_c11,
+# CHECK-NEXT: PseudoRET
+# CHECK-LABEL: name: raw_state_without_execute
+# CHECK: TTSFPENCC 1, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+# CHECK-NEXT: TTSFPCONFIGC11 0, 0, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 4, 5,
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NOT: $tt_cc
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NOT: $tt_c11
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NOT: $tt_l0
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NOT: $tt_config
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: $tt_l2 = TTSFPMOV $tt_l2, $tt_c11,
+# CHECK-NEXT: PseudoRET
+--- |
+  define void @structured_state_without_execute() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @raw_state_without_execute() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: structured_state_without_execute
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPENCC 1, 10, implicit killed $tt_cc, implicit killed $tt_config, implicit $tt_issue, implicit-def dead $tt_cc, implicit-def $tt_issue
+    TTSFPCONFIGC11 0, 0, implicit killed $tt_l0, implicit killed $tt_c11, implicit killed $tt_cc, implicit killed $tt_config, implicit $tt_issue, implicit-def dead $tt_c11, implicit-def dead $tt_config, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 801, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 0, 9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPCONFIGC11 21844, 8, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGLane 21844, 8, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 801, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOV $tt_l2, $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: raw_state_without_execute
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPENCC 1, 10, implicit killed $tt_cc, implicit killed $tt_config, implicit $tt_issue, implicit-def dead $tt_cc, implicit-def $tt_issue
+    TTSFPCONFIGC11 0, 0, implicit killed $tt_l0, implicit killed $tt_c11, implicit killed $tt_cc, implicit killed $tt_config, implicit $tt_issue, implicit-def dead $tt_c11, implicit-def dead $tt_config, implicit-def $tt_issue
+    TTREPLAY 1, 0, 4, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 0, 9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPCONFIGC11 21844, 8, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGLane 21844, 8, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOV $tt_l2, $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

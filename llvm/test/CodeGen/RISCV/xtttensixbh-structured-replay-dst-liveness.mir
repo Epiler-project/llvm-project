@@ -1,0 +1,63 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %s -o %t.once.mir
+# RUN: FileCheck %s --input-file=%t.once.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t.once.mir -o %t.twice.mir
+# RUN: FileCheck %s --input-file=%t.twice.mir
+#
+# Neither function executes its recording. Removing an apparent SFPSTORE
+# must expose the earlier Dst state and invalidate stale implicit-state flags,
+# just as removal of an apparent LReg definition preserves the old LReg.
+# Dst/config effects are descriptor-owned and absent from encoding fields;
+# retaining only TensixRecordedWord's explicit registers misses this case.
+# tracksRegLiveness is deliberately false while ingress carries the stale
+# annotations that normalization must invalidate before later machine passes.
+#
+# CHECK-LABEL: name: structured_dst_state_without_execute
+# CHECK: TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+# CHECK-NEXT: PseudoTTReplayTemplateBegin 401, 0, 0, 0,
+# CHECK-NEXT: PseudoTTReplayTemplateWord 401,
+# CHECK-NOT: $tt_dst
+# CHECK-NEXT: PseudoTTReplayTemplateEnd 401,
+# CHECK-NEXT: $tt_l1 = TTSFPLOAD
+# CHECK-NEXT: PseudoRET
+# CHECK-LABEL: name: raw_dst_state_without_execute
+# CHECK: TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 5,
+# CHECK-NEXT: PseudoTTSFPURecordWord
+# CHECK-NOT: $tt_dst
+# CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: $tt_l1 = TTSFPLOAD
+# CHECK-NEXT: PseudoRET
+--- |
+  define void @structured_dst_state_without_execute() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @raw_dst_state_without_execute() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: structured_dst_state_without_execute
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTMVMUL 0, 0, 0, 0, implicit killed $tt_config, implicit killed $tt_dst, implicit $tt_issue, implicit-def dead $tt_config, implicit-def dead $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 401, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l0, 32, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 401, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOAD $tt_l1, 40, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: raw_dst_state_without_execute
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTMVMUL 0, 0, 0, 0, implicit killed $tt_config, implicit killed $tt_dst, implicit $tt_issue, implicit-def dead $tt_config, implicit-def dead $tt_dst, implicit-def $tt_issue
+    TTREPLAY 1, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPSTORE $tt_l0, 32, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOAD $tt_l1, 40, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

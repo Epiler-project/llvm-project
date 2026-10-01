@@ -94,6 +94,7 @@ add_llvm_unittest(SupportTests
   SuffixTreeTest.cpp
   SwapByteOrderTest.cpp
   TarWriterTest.cpp
+  TensixMOPSequenceTest.cpp
   TextEncodingTest.cpp
   ThreadPool.cpp
   ThreadSafeAllocatorTest.cpp

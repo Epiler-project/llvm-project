@@ -6,7 +6,7 @@
 // numerical SSA delegates placement to the allocator; bound ingress directly
 // constructs these native instructions with verified physical defs and uses.
 class TensixUnary<bits<8> Opcode, string Name, bits<16> Modes>
-    : TensixSSAInst<Opcode, (outs SFPR:$dst),
+    : TensixPhysicalInst<Opcode, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$src, uimm4:$mode),
                     Name, "$dst, $src, $mode"> {
   bits<4> dst;
@@ -38,7 +38,7 @@ def TTSFPCAST : TensixUnary<0x90, "ttsfpcast", 0x000f> {
 }
 
 class TensixSetField<bits<8> Opcode, string Name, bits<16> Modes>
-    : TensixSSAInst<Opcode, (outs SFPR:$dst),
+    : TensixPhysicalInst<Opcode, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$src, uimm16:$value, uimm4:$mode),
                     Name, "$dst, $src, $value, $mode"> {
   bits<4> dst;
@@ -58,7 +58,7 @@ def TTSFPSETMAN : TensixSetField<0x83, "ttsfpsetman", 0x0003>;
 def TTSFPSETSGN : TensixSetField<0x89, "ttsfpsetsgn", 0x0003>;
 
 class TensixBitwise<bits<8> Opcode, string Name>
-    : TensixSSAInst<Opcode, (outs SFPR:$dst),
+    : TensixPhysicalInst<Opcode, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$src), Name, "$dst, $src"> {
   bits<4> dst;
   bits<4> src;
@@ -72,7 +72,7 @@ def TTSFPXOR : TensixBitwise<0x8d, "ttsfpxor">;
 def TTSFPNOT : TensixBitwise<0x80, "ttsfpnot">;
 
 class TensixSignedImmediate<bits<8> Opcode, string Name, bits<16> Modes>
-    : TensixSSAInst<Opcode, (outs SFPR:$dst),
+    : TensixPhysicalInst<Opcode, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$src, simm12:$value, uimm4:$mode),
                     Name, "$dst, $src, $value, $mode"> {
   bits<4> dst;
@@ -95,7 +95,7 @@ def TTSFPSHFT : TensixSignedImmediate<0x7a, "ttsfpshft", 0x00af>;
 def TTSFPSHFT2 : TensixUnary<0x94, "ttsfpshft2", 0x0018>;
 
 class TensixStochRound<string Name, bit Immediate>
-    : TensixSSAInst<0x8e, (outs SFPR:$dst),
+    : TensixPhysicalInst<0x8e, (outs SFPR:$dst),
         !if(Immediate,
           (ins SFPR:$old, SFPRRead:$src, uimm8:$descale, uimm4:$mode, uimm2:$round),
           (ins SFPR:$old, SFPRRead:$src, SFPRRead:$descale, uimm4:$mode, uimm2:$round)),
@@ -121,7 +121,7 @@ class TensixStochRound<string Name, bit Immediate>
 def TTSFPSTOCHRNDI : TensixStochRound<"ttsfpstochrnd.i", 1>;
 def TTSFPSTOCHRNDV : TensixStochRound<"ttsfpstochrnd.v", 0>;
 
-def TTSFPSWAP : TensixSSAInst<0x92, (outs SFPR:$dst, SFPR:$other),
+def TTSFPSWAP : TensixPhysicalInst<0x92, (outs SFPR:$dst, SFPR:$other),
     (ins SFPR:$old, SFPR:$oldother, uimm4:$mode),
     "ttsfpswap", "$dst, $other, $mode"> {
   bits<4> dst;
@@ -138,7 +138,7 @@ def TTSFPSWAP : TensixSSAInst<0x92, (outs SFPR:$dst, SFPR:$other),
 // Group instructions name their entire fixed-register footprint. The selector
 // stages legacy SSA inputs with copies and captures results. Bound ingress
 // requires the complete authored group and never performs that staging.
-def TTSFPLUT : TensixSSAInst<0x73, (outs SFPR:$dst),
+def TTSFPLUT : TensixPhysicalInst<0x73, (outs SFPR:$dst),
     (ins SFPR:$old, uimm4:$mode), "ttsfplut", "$dst, $mode"> {
   bits<4> dst;
   bits<4> mode;
@@ -149,7 +149,7 @@ def TTSFPLUT : TensixSSAInst<0x73, (outs SFPR:$dst),
   let AllowedModes = 0x0011;
   let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];
 }
-def TTSFPTRANSP : TensixSSAInst<0x8c, (outs), (ins), "ttsfptransp", ""> {
+def TTSFPTRANSP : TensixPhysicalInst<0x8c, (outs), (ins), "ttsfptransp", ""> {
   let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_L0, TT_L1, TT_L2, TT_L3, TT_L4, TT_L5, TT_L6, TT_L7, TT_ISSUE];
 }

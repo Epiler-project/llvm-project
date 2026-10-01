@@ -1,18 +1,10 @@
 ; RUN: split-file %s %t
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/masked-lut.ll -o - | FileCheck %s --check-prefix=ISEL
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=finalize-isel %t/masked-lut.ll -o - | FileCheck %s --check-prefix=ISEL
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=postrapseudos %t/masked-lut.ll -o %t/ra-o0.mir
-; RUN: FileCheck %s --check-prefix=RA < %t/ra-o0.mir
-; RUN: FileCheck %s --check-prefix=PRESERVE < %t/ra-o0.mir
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=postrapseudos %t/masked-lut.ll -o %t/ra-o2.mir
-; RUN: FileCheck %s --check-prefix=RA < %t/ra-o2.mir
-; RUN: FileCheck %s --check-prefix=PRESERVE < %t/ra-o2.mir
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -filetype=obj %t/masked-lut.ll -o /dev/null
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %t/masked-lut.ll -o /dev/null
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -filetype=obj %t/transpose-live.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=LIVE
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -filetype=obj %t/transpose-live.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=LIVE
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -filetype=obj %t/transpose-fixed.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=FIXED
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -filetype=obj %t/transpose-fixed.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=FIXED
+; Virtual SFPU rejection and the no-spill contract are covered at the
+; physical-ingress MIR boundary. This legacy SSA file intentionally stops at
+; instruction selection; it cannot be passed to post-RA without an upstream
+; physical binding.
 
 ; The old destination is independent of all four fixed-group LUT inputs. Its
 ; inactive lanes must survive the issue, and its original full-lane value is
@@ -38,31 +30,6 @@
 
 ; The tied result receives an all-lane copy while old remains live. The move
 ; may legally occur on either side of SETCC, so do not freeze that scheduling.
-; RA-LABEL: name: masked_independent_old_lut
-; RA: [[OLDREG:\$tt_l[4-7]]] = TTSFPLOAD {{.*}}, 0, 0, 4,
-; RA: TTSFPPUSHC
-; RA-DAG: [[RESULTREG:\$tt_l[4-7]]] = TTSFPMOVAll [[OLDREG]],
-; RA-DAG: TTSFPSETCCNE
-; RA: [[RESULTREG]] = TTSFPLUT killed renamable [[RESULTREG]], 4,
-; RA-SAME: implicit {{(killed )?}}$tt_l0, implicit {{(killed )?}}$tt_l1, implicit {{(killed )?}}$tt_l2, implicit {{(killed )?}}$tt_l3, implicit $tt_cc
-; RA-NEXT: TTSFPPOPC
-; RA-NEXT: TTSFPSTORE killed renamable [[RESULTREG]], 10, 0, 4,
-; RA-NEXT: TTSFPSTORE killed renamable [[OLDREG]], 11, 0, 4,
-; RA-NEXT: PseudoRET
-
-; A separate check spans the whole masked region, proving result and old do
-; not merely match the same register in the positive allocation checks.
-; PRESERVE-LABEL: name: masked_independent_old_lut
-; PRESERVE: [[OLDREG:\$tt_l[4-7]]] = TTSFPLOAD {{.*}}, 0, 0, 4,
-; PRESERVE-NOT: [[OLDREG]] = TTSFPLUT
-; PRESERVE: PseudoRET
-
-; SFPTRANSP clobbers both L0-L3 and L4-L7. An ordinary SSA value live across
-; it, or a fixed binding requiring restoration, cannot be hidden in another
-; LReg. The no-spill contract must fail instead of corrupting either value.
-; LIVE: error: {{.*}}ran out of registers during register allocation in function 'transpose_live'
-; FIXED: error: {{.*}}ran out of registers during register allocation in function 'transpose_fixed'
-
 ;--- masked-lut.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpload(<32 x i32>, i32, i32 immarg, i32 immarg)

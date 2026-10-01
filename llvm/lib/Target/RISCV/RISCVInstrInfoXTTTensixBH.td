@@ -68,7 +68,7 @@ def PseudoTTDependentUse : Pseudo<(outs), (ins GPR:$value), []>;
 
 include "RISCVInstrInfoTensixOrdinary.td"
 
-class TensixSSAInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
+class TensixPhysicalInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
                     string Mnemonic, string Operands>
     : RVInst<Outputs, Inputs, Mnemonic, Operands, [], InstFormatOther>,
       TensixEncoding<RawOpcodeValue, 0, 0, 0> {
@@ -88,7 +88,7 @@ class TensixSSAInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
   let Defs = [TT_ISSUE];
 }
 
-def TTSFPLOADI : TensixSSAInst<0x71, (outs SFPR:$dst),
+def TTSFPLOADI : TensixPhysicalInst<0x71, (outs SFPR:$dst),
     (ins SFPR:$old, uimm16:$value, uimm4:$mode),
     "ttsfploadi", "$dst, $value, $mode"> {
   bits<4> dst;
@@ -103,7 +103,7 @@ def TTSFPLOADI : TensixSSAInst<0x71, (outs SFPR:$dst),
 }
 
 class TensixMove<bits<4> Mode, dag Inputs, string Mnemonic, string Operands>
-    : TensixSSAInst<0x7c, (outs SFPR:$dst), Inputs, Mnemonic, Operands> {
+    : TensixPhysicalInst<0x7c, (outs SFPR:$dst), Inputs, Mnemonic, Operands> {
   bits<4> dst;
   bits<4> src;
   let RawWord{11-8} = src;
@@ -126,7 +126,7 @@ def TTSFPMOVAll : TensixMove<2, (ins SFPRRead:$src),
 }
 
 class TensixMAD<bits<8> RawOpcodeValue, dag Inputs, string Mnemonic, string Operands>
-    : TensixSSAInst<RawOpcodeValue, (outs SFPR:$dst), Inputs, Mnemonic, Operands> {
+    : TensixPhysicalInst<RawOpcodeValue, (outs SFPR:$dst), Inputs, Mnemonic, Operands> {
   bits<4> dst;
   bits<4> a;
   bits<4> b;
@@ -159,7 +159,7 @@ def TTSFPADD : TensixMAD<0x85,
 }
 
 class TensixIAdd<bits<4> Mode, string Suffix>
-    : TensixSSAInst<0x79, (outs SFPR:$dst),
+    : TensixPhysicalInst<0x79, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$c),
                     "ttsfpiadd"#Suffix, "$dst, $c"> {
   bits<4> dst;
@@ -179,28 +179,28 @@ def TTSFPISUBCCGE : TensixIAdd<10, ".sub.ge0">;
 
 // Plain stack operations only. Encodings with peek/mutate behavior are distinct
 // future contracts and cannot enter these nodes with hidden mode integers.
-def TTSFPPUSHC : TensixSSAInst<0x87, (outs), (ins), "ttsfppushc", ""> {
+def TTSFPPUSHC : TensixPhysicalInst<0x87, (outs), (ins), "ttsfppushc", ""> {
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CCSTACK, TT_ISSUE];
 }
-def TTSFPPOPC : TensixSSAInst<0x88, (outs), (ins), "ttsfppopc", ""> {
+def TTSFPPOPC : TensixPhysicalInst<0x88, (outs), (ins), "ttsfppopc", ""> {
   let Uses = [TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_CCSTACK, TT_ISSUE];
 }
-def TTSFPNOP : TensixSSAInst<0x8f, (outs), (ins), "ttsfpnop", ""> {
+def TTSFPNOP : TensixPhysicalInst<0x8f, (outs), (ins), "ttsfpnop", ""> {
   let Uses = [TT_ISSUE];
 }
 
-def TTSFPCOMPC : TensixSSAInst<0x8b, (outs), (ins), "ttsfpcompc", ""> {
+def TTSFPCOMPC : TensixPhysicalInst<0x8b, (outs), (ins), "ttsfpcompc", ""> {
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_ISSUE];
 }
 
-// The admitted CONFIG forms only write programmable CRegs.  They consume an
-// explicit L0 staging value and retain precise mutable CReg effects.  Macro
-// and arbitrary LaneConfig destinations are intentionally absent.
+// CReg configuration consumes an explicit L0 staging value and retains
+// precise mutable CReg effects. LaneConfig has its own bounded form below;
+// macro programming and other configuration modes are not admitted.
 class TensixConfigCReg<bits<4> Dest, Register CReg, string Suffix>
-    : TensixSSAInst<0x91, (outs),
+    : TensixPhysicalInst<0x91, (outs),
                     (ins uimm16:$mask, uimm4:$mode),
                     "ttsfpconfig."#Suffix, "$mask, $mode"> {
   bits<16> mask;
@@ -217,7 +217,22 @@ def TTSFPCONFIGC11 : TensixConfigCReg<11, TT_C11, "c11">;
 def TTSFPCONFIGC12 : TensixConfigCReg<12, TT_C12, "c12">;
 def TTSFPCONFIGC13 : TensixConfigCReg<13, TT_C13, "c13">;
 def TTSFPCONFIGC14 : TensixConfigCReg<14, TT_C14, "c14">;
-def TTSFPCONFIGReset : TensixSSAInst<0x91, (outs), (ins),
+// VD=15 with Mod1=8 assigns LReg0's first eight lanes to selected LaneConfig
+// columns and broadcasts vertically. The mask selects even bits of Imm16;
+// effective CC also predicates each column. No LReg or CReg is written.
+def TTSFPCONFIGLane : TensixPhysicalInst<0x91, (outs),
+    (ins uimm16:$mask, uimm4:$mode), "ttsfpconfig.lane", "$mask, $mode"> {
+  bits<16> mask;
+  bits<4> mode;
+  let RawWord{23-8} = mask;
+  let RawWord{7-4} = 15;
+  let RawWord{3-0} = mode;
+  let ModeOperandIndex = 1;
+  let AllowedModes = 0x0100;
+  let Uses = [TT_L0, TT_CC, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_CONFIG, TT_ISSUE];
+}
+def TTSFPCONFIGReset : TensixPhysicalInst<0x91, (outs), (ins),
     "ttsfpconfig.reset", ""> {
   let RawWord{23-8} = 0;
   let RawWord{7-4} = 15;
@@ -226,7 +241,7 @@ def TTSFPCONFIGReset : TensixSSAInst<0x91, (outs), (ins),
   let Defs = [TT_CONFIG, TT_ISSUE];
 }
 
-def TTSFPENCC : TensixSSAInst<0x8a, (outs), (ins uimm2:$value, uimm4:$mode),
+def TTSFPENCC : TensixPhysicalInst<0x8a, (outs), (ins uimm2:$value, uimm4:$mode),
                              "ttsfpencc", "$value, $mode"> {
   bits<2> value;
   bits<4> mode;
@@ -237,7 +252,7 @@ def TTSFPENCC : TensixSSAInst<0x8a, (outs), (ins uimm2:$value, uimm4:$mode),
   let Defs = [TT_CC, TT_ISSUE];
 }
 class TensixSetCC<bits<4> Mode, string Suffix>
-    : TensixSSAInst<0x7b, (outs), (ins SFPRRead:$c),
+    : TensixPhysicalInst<0x7b, (outs), (ins SFPRRead:$c),
                     "ttsfpsetcc."#Suffix, "$c"> {
   bits<4> c;
   let RawWord{11-8} = c;
@@ -254,7 +269,7 @@ def TTSFPSETCCEQ : TensixSetCC<6, "eq0">;
 def tensix_dst_offset : RISCVUImmLeafOp<10>;
 class TensixDst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
                 string Mnemonic, string Operands>
-    : TensixSSAInst<RawOpcodeValue, Outputs, Inputs, Mnemonic, Operands> {
+    : TensixPhysicalInst<RawOpcodeValue, Outputs, Inputs, Mnemonic, Operands> {
   bits<4> reg;
   bits<4> format;
   bits<3> addrmode;
@@ -273,15 +288,19 @@ def TTSFPLOAD : TensixDst<0x70, (outs SFPR:$reg),
   let Constraints = "$reg = $old";
   let mayLoad = 1;
   let ModeOperandIndex = 4;
-  // Format 0 selects the runtime-configured Dst format (SRCB).
-  let AllowedModes = 0x001d;
+  // Format 0 selects SRCB; 1/2 convert FP16/BF16, 3 is FP32, 4 is raw.
+  // 5/6/8 select INT8/UINT16/INT16 with direction-specific conversions.
+  // 14/15 move one opaque Dst16 cell to/from the low/high LReg half.
+  let AllowedModes = 0xc17f;
 }
 def TTSFPSTORE : TensixDst<0x72, (outs),
     (ins SFPR:$reg, tensix_dst_offset:$offset, uimm3:$addrmode, uimm4:$format),
     "ttsfpstore", "$reg, $offset, $addrmode, $format"> {
   let ModeOperandIndex = 3;
-  // Format 0 selects the runtime-configured Dst format (SRCB).
-  let AllowedModes = 0x001d;
+  // Format 0 selects SRCB; 1/2 convert FP16/BF16, 3 is FP32, 4 is raw.
+  // 5/6/8 select INT8/UINT16/INT16 with direction-specific conversions.
+  // 14/15 move one opaque Dst16 cell to/from the low/high LReg half.
+  let AllowedModes = 0xc17f;
   let mayStore = 1;
 }
 // Scalar offset issue keeps SFPU SSA and all scalar scratch registers visible

@@ -36,10 +36,10 @@ ttsfpstore l0, -1, 7, 3
 # CHECK: error: immediate must be an integer in the range [0, 1023]
 ttsfpload l0, 0, 8, 3
 # CHECK: error: immediate must be an integer in the range [0, 7]
-ttsfpstore l0, 0, 7, 1
-# CHECK: error: SFPSTORE format must be one of {0, 2, 3, 4}
-ttsfpload l0, 0, 7, 5
-# CHECK: error: SFPLOAD format must be one of {0, 2, 3, 4}
+ttsfpstore l0, 0, 7, 7
+# CHECK: error: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+ttsfpload l0, 0, 7, 7
+# CHECK: error: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 
 # CReg CONFIG fields must obey the same admitted mask/mode contract as the
 # formal intrinsics, for every programmable CReg destination.

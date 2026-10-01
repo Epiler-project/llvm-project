@@ -7,7 +7,26 @@
 let TargetPrefix = "riscv" in {
 def int_riscv_tt_mop_clear : TensixIntrinsic<[], [llvm_i32_ty],
     [ImmArg<ArgIndex<0>>]>;
+// Local MOP control cells are scalar configuration, not instruction slots.
+// Keep their values visible to the machine execution/effect analysis.
+def int_riscv_tt_mop_control_write : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty], [ImmArg<ArgIndex<0>>]>;
 def int_riscv_tt_replay_record_end : TensixIntrinsic<[], []>;
+// Compiler-private structured templates. Identity is neither a slot nor a
+// runtime value. Final machine lowering owns length and automatic placement.
+def int_riscv_tt_replay_template_begin : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>,
+     ImmArg<ArgIndex<3>>]>;
+def int_riscv_tt_replay_template_end : TensixIntrinsic<[], [llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>]>;
+def int_riscv_tt_replay_template_execute : TensixIntrinsic<[], [llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>]>;
+// A MOP slot retains a whole template identity. Configuration does not execute
+// the template; final lowering resolves its placement and instruction count.
+def int_riscv_tt_replay_template_mop : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
 class TensixOrdinaryIntrinsic<int N, bit Port>
     : Intrinsic<[], !listsplat(llvm_i32_ty, !add(N, !if(Port, 1, 0))),
         !listconcat([IntrHasSideEffects, IntrConvergent, IntrNoDuplicate],

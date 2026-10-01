@@ -1,0 +1,61 @@
+# RUN: split-file %S/xtttensixbh-structured-replay-sfpu-mop.mir %t/source
+# RUN: split-file %s %t
+# RUN: %python %t/mutate.py %t/source %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify,riscv-tensix-hazards %t/maximum_counts.mir -o %t/maximum_counts.out.mir
+# RUN: FileCheck %s --check-prefix=MAXIMUM --input-file=%t/maximum_counts.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify,riscv-tensix-hazards %t/mask_skips_hazard.mir -o %t/mask_skips_hazard.out.mir
+# RUN: FileCheck %s --check-prefix=MASK --input-file=%t/mask_skips_hazard.out.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/missing_end_mode.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/missing_inner_mode.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/inner_two_requires_slot6.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNRECORDED
+#
+# Protect the receiver seam when sequencer topology moves to the value-only
+# Support graph. Maximum hardware counts keep the same one recording and one
+# MOP operation. A masked-out SFPU path contributes neither physical effects
+# nor a hazard, while missing mode declarations remain rejected by ingress.
+#
+# MAXIMUM-LABEL: name: raw_safe_backedge
+# MAXIMUM: PseudoTTMOPControlWriteImm 0, 1023,
+# MAXIMUM: PseudoTTMOPControlWriteImm 1, 1023,
+# MAXIMUM: TTMOP 0, 0, 1,
+# MAXIMUM-SAME: implicit $tt_l0
+# MAXIMUM-SAME: implicit-def $tt_l0
+# MAXIMUM-NOT: TTMOP
+# MAXIMUM: PseudoRET
+# MASK-LABEL: name: raw_cross_slot_hazard
+# MASK: TTMOP 1, 0, 0,
+# MASK-NOT: $tt_l0
+# MASK: PseudoRET
+# MISSING: Tensix MOP execution requires all seven instruction slots to be configured
+# UNRECORDED: Tensix MOP replay reference is not recorded on every incoming path
+
+#--- mutate.py
+import sys
+from pathlib import Path
+
+source, output = map(Path, sys.argv[1:])
+
+
+def write(name, text):
+    (output / name).write_text(text)
+
+
+safe = (source / "raw_safe_backedge.mir").read_text()
+write("maximum_counts.mir",
+      safe.replace("PseudoTTMOPControlWriteImm 0, 1,",
+                   "PseudoTTMOPControlWriteImm 0, 1023,")
+          .replace("PseudoTTMOPControlWriteImm 1, 2,",
+                   "PseudoTTMOPControlWriteImm 1, 1023,"))
+
+hazard = (source / "raw_cross_slot_hazard.mir").read_text()
+write("mask_skips_hazard.mir", hazard.replace("TTMOP 0, 0, 0,", "TTMOP 1, 0, 0,"))
+
+base = (source / "unconditional_result.mir").read_text()
+for name, slot in [("missing_end_mode.mir", 3), ("missing_inner_mode.mir", 6)]:
+    write(name, "\n".join(line for line in base.splitlines()
+                           if f"PseudoTTMOPClear {slot}," not in line) + "\n")
+
+mode = (source / "inner_one_mode_only_replay_slot.mir").read_text()
+write("inner_two_requires_slot6.mir",
+      mode.replace("PseudoTTMOPControlWriteImm 1, 1,",
+                   "PseudoTTMOPControlWriteImm 1, 2,"))

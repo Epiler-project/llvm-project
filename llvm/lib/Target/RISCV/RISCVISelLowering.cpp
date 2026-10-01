@@ -329,8 +329,6 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
     }
   }
 
-  if (Subtarget.hasVendorXTTTensixBH())
-    addRegisterClass(MVT::v32i32, &RISCV::SFPRRegClass);
 
   // Compute derived properties from the register classes.
   computeRegisterProperties(STI.getRegisterInfo());
@@ -13749,8 +13747,6 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
                                                     SelectionDAG &DAG) const {
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
-  if (SDValue Tensix = lowerTensixSFPUIntrinsic(Op, DAG, Subtarget))
-    return Tensix;
   unsigned IntNo = Op.getConstantOperandVal(1);
   switch (IntNo) {
   default:
@@ -13897,8 +13893,6 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
                                                  SelectionDAG &DAG) const {
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
-  if (SDValue Tensix = lowerTensixSFPUIntrinsic(Op, DAG, Subtarget))
-    return Tensix;
   if (SDValue Tensix = lowerTensixOrdinaryIntrinsic(Op, DAG, Subtarget))
     return Tensix;
   unsigned IntNo = Op.getConstantOperandVal(1);

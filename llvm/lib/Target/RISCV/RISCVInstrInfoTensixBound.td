@@ -122,6 +122,8 @@ def PseudoTTBoundSFPPUSHC : TensixBoundCondition;
 def PseudoTTBoundSFPPOPC : TensixBoundCondition;
 def PseudoTTBoundSFPCONFIGCReg : TensixBoundPseudo<
     (ins uimm3:$stage, uimm4:$creg, uimm16:$mask, uimm4:$mode)>;
+def PseudoTTBoundSFPCONFIGLane : TensixBoundPseudo<
+    (ins uimm3:$stage, uimm16:$mask, uimm4:$mode)>;
 def PseudoTTBoundSFPNOP : TensixBoundPseudo<(ins)>;
 def PseudoTTBoundSFPCOMPC : TensixBoundPseudo<(ins)>;
 def PseudoTTBoundSFPCONFIGReset : TensixBoundPseudo<(ins)>;
