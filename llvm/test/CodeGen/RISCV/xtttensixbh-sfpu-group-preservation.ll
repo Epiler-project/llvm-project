@@ -1,6 +1,6 @@
 ; RUN: split-file %s %t
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/masked-lut.ll -o - | FileCheck %s --check-prefix=ISEL
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=finalize-isel %t/masked-lut.ll -o - | FileCheck %s --check-prefix=ISEL
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/masked-lut.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/masked-lut.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
 ; Virtual SFPU rejection and the no-spill contract are covered at the
 ; physical-ingress MIR boundary. This legacy SSA file intentionally stops at
 ; instruction selection; it cannot be passed to post-RA without an upstream
@@ -10,6 +10,7 @@
 ; inactive lanes must survive the issue, and its original full-lane value is
 ; still observed after the predicate is popped. Dst loads make the five input
 ; values independent; no constant-register equality can conceal bad staging.
+; RETIRED: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfpencc
 ; ISEL-LABEL: name: masked_independent_old_lut
 ; ISEL: [[OLD:%[0-9]+]]:sfpr = TTSFPLOAD {{%[0-9]+}}, 0, 0, 4,
 ; ISEL: [[A:%[0-9]+]]:sfpr = TTSFPLOAD {{%[0-9]+}}, 1, 0, 4,

@@ -5,13 +5,14 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/bound.ll -o - | FileCheck %s --check-prefix=NATIVE
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -filetype=obj %t/bound.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=MC
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %t/bound.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=MC
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -filetype=obj %t/legacy.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=LEGACY
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %t/legacy.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=LEGACY
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/legacy.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/legacy.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
 ;
 ; Each load is a partial read-modify-write of the same real old LReg. Keep
 ; the old operand and CC/config/Dst/issue effects through both lowering routes.
 ; This verifies faithful encoding, not initialized Dst or lane setup on device.
 ; No replay recipe or source-loop expansion is involved.
+; RETIRED: unsupported Tensix intrinsic ABI:
 ;--- bound.ll
 declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)

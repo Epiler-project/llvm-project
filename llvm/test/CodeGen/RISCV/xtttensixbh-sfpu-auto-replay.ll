@@ -3,7 +3,7 @@
 ; xtttensixbh-sfpu-auto-replay.mir and the bound-float replay tests.
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
-; REJECT: Tensix SFPU requires bound physical registers
+; REJECT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfpencc
 
 ; This is retained as a negative compatibility test for the retired virtual
 ; SFPU path. It must never be used as evidence for physical replay selection.

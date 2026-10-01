@@ -5,8 +5,8 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/bound.ll -o - | FileCheck %s --check-prefix=NATIVE
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -filetype=obj %t/bound.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=MC
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %t/bound.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=MC
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -filetype=obj %t/legacy.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=LEGACY
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %t/legacy.ll -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixbh - | FileCheck %s --check-prefix=LEGACY
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/legacy.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/legacy.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
 ;
 ; Format 1 is the architectural FP16 Dst conversion with ordinary addressing.
 ; It must survive the existing bound intrinsic, physical ISel, and MC paths.
@@ -14,6 +14,7 @@
 ; behavior, and no new intrinsic, SFPU temporary, or repair copy is needed.
 ; The separate legacy module tests its still-live verifier's matching format
 ; admission; it is not a fallback for the bound module.
+; RETIRED: unsupported Tensix intrinsic ABI:
 
 ;--- bound.ll
 declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)

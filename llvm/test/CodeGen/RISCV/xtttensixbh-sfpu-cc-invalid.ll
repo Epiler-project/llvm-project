@@ -2,8 +2,8 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/underflow.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNDERFLOW
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/backedge.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=MERGE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/join.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=MERGE
-; UNDERFLOW: CC stack underflow
-; MERGE: CC stack depth disagrees at CFG join or backedge
+; UNDERFLOW: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfppopc
+; MERGE: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfppushc
 
 ;--- underflow.ll
 declare void @llvm.riscv.tt.sfppopc(i32 immarg, i32 immarg)

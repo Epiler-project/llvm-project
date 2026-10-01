@@ -6,7 +6,7 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/call.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/offset.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=OFFSET
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/executor.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXECUTOR
-; REJECT-UNBOUND: bound and legacy SFPU ingress cannot share a function
+; REJECT-UNBOUND: unsupported Tensix intrinsic ABI: llvm.riscv.tt.lreg.read
 ; REJECT-MISSING-COPY: tie
 ; REJECT-IMPLICIT-GROUP: fixed
 ; NUMBER: writable LReg

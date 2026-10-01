@@ -2,7 +2,7 @@
 ; Virtual SSA values are rejected before it runs.
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
-; REJECT: Tensix SFPU requires bound physical registers
+; REJECT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
 
 ; These authored virtual-register cases are retained as a rejection fixture;
 ; cleanup of bound physical operands is covered by the MIR ingress tests.

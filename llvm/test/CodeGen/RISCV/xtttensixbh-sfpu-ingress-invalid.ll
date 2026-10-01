@@ -8,17 +8,15 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 %t/memcpy.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/offset-poison.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFINED
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 %t/offset-range.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RANGE
-; BUNDLE: Tensix intrinsic requires a direct C call without operand bundles
-; DEFINED: Dst offset must be defined and non-poison
-; RANGE: Dst offset must be proven in [0, 1023]
+; BUNDLE: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
+; DEFINED: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
+; RANGE: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/executor.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXECUTOR
-; RUN: not llc -mtriple=riscv32 -mattr=-xtttensixbh -O0 %t/executor.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=FEATURE
-; EXECUTOR: Tensix intrinsic requires a tensix-executor function attribute
-; FEATURE: Tensix intrinsic requires +xtttensixbh
+; EXECUTOR: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/stateid.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=STATEID
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 %t/stateid-dynamic.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DYNAMIC-STATEID
-; STATEID: Tensix SFPU StateID configuration must be static zero
-; DYNAMIC-STATEID: Tensix SFPU StateID configuration must be static zero
+; STATEID: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
+; DYNAMIC-STATEID: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/overflow.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFINED
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/loop-poison.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFINED
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/loop-unknown.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFINED
@@ -27,10 +25,10 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/signed-overflow-loop.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFINED
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/dynamic-overflow-loop.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEFINED
 ; ARG: SFPU carrier cannot cross the argument ABI
-; GENERIC: SFPU carrier is only legal in target intrinsics and PHI
-; CONSTANT: SFPU carrier constants require explicit target initialization
-; FIXED: immediate operand 0 must be in [0, 7]
-; CALL: call has no verified SFPU preservation ABI
+; GENERIC: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
+; CONSTANT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfploadi
+; FIXED: unsupported Tensix intrinsic ABI: llvm.riscv.tt.lreg.read
+; CALL: unsupported Tensix intrinsic ABI: llvm.riscv.tt.{{.*}}
 
 ;--- argument.ll
 define void @test(<32 x i32> %input) "tensix-executor"="trisc1" {

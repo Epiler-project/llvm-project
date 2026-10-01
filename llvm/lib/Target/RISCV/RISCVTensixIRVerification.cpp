@@ -592,16 +592,22 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
 }
 
 Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
-                      AssumptionCache &AC, DominatorTree &DT,
-                      TensixSFPUFunctionFacts &Facts) {
-  (void)SE;
-  (void)AC;
-  (void)DT;
+                      AssumptionCache &AC, DominatorTree &DT) {
   if (!isTensixBoundSFPUIntrinsic(II.getIntrinsicID()))
     return invalid(*II.getFunction(), "unsupported Tensix intrinsic ABI: " +
                    II.getCalledFunction()->getName());
   if (Error E = verifyTensixBoundSFPUIntrinsic(II))
     return E;
+  if (auto Index = getTensixBoundDstOffsetOperand(II.getIntrinsicID())) {
+    Value *OffsetValue = II.getArgOperand(*Index);
+    if (!isDefinedOffset(OffsetValue, II, SE, AC, DT))
+      return invalid(*II.getFunction(),
+                     "bound Dst offset must be defined and non-poison");
+    const SCEV *Offset = SE.getSCEV(OffsetValue);
+    if (SE.getUnsignedRange(Offset).getUnsignedMax().ugt(1023))
+      return invalid(*II.getFunction(),
+                     "bound Dst offset must be proven in [0, 1023]");
+  }
   return Error::success();
 }
 
@@ -651,7 +657,7 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
     if (SFPU) {
       if (II->hasOperandBundles())
         return invalid(F, "SFPU intrinsics do not admit operand bundles");
-      if (Error E = verifyIntrinsic(*II, SE, AC, DT, Facts))
+      if (Error E = verifyIntrinsic(*II, SE, AC, DT))
         return std::move(E);
     }
   }
@@ -671,6 +677,13 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
       continue;
     if (II && !II->hasOperandBundles()) {
       switch (II->getIntrinsicID()) {
+      case Intrinsic::smax:
+      case Intrinsic::smin:
+      case Intrinsic::umax:
+      case Intrinsic::umin:
+        if (II->getType()->isIntegerTy(32))
+          continue;
+        break;
       case Intrinsic::riscv_tt_setc16:
       case Intrinsic::riscv_tt_setc16_port:
       case Intrinsic::riscv_tt_dependent_use:

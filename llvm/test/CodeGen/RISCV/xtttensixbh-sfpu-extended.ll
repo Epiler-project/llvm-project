@@ -1,6 +1,6 @@
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -stop-after=finalize-isel -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ISEL
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
-; REJECT: Tensix SFPU requires bound physical registers
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
+; REJECT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpsetexp.v(<32 x i32>, <32 x i32>, <32 x i32>, i32 immarg)

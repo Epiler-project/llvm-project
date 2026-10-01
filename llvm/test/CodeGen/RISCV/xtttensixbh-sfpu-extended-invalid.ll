@@ -8,7 +8,7 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/swapmode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=SWAPMODE
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/dstformat.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=DSTFORMAT
 
-; DSTFORMAT: unsupported instruction mode 16 for 'llvm.riscv.tt.sfpload'
+; DSTFORMAT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- dstformat.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpload(<32 x i32>, i32, i32 immarg, i32 immarg)
@@ -18,7 +18,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; SIGNED: signed immediate operand 1 must be in [-2048, 2047]
+; SIGNED: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- signed.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpiadd.i(<32 x i32>, i32 immarg, i32 immarg)
@@ -28,7 +28,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; SETFIELD: immediate operand 2 must be in [0, 255]
+; SETFIELD: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- setfield.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpsetexp.i(<32 x i32>, <32 x i32>, i32 immarg, i32 immarg)
@@ -38,7 +38,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; SHIFTMODE: unsupported instruction mode 4
+; SHIFTMODE: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- shiftmode.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpshft.v(<32 x i32>, <32 x i32>, i32 immarg)
@@ -48,7 +48,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; SHUFFLEIMM: immediate operand 2 must be in [0, 0]
+; SHUFFLEIMM: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- shuffleimm.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpshft2(<32 x i32>, <32 x i32>, i32 immarg, i32 immarg)
@@ -58,7 +58,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; FLOATDESCALE: immediate operand 2 must be in [0, 0]
+; FLOATDESCALE: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- floatdescale.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpstochrnd.i(<32 x i32>, <32 x i32>, i32 immarg, i32 immarg, i32 immarg)
@@ -68,7 +68,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; VECTORFLOAT: unsupported instruction mode 6
+; VECTORFLOAT: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- vectorfloat.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare <32 x i32> @llvm.riscv.tt.sfpstochrnd.v(<32 x i32>, <32 x i32>, <32 x i32>, i32 immarg, i32 immarg)
@@ -78,7 +78,7 @@ define void @bad() "tensix-executor"="trisc1" {
   ret void
 }
 
-; SWAPMODE: immediate operand 2 must be in [0, 9]
+; SWAPMODE: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 ;--- swapmode.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
 declare {<32 x i32>, <32 x i32>} @llvm.riscv.tt.sfpswap(<32 x i32>, <32 x i32>, i32 immarg)

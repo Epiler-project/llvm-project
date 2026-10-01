@@ -1,22 +1,12 @@
-; RUN: not llc -mtriple=riscv32 %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
-; RUN: opt -S -passes=always-inline %s -o %t.ll
-; RUN: FileCheck %s --check-prefix=INLINE < %t.ll
-; RUN: llc -mtriple=riscv32 -O0 -verify-machineinstrs -stop-after=postrapseudos %t.ll -o - | FileCheck %s --check-prefix=MIR
-; RUN: llc -mtriple=riscv32 -O2 -verify-machineinstrs -stop-after=postrapseudos %t.ll -o - | FileCheck %s --check-prefix=MIR
-; RUN: llc -mtriple=riscv32 -O0 -verify-machineinstrs -filetype=obj %t.ll -o /dev/null
-; RUN: llc -mtriple=riscv32 -O2 -verify-machineinstrs -filetype=obj %t.ll -o /dev/null
-; RUN: opt -S -passes='always-inline,default<O2>' %s -o %t.opt.ll
-; RUN: FileCheck %s --check-prefix=INLINE < %t.opt.ll
-; RUN: llc -mtriple=riscv32 -O2 -verify-machineinstrs -filetype=obj %t.opt.ll -o /dev/null
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
 ;
-; The production ingress has already inlined supported helpers while retaining
-; their CFG. Model that boundary with LLVM's ordinary inliner, then verify the
-; complete mixed body at O0 and O2. Unlowered calls remain an explicit error;
-; an alwaysinline hint alone is not a register-preservation ABI.
+; This historical mixed vector/implicit-LReg ingress is retired. Bound physical
+; callers must use the explicit llvm.riscv.tt.bound.* ABI; inlining does not
+; resurrect the vector carrier or establish SFPU state preservation.
 ;
 ; The import is the TRISC1 firmware data symbol used by native Math lowering.
 ; This test proves symbol/memory transport, not SDK linking or device behavior.
-; CALL: call has no verified SFPU preservation ABI
+; RETIRED: unsupported Tensix intrinsic ABI: llvm.riscv.tt.sfpencc
 
 target triple = "riscv32"
 @math_sync_tile_dst_index = external global i32

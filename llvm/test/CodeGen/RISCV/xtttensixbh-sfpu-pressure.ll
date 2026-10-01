@@ -1,9 +1,9 @@
 ; RUN: split-file %s %t
-; The selector still accepts authored SSA before the physical-ingress boundary.
-; The final compiler rejects all virtual SFPU values, independent of pressure;
-; that boundary diagnostic is covered by xtttensixbh-sfpu-physical-ingress.mir.
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/eight.ll -o /dev/null
-; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=finalize-isel %t/eight.ll -o /dev/null
+; The retired SSA carrier is rejected before instruction selection, independent
+; of pressure. Physical ingress is covered by the bound tests.
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/eight.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/eight.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
+; RETIRED: unsupported Tensix intrinsic ABI: llvm.riscv.tt.creg.read
 
 ;--- eight.ll
 declare <32 x i32> @llvm.riscv.tt.creg.read(i32 immarg)
