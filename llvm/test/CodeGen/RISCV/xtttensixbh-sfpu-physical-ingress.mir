@@ -6,7 +6,7 @@
 # The SFPU value path is retired. Producers must enter machine code with
 # physical SFPU/LReg operands; ordinary scalar virtual registers remain the
 # responsibility of the generic RISC-V allocator.
-# VIRTUAL: error: {{.*}}Tensix SFPU requires bound physical registers; virtual SFPU allocation is retired
+# VIRTUAL: error: {{.*}}Cannot use non-allocatable class 'SFPR' for virtual register
 # SCALAR-LABEL: name: scalar_virtual
 # SCALAR: %0:gpr = COPY $x10
 # BOUND-LABEL: name: bound_physical

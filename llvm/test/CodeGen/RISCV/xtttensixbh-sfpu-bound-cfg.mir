@@ -52,7 +52,7 @@
 # SCALAR: %[[NEXT]]:gpr = ADDI %[[CURRENT]], -1
 # SCALAR-LABEL: name: dynamic_port
 # SCALAR: $tt_l0, early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSFPLOAD $tt_l0, %{{[0-9]+}}, 0, 4,
-# LEGACY: error: {{.*}}Tensix SFPU requires bound physical registers; virtual SFPU allocation is retired
+# LEGACY: error: {{.*}}Cannot use non-allocatable class 'SFPR' for virtual register
 # PIPELINE-LABEL: <bound_cfg>:
 # PIPELINE: ttsfpmov.all l0, c9
 # PIPELINE: ttsfpadd l0, l0, c10, 0
@@ -60,7 +60,7 @@
 # PIPELINE: ttsfpiadd l0, c9
 # PIPELINE: bnez a0,
 # PIPELINE: ttsfpstore l0, 0, 0, 4
-# VIRTUAL: bound Tensix SFPU cannot contain virtual SFPU registers
+# VIRTUAL: Cannot use non-allocatable class 'SFPR' for virtual register
 # COPY: bound Tensix SFPU cannot contain generic register copies
 # PHI: Expected first PHI operand to be a virtual register
 # TIE: Tied physical registers must match.
