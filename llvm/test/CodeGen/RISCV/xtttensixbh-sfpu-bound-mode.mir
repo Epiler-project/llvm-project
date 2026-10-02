@@ -7,7 +7,7 @@
 # Even bypassing the early verifier, a later copy hook must diagnose through
 # the LLVM context instead of emitting a native copy or terminating the process.
 # CHECK: bound Tensix SFPU cannot contain generic register copies
-# COPY: error: {{.*}}bound SFPU cannot synthesize a register copy
+# COPY: error: {{.*}}Tensix SFPU cannot synthesize a register copy
 
 #--- omitted.mir
 --- |

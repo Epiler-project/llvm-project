@@ -1,0 +1,64 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify,riscv-tensix-sfpu-physical-ingress,postrapseudos %t/lreg.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify,riscv-tensix-sfpu-physical-ingress,postrapseudos %t/creg.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify,riscv-tensix-sfpu-physical-ingress,postrapseudos %t/explicit.mir -o - | FileCheck %s --check-prefix=EXPLICIT
+#
+# A generic physical COPY has no authored SFPU instruction contract. The
+# absence of bound-mode metadata must not resurrect its implicit MOV fallback.
+# Run the production ingress checks before post-RA expansion; no verifier or
+# physical-register gate is disabled to make the negative reach copyPhysReg.
+# Ordinary scalar copies and explicitly authored bound MOV remain legal.
+# REJECT: error: {{.*}}Tensix SFPU cannot synthesize a register copy
+# EXPLICIT-LABEL: name: explicit_move
+# EXPLICIT: $x10 = ADDI $x11, 0
+# EXPLICIT-NEXT: $tt_l0 = TTSFPMOVAll $tt_c9,
+# EXPLICIT-NEXT: PseudoRET
+
+#--- lreg.mir
+--- |
+  define void @generic_lreg_copy() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: generic_lreg_copy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = COPY $tt_l1
+    PseudoRET
+...
+
+#--- creg.mir
+--- |
+  define void @generic_creg_copy() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: generic_creg_copy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = COPY $tt_c9
+    PseudoRET
+...
+
+#--- explicit.mir
+--- |
+  define void @explicit_move() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: explicit_move
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $x10 = COPY $x11
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

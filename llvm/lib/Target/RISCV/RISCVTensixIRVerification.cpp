@@ -43,17 +43,18 @@ bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
 }
 
 bool llvm::isRetiredTensixSFPUIntrinsicName(StringRef Name) {
-  if (!Name.starts_with("llvm.riscv.tt."))
+  constexpr StringLiteral TensixPrefix = "llvm.riscv.tt.";
+  if (!Name.starts_with(TensixPrefix))
     return false;
   // The explicit bound ABI is the only supported SFPU call family.  All
   // historical vector-carrier and implicit LReg/CReg forms share these
   // prefixes; classify them before intrinsic selection so textual IR cannot
   // silently become an external call or a legacy selector input.
-  if (Name.starts_with("llvm.riscv.tt.bound."))
+  StringRef Suffix = Name.drop_front(TensixPrefix.size());
+  if (Suffix.starts_with("bound."))
     return false;
-  return Name.starts_with("llvm.riscv.tt.sfp") ||
-         Name.starts_with("llvm.riscv.tt.lreg.") ||
-         Name.starts_with("llvm.riscv.tt.creg.");
+  return Suffix.starts_with("sfp") || Suffix.starts_with("lreg.") ||
+         Suffix.starts_with("creg.");
 }
 
 bool llvm::RISCV::isTensixIntrinsic(Intrinsic::ID ID) {

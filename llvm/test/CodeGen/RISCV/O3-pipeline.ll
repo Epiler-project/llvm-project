@@ -111,6 +111,8 @@
 ; CHECK-NEXT:       Lazy Block Frequency Analysis
 ; CHECK-NEXT:       RISC-V DAG->DAG Pattern Instruction Selection
 ; CHECK-NEXT:       Finalize ISel and expand pseudo-instructions
+; CHECK-NEXT:       Prepare structured Tensix replay effects
+; CHECK-NEXT:       Normalize authored bound Tensix SFPU recordings
 ; CHECK-NEXT:       MachineDominator Tree Construction
 ; CHECK-NEXT:       Machine Natural Loop Construction
 ; CHECK-NEXT:       Machine Cycle Info Analysis
@@ -146,6 +148,7 @@
 ; CHECK-NEXT:       Remove dead machine instructions
 ; RV64-NEXT:        RISC-V Optimize W Instructions
 ; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
+; CHECK-NEXT:       Verify Tensix SFPU physical ingress before register allocation
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Pre-RA
 ; CHECK-NEXT:       RISC-V Merge Base Offset
 ; CHECK-NEXT:       MachineDominator Tree Construction
@@ -166,7 +169,6 @@
 ; CHECK-NEXT:       Register Coalescer
 ; CHECK-NEXT:       Rename Disconnected Subregister Components
 ; CHECK-NEXT:       Machine Instruction Scheduler
-; CHECK-NEXT:       Mark Tensix SFPU intervals nonspillable
 ; CHECK-NEXT:       Debug Variable Analysis
 ; CHECK-NEXT:       Live Stack Slot Analysis
 ; CHECK-NEXT:       Virtual Register Map
@@ -175,11 +177,6 @@
 ; CHECK-NEXT:       Spill Code Placement Analysis
 ; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
 ; CHECK-NEXT:       Machine Optimization Remark Emitter
-; CHECK-NEXT:       Greedy Register Allocator
-; CHECK-NEXT:       Virtual Register Rewriter
-; CHECK-NEXT:       Verify Tensix SFPU register allocation
-; CHECK-NEXT:       Virtual Register Map
-; CHECK-NEXT:       Live Register Matrix
 ; CHECK-NEXT:       Greedy Register Allocator
 ; CHECK-NEXT:       Virtual Register Rewriter
 ; CHECK-NEXT:       RISC-V Insert VSETVLI pass
@@ -229,6 +226,7 @@
 ; CHECK-NEXT:       Machine Copy Propagation Pass
 ; CHECK-NEXT:       RISC-V Late Branch Optimisation Pass
 ; CHECK-NEXT:       RISC-V Indirect Branch Tracking
+; CHECK-NEXT:       Finalize structured Tensix replay words and placement
 ; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
 ; CHECK-NEXT:       Select existing repeated Tensix sequences for replay
 ; CHECK-NEXT:       Branch relaxation pass
