@@ -35,11 +35,59 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar.h"
 #include <optional>
 using namespace llvm;
+
+static cl::opt<bool> EnableTensixCopyCCCleanup(
+    "riscv-tensix-enable-copy-cc-cleanup", cl::init(true), cl::Hidden,
+    cl::desc("Remove redundant Tensix SFPU copies and condition-code enables"));
+
+static cl::opt<bool> EnableTensixLatencyScheduling(
+    "riscv-tensix-enable-latency-scheduling", cl::init(true), cl::Hidden,
+    cl::desc("Schedule independent Tensix SFPU copies to cover issue latency"));
+
+static cl::opt<bool> EnableTensixReplaySelection(
+    "riscv-tensix-enable-replay-selection", cl::init(true), cl::Hidden,
+    cl::desc("Compress existing repeated Tensix machine sequences"));
+
+namespace {
+bool isRISCVTargetMachine(const TargetMachine &TM) {
+  const Target *T = &TM.getTarget();
+  return T == &getTheRISCV32Target() || T == &getTheRISCV64Target() ||
+         T == &getTheRISCV32beTarget() || T == &getTheRISCV64beTarget();
+}
+} // namespace
+
+RISCV::TensixOptimizationOptions
+RISCVTargetMachine::getTensixOptimizationOptions() const {
+  if (TensixOptimizations)
+    return *TensixOptimizations;
+  return {EnableTensixCopyCCCleanup, EnableTensixLatencyScheduling,
+          EnableTensixReplaySelection};
+}
+
+Error llvm::RISCV::setTensixOptimizationOptions(
+    TargetMachine &TM, TensixOptimizationOptions Options) {
+  if (!isRISCVTargetMachine(TM))
+    return createStringError("Tensix optimization options require a RISC-V "
+                             "target machine");
+  static_cast<RISCVTargetMachine &>(TM).setTensixOptimizationOptions(Options);
+  return Error::success();
+}
+
+Expected<RISCV::TensixOptimizationOptions>
+llvm::RISCV::getTensixOptimizationOptions(const TargetMachine &TM) {
+  if (!isRISCVTargetMachine(TM))
+    return createStringError("Tensix optimization options require a RISC-V "
+                             "target machine");
+  return static_cast<const RISCVTargetMachine &>(TM)
+      .getTensixOptimizationOptions();
+}
 
 static cl::opt<bool> EnableRedundantCopyElimination(
     "riscv-enable-copyelim",

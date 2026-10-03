@@ -124,6 +124,19 @@ def TTSFPMOVAll : TensixMove<2, (ins SFPRRead:$src),
     "ttsfpmov.all", "$dst, $src"> {
   let Uses = [TT_CONFIG, TT_ISSUE];
 }
+// FROM_SPECIAL selector 9 returns the active lane's old PRNG word and then
+// advances it. The fixed selector is not a readable constant register. Mode 8
+// obeys lane predication, so inactive destination lanes retain their old bits.
+def TTSFPMOVPRNGAdvance : TensixPhysicalInst<0x7c, (outs SFPR:$dst),
+    (ins SFPR:$old), "ttsfpmov.prng.advance", "$dst"> {
+  bits<4> dst;
+  let RawWord{11-8} = 9;
+  let RawWord{7-4} = dst;
+  let RawWord{3-0} = 8;
+  let Constraints = "$dst = $old";
+  let Uses = [TT_CC, TT_CONFIG, TT_ISSUE, TT_PRNG];
+  let Defs = [TT_ISSUE, TT_PRNG];
+}
 
 class TensixMAD<bits<8> RawOpcodeValue, dag Inputs, string Mnemonic, string Operands>
     : TensixPhysicalInst<RawOpcodeValue, (outs SFPR:$dst), Inputs, Mnemonic, Operands> {

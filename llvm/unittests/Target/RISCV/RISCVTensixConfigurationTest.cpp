@@ -56,6 +56,8 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(
         ConfigurationCase{Intrinsic::riscv_tt_bound_sfpmov_all,
                           {constant(0), constant(6)}},
+        ConfigurationCase{Intrinsic::riscv_tt_bound_sfpmov_prng_advance,
+                          {constant(0), constant(0)}},
         ConfigurationCase{Intrinsic::riscv_tt_bound_sfpmov,
                           {constant(0), constant(0), constant(6), constant(0)}},
         ConfigurationCase{Intrinsic::riscv_tt_bound_sfpmov,

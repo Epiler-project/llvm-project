@@ -1,9 +1,17 @@
-# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-copy-cc-cleanup %s -o %t.cleaned.mir
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-copy-cc-cleanup=true -run-pass=riscv-tensix-copy-cc-cleanup %s -o %t.cleaned.mir
 # RUN: FileCheck %s --check-prefix=CLEAN < %t.cleaned.mir
-# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.cleaned.mir -o %t.repaired.mir
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.cleaned.mir -o %t.repaired.mir
 # RUN: FileCheck %s --check-prefix=REPAIRED < %t.repaired.mir
-# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.repaired.mir -o /dev/null
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.repaired.mir -o /dev/null
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-copy-cc-cleanup=false -run-pass=riscv-tensix-copy-cc-cleanup %s -o %t.disabled.mir
+# RUN: FileCheck %s --check-prefix=OFF < %t.disabled.mir
+# RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-copy-cc-cleanup=false -run-pass=riscv-tensix-hazards %t.disabled.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNREPAIRED
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-copy-cc-cleanup=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.disabled.mir -o %t.disabled.repaired.mir
+# RUN: FileCheck %s --check-prefixes=OFF,MANDATORY < %t.disabled.repaired.mir
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-copy-cc-cleanup=false -run-pass=riscv-tensix-hazards %t.disabled.repaired.mir -o /dev/null
 #
+# The only ablation variable is cleanup; both participants retain O2 and the
+# mandatory hazard pass. No branch, block or loop iteration is duplicated.
 # Removing a self move can remove an SFPU issue that supplied a needed gap.
 # The cleanup must precede hazard repair, which recomputes the surviving stream.
 # CLEAN-LABEL: name: repair_removed_gap
@@ -75,6 +83,46 @@
 # The inline-assembly cleanup boundary is tested with final rejection in
 # xtttensixbh-sfpu-machine-inline-asm.mir.
 
+# OFF-LABEL: name: repair_removed_gap
+# OFF: $tt_l0 = TTSFPMAD
+# OFF-NEXT: $tt_l1 = TTSFPMOV $tt_l1, $tt_l1,
+# OFF-NEXT: $tt_l0 = TTSFPIADD
+# OFF-NEXT: PseudoRET
+# OFF-LABEL: name: eliminate_copies_and_cc
+# OFF: $tt_l0 = TTSFPMOV $tt_l0, $tt_l0,
+# OFF-NEXT: $tt_l1 = TTSFPMOVAll $tt_l1,
+# OFF-NEXT: TTSFPENCC 0, 0,
+# OFF-NEXT: TTSFPENCC 0, 0,
+# OFF-NEXT: TTSFPENCC 1, 2,
+# OFF-NEXT: TTSFPENCC 1, 2,
+# OFF-NEXT: TTSFPENCC 2, 8,
+# OFF-NEXT: TTSFPENCC 2, 8,
+# OFF-NEXT: TTSFPENCC 3, 10,
+# OFF-NEXT: TTSFPENCC 3, 10,
+# OFF-NEXT: PseudoRET
+# OFF-LABEL: name: retain_backedge
+# OFF: bb.0:
+# OFF: TTSFPENCC 3, 10,
+# OFF-NEXT: PseudoBR %bb.1
+# OFF: bb.1:
+# OFF: TTSFPENCC 3, 10,
+# OFF-NEXT: $tt_l0 = TTSFPMOV $tt_l0, $tt_l0,
+# OFF-NEXT: BNE $x10, $x0, %bb.1
+# OFF-NEXT: PseudoBR %bb.2
+# OFF: bb.2:
+# OFF-NEXT: PseudoRET
+# UNREPAIRED: in function mandatory_gap void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# MANDATORY-LABEL: name: mandatory_gap
+# MANDATORY: $tt_l0 = TTSFPMAD
+# MANDATORY-NEXT: TTSFPNOP
+# MANDATORY-NEXT: $tt_l0 = TTSFPIADD
+# MANDATORY-NEXT: PseudoRET
+# REPAIRED-LABEL: name: mandatory_gap
+# REPAIRED: $tt_l0 = TTSFPMAD
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED-NEXT: PseudoRET
+
 --- |
   define void @repair_removed_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @eliminate_copies_and_cc() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
@@ -82,6 +130,7 @@
   define void @retain_cc_boundaries() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_backedge() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
   define void @retain_explicit_replay() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @mandatory_gap() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
 ...
 ---
 name: repair_removed_gap
@@ -172,5 +221,14 @@ body: |
     $tt_l0 = TTSFPMOV $tt_l0, $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mandatory_gap
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
     PseudoRET
 ...

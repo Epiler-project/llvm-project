@@ -4,6 +4,7 @@
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTargetMachine.h"
 #include "RISCVTensixReplay.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -17,6 +18,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
+
 namespace {
 constexpr unsigned SFPUCooldown = 1u << 16;
 bool isSFPU(const MachineInstr &MI) {
@@ -464,7 +466,9 @@ public:
       if (Error E = verifyCC(MF))
         return Fail(toString(std::move(E)));
     bool Modified = false;
-    if (Repair && ST.hasVendorXTTTensixBH() &&
+    const auto Options = static_cast<const RISCVTargetMachine &>(MF.getTarget())
+                             .getTensixOptimizationOptions();
+    if (Repair && Options.LatencyScheduling && ST.hasVendorXTTTensixBH() &&
         MF.getTarget().getOptLevel() != CodeGenOptLevel::None &&
         !skipFunction(MF.getFunction()))
       Modified = scheduleIndependentCopies(MF, TRI);

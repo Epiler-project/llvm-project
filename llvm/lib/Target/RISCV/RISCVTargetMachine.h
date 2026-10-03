@@ -17,12 +17,14 @@
 #include "RISCVSubtarget.h"
 #include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/Target/RISCV/RISCVTensix.h"
 #include <optional>
 
 namespace llvm {
 class RISCVTargetMachine : public CodeGenTargetMachineImpl {
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
   mutable StringMap<std::unique_ptr<RISCVSubtarget>> SubtargetMap;
+  std::optional<RISCV::TensixOptimizationOptions> TensixOptimizations;
 
 public:
   RISCVTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
@@ -30,6 +32,11 @@ public:
                      std::optional<Reloc::Model> RM,
                      std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
                      bool JIT);
+
+  void setTensixOptimizationOptions(RISCV::TensixOptimizationOptions Options) {
+    TensixOptimizations = Options;
+  }
+  RISCV::TensixOptimizationOptions getTensixOptimizationOptions() const;
 
   const RISCVSubtarget *getSubtargetImpl(const Function &F) const override;
   // DO NOT IMPLEMENT: There is no such thing as a valid default subtarget,

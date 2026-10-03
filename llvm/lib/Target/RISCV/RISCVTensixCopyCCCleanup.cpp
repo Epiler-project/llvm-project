@@ -5,6 +5,7 @@
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTargetMachine.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -123,7 +124,10 @@ public:
   }
 
   bool runOnMachineFunction(MachineFunction &MF) override {
-    if (!MF.getSubtarget<RISCVSubtarget>().hasVendorXTTTensixBH() ||
+    const auto Options = static_cast<const RISCVTargetMachine &>(MF.getTarget())
+                             .getTensixOptimizationOptions();
+    if (!Options.CopyCCCleanup ||
+        !MF.getSubtarget<RISCVSubtarget>().hasVendorXTTTensixBH() ||
         MF.getInfo<RISCVMachineFunctionInfo>()->hasTensixCodegenFailed() ||
         MF.getProperties().hasFailedRegAlloc() || hasExternalIssueOwner(MF))
       return false;

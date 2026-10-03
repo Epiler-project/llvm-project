@@ -44,6 +44,8 @@ constexpr TensixBoundInstruction Instructions[] = {
     {Intrinsic::riscv_tt_bound_sfpiadd, RISCV::PseudoTTBoundSFPIADD, 4},
     {Intrinsic::riscv_tt_bound_sfpmov, RISCV::PseudoTTBoundSFPMOV, 4},
     {Intrinsic::riscv_tt_bound_sfpmov_all, RISCV::PseudoTTBoundSFPMOVAll, 2},
+    {Intrinsic::riscv_tt_bound_sfpmov_prng_advance,
+     RISCV::PseudoTTBoundSFPMOVPRNGAdvance, 2},
     {Intrinsic::riscv_tt_bound_sfparecip, RISCV::PseudoTTBoundSFPARECIP, 4},
     {Intrinsic::riscv_tt_bound_sfpexexp, RISCV::PseudoTTBoundSFPEXEXP, 4},
     {Intrinsic::riscv_tt_bound_sfpexman, RISCV::PseudoTTBoundSFPEXMAN, 4},
@@ -214,6 +216,10 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
     break;
   case RISCV::PseudoTTBoundSFPMOVAll:
     Select(RISCV::TTSFPMOVAll, {0, 1});
+    break;
+  case RISCV::PseudoTTBoundSFPMOVPRNGAdvance:
+    Select(RISCV::TTSFPMOVPRNGAdvance, {0, 1});
+    Old();
     break;
   case RISCV::PseudoTTBoundSFPARECIP:
     Select(RISCV::TTSFPARECIP, {0, 1, 2, 3});
@@ -1008,6 +1014,7 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
   case RISCV::TTSFPMOVAll:
   case RISCV::TTSFPMOV:
   case RISCV::TTSFPMOVNeg:
+  case RISCV::TTSFPMOVPRNGAdvance:
   case RISCV::TTSFPIADD:
   case RISCV::TTSFPISUB:
   case RISCV::TTSFPAND:

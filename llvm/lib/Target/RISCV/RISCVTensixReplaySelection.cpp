@@ -7,12 +7,12 @@
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTargetMachine.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -20,9 +20,6 @@
 #include <optional>
 
 using namespace llvm;
-static cl::opt<bool> EnableTensixReplaySelection(
-    "riscv-tensix-enable-replay-selection", cl::init(true), cl::Hidden,
-    cl::desc("Compress existing repeated Tensix machine sequences"));
 
 namespace {
 // These issue operations affect only typed Tensix arithmetic/address state.
@@ -182,7 +179,9 @@ void consider(ArrayRef<MachineInstr *> Run, Candidate &Best, bool SFPU) {
 
 bool llvm::selectTensixReplay(MachineFunction &MF) {
   const auto &ST = MF.getSubtarget<RISCVSubtarget>();
-  if (!EnableTensixReplaySelection || !ST.hasVendorXTTTensixBH() ||
+  const auto Options = static_cast<const RISCVTargetMachine &>(MF.getTarget())
+                           .getTensixOptimizationOptions();
+  if (!Options.ReplaySelection || !ST.hasVendorXTTTensixBH() ||
       MF.getInfo<RISCVMachineFunctionInfo>()->hasTensixCodegenFailed() ||
       MF.getProperties().hasFailedRegAlloc())
     return false;

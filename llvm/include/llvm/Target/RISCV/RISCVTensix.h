@@ -17,8 +17,29 @@
 
 namespace llvm {
 class Module;
+class TargetMachine;
 class Triple;
 namespace RISCV {
+
+/// Optional optimizations only. Disabling them never disables mandatory
+/// hazard repair, explicit replay legality, or final machine verification.
+struct TensixOptimizationOptions {
+  bool CopyCCCleanup = true;
+  bool LatencyScheduling = true;
+  bool ReplaySelection = true;
+};
+
+/// Override the command-line defaults for this machine only. Set before
+/// constructing its codegen pipeline and do not mutate it during emission.
+/// Independently configured machines may be used concurrently. Foreign target
+/// machines are rejected, even if their triple names RISC-V.
+Error setTensixOptimizationOptions(TargetMachine &TM,
+                                  TensixOptimizationOptions Options);
+
+/// Return this machine's effective options: its explicit override, or the
+/// command-line defaults when no override has been supplied.
+Expected<TensixOptimizationOptions>
+getTensixOptimizationOptions(const TargetMachine &TM);
 
 // Logical instruction contracts deliberately expose no bit positions or masks.
 struct TensixInstructionInfo {

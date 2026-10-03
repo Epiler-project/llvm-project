@@ -3,6 +3,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #include "llvm/Target/RISCV/RISCVTensix.h"
 #include "llvm/AsmParser/Parser.h"
+#include "llvm/Config/llvm-config.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include <future>
 #include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -133,6 +141,109 @@ TEST(RISCVTensix, SFPURegisterGeometryRejectsInvalidNumbers) {
     auto Geometry = RISCV::getTensixSFPURegisterGeometry(Number);
     ASSERT_FALSE(bool(Geometry));
     consumeError(Geometry.takeError());
+  }
+}
+
+TEST(RISCVTensix, BoundPRNGAdvanceHasOnlyDestinationAndOldWithStateEffects) {
+  using namespace RISCV;
+  const TensixBoundValue Unbound{TensixBoundValueKind::UnboundRegister};
+  auto Contract = getTensixBoundSFPUContract(
+      Intrinsic::riscv_tt_bound_sfpmov_prng_advance, {Unbound, Unbound});
+  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  ASSERT_EQ(Contract->getArgumentCount(), 2u);
+  const auto Registers = Contract->getRegisterArguments();
+  ASSERT_EQ(Registers.size(), 2u);
+  EXPECT_EQ(Registers[0].Argument, 0u);
+  EXPECT_EQ(Registers[0].Role, TensixBoundArgumentRole::WriteLReg);
+  EXPECT_EQ(Registers[1].Argument, 1u);
+  EXPECT_EQ(Registers[1].Role, TensixBoundArgumentRole::OldDestination);
+  for (const auto &Register : Registers) {
+    EXPECT_FALSE(Register.FixedRegister);
+    EXPECT_EQ(Register.AllowedRegisters,
+              (SmallVector<uint32_t, 16>{0, 1, 2, 3, 4, 5, 6, 7}));
+    EXPECT_EQ(Register.Footprint,
+              TensixSFPURegisterFootprint::StateDependent);
+  }
+  const auto Constraints = Contract->getRegisterConstraints();
+  ASSERT_EQ(Constraints.size(), 1u);
+  EXPECT_EQ(Constraints[0].Kind, TensixBoundConstraintKind::SameLocation);
+  EXPECT_EQ(Constraints[0].FirstArgument, 0u);
+  EXPECT_EQ(Constraints[0].SecondArgument, 1u);
+
+  // Special selector 9 is not CReg9. The two register arguments and four
+  // architectural resources exhaust the action's accesses.
+  ASSERT_EQ(Contract->getArchitecturalEffects().size(), 6u);
+  unsigned RegisterEffects = 0, CC = 0, Config = 0, Issue = 0, PRNG = 0;
+  for (const auto &Effect : Contract->getArchitecturalEffects()) {
+    EXPECT_FALSE(std::holds_alternative<TensixFixedRegisterRef>(Effect.Resource));
+    if (const auto *Argument =
+            std::get_if<TensixBoundArgumentRef>(&Effect.Resource)) {
+      ++RegisterEffects;
+      ASSERT_LT(Argument->Argument, 2u);
+      EXPECT_EQ(Effect.Access, Argument->Argument == 0
+                                   ? TensixSFPUAccess::Write
+                                   : TensixSFPUAccess::Read);
+      continue;
+    }
+    const auto *State = std::get_if<TensixSFPUState>(&Effect.Resource);
+    ASSERT_NE(State, nullptr);
+    switch (*State) {
+    case TensixSFPUState::CC:
+      ++CC;
+      EXPECT_EQ(Effect.Access, TensixSFPUAccess::Read);
+      break;
+    case TensixSFPUState::Configuration:
+      ++Config;
+      EXPECT_EQ(Effect.Access, TensixSFPUAccess::Read);
+      break;
+    case TensixSFPUState::Issue:
+      ++Issue;
+      EXPECT_EQ(Effect.Access, TensixSFPUAccess::ReadWrite);
+      break;
+    case TensixSFPUState::PRNG:
+      ++PRNG;
+      EXPECT_EQ(Effect.Access, TensixSFPUAccess::ReadWrite);
+      break;
+    default:
+      ADD_FAILURE() << "PRNG advance acquired an unrelated resource";
+    }
+  }
+  EXPECT_EQ(RegisterEffects, 2u);
+  EXPECT_EQ(CC, 1u);
+  EXPECT_EQ(Config, 1u);
+  EXPECT_EQ(Issue, 1u);
+  EXPECT_EQ(PRNG, 1u);
+  EXPECT_TRUE(std::holds_alternative<std::monostate>(Contract->getLaneControl()));
+  // The bounded initializedness helper has no PRNG-content input. It must
+  // not claim a copy or an immediately initialized numerical value.
+  EXPECT_EQ(Contract->getTransferFacts().Kind,
+            TensixSFPUTransferKind::Unsupported);
+}
+
+TEST(RISCVTensix, BoundPRNGAdvanceRejectsUnauthoredSourceOrBrokenBinding) {
+  using namespace RISCV;
+  auto Constant = [](int64_t Value) {
+    return TensixBoundValue{TensixBoundValueKind::Constant, Value};
+  };
+  for (uint32_t Number = 0; Number != 8; ++Number) {
+    SCOPED_TRACE(Number);
+    auto Contract = getTensixBoundSFPUContract(
+        Intrinsic::riscv_tt_bound_sfpmov_prng_advance,
+        {Constant(Number), Constant(Number)});
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  }
+  for (const SmallVector<TensixBoundValue, 3> &Args : {
+           SmallVector<TensixBoundValue, 3>{Constant(0), Constant(1)},
+           {Constant(9), Constant(9)},
+           {Constant(0), Constant(9)},
+           {Constant(-1), Constant(-1)},
+           {Constant(0)},
+           {Constant(0), Constant(0), Constant(9)},
+           {{TensixBoundValueKind::DynamicScalar}, Constant(0)}}) {
+    auto Rejected = getTensixBoundSFPUContract(
+        Intrinsic::riscv_tt_bound_sfpmov_prng_advance, Args);
+    ASSERT_FALSE(bool(Rejected));
+    consumeError(Rejected.takeError());
   }
 }
 
@@ -429,4 +540,195 @@ TEST(RISCVTensix, BoundStateDependentFootprintIsNotWholeRegister) {
                 TensixSFPURegisterFootprint::StateDependent);
   }
 }
+
+class RISCVTensixOptimizationTest : public testing::Test {
+protected:
+  static void SetUpTestSuite() {
+    LLVMInitializeRISCVTargetInfo();
+    LLVMInitializeRISCVTarget();
+    LLVMInitializeRISCVTargetMC();
+    LLVMInitializeRISCVAsmPrinter();
+  }
+
+  static std::unique_ptr<TargetMachine> createMachine() {
+    Triple TT("riscv32-unknown-unknown");
+    std::string Error;
+    const Target *T = TargetRegistry::lookupTarget(TT, Error);
+    if (!T)
+      return nullptr;
+    return std::unique_ptr<TargetMachine>(T->createTargetMachine(
+        TT, "generic-rv32", "+xtttensixbh", TargetOptions(), std::nullopt,
+        std::nullopt, CodeGenOptLevel::Default));
+  }
+
+  static Expected<std::string>
+  emit(StringRef IR, RISCV::TensixOptimizationOptions Options) {
+    auto TM = createMachine();
+    if (!TM)
+      return createStringError("could not create test RISC-V target machine");
+    if (Error E = RISCV::setTensixOptimizationOptions(*TM, Options))
+      return std::move(E);
+    LLVMContext Context;
+    SMDiagnostic Diagnostic;
+    auto M = parseAssemblyString(IR, Diagnostic, Context);
+    if (!M)
+      return createStringError(Diagnostic.getMessage());
+    M->setTargetTriple(TM->getTargetTriple());
+    M->setDataLayout(TM->createDataLayout());
+    SmallVector<char, 0> Bytes;
+    raw_svector_ostream Output(Bytes);
+    legacy::PassManager Passes;
+    if (TM->addPassesToEmitFile(Passes, Output, nullptr,
+                                CodeGenFileType::AssemblyFile))
+      return createStringError("test target cannot emit assembly");
+    Passes.run(*M);
+    return std::string(Bytes.begin(), Bytes.end());
+  }
+};
+
+TEST_F(RISCVTensixOptimizationTest, IndependentMachinesKeepValueOwnedOptions) {
+  auto First = createMachine();
+  auto Second = createMachine();
+  auto Untouched = createMachine();
+  ASSERT_TRUE(First && Second && Untouched);
+  auto Defaults = RISCV::getTensixOptimizationOptions(*Untouched);
+  ASSERT_TRUE(bool(Defaults)) << toString(Defaults.takeError());
+  for (unsigned Bits = 0; Bits != 8; ++Bits) {
+    RISCV::TensixOptimizationOptions Options{
+        bool(Bits & 1), bool(Bits & 2), bool(Bits & 4)};
+    EXPECT_FALSE(bool(RISCV::setTensixOptimizationOptions(*First, Options)));
+    EXPECT_FALSE(bool(RISCV::setTensixOptimizationOptions(
+        *Second, {!Options.CopyCCCleanup, !Options.LatencyScheduling,
+                  !Options.ReplaySelection})));
+    auto A = RISCV::getTensixOptimizationOptions(*First);
+    auto B = RISCV::getTensixOptimizationOptions(*Second);
+    auto C = RISCV::getTensixOptimizationOptions(*Untouched);
+    ASSERT_TRUE(bool(A)) << toString(A.takeError());
+    ASSERT_TRUE(bool(B)) << toString(B.takeError());
+    ASSERT_TRUE(bool(C)) << toString(C.takeError());
+    EXPECT_EQ(A->CopyCCCleanup, Options.CopyCCCleanup);
+    EXPECT_EQ(A->LatencyScheduling, Options.LatencyScheduling);
+    EXPECT_EQ(A->ReplaySelection, Options.ReplaySelection);
+    EXPECT_EQ(B->CopyCCCleanup, !Options.CopyCCCleanup);
+    EXPECT_EQ(B->LatencyScheduling, !Options.LatencyScheduling);
+    EXPECT_EQ(B->ReplaySelection, !Options.ReplaySelection);
+    EXPECT_EQ(C->CopyCCCleanup, Defaults->CopyCCCleanup);
+    EXPECT_EQ(C->LatencyScheduling, Defaults->LatencyScheduling);
+    EXPECT_EQ(C->ReplaySelection, Defaults->ReplaySelection);
+  }
+}
+
+TEST_F(RISCVTensixOptimizationTest, RejectsForeignTargetEvenWithRISCVTriple) {
+  class ForeignMachine final : public TargetMachine {
+  public:
+    explicit ForeignMachine(const Target &T, StringRef TripleName)
+        : TargetMachine(T, "", Triple(TripleName), "", "", TargetOptions()) {}
+  };
+  Target Foreign;
+  for (StringRef TripleName : {"x86_64-unknown-unknown",
+                              "riscv32-unknown-unknown"}) {
+    ForeignMachine TM(Foreign, TripleName);
+    Error E = RISCV::setTensixOptimizationOptions(TM, {});
+    ASSERT_TRUE(bool(E));
+    EXPECT_NE(toString(std::move(E)).find("RISC-V target machine"),
+              std::string::npos);
+    auto Options = RISCV::getTensixOptimizationOptions(TM);
+    ASSERT_FALSE(bool(Options));
+    EXPECT_NE(toString(Options.takeError()).find("RISC-V target machine"),
+              std::string::npos);
+  }
+}
+
+constexpr StringLiteral ReplayOptionsIR = R"(
+  declare void @llvm.riscv.tt.setrwc(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+  declare void @llvm.riscv.tt.incrwc(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+  declare void @llvm.riscv.tt.nop()
+  define void @kernel() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" {
+    call void @llvm.riscv.tt.setrwc(i32 1, i32 0, i32 0, i32 0, i32 0, i32 0)
+    call void @llvm.riscv.tt.incrwc(i32 1, i32 0, i32 0, i32 0)
+    call void @llvm.riscv.tt.nop()
+    call void @llvm.riscv.tt.setrwc(i32 1, i32 0, i32 0, i32 0, i32 0, i32 0)
+    call void @llvm.riscv.tt.incrwc(i32 1, i32 0, i32 0, i32 0)
+    call void @llvm.riscv.tt.nop()
+    ret void
+  }
+)";
+
+TEST_F(RISCVTensixOptimizationTest, ReplayEmissionDoesNotLeakAcrossRequests) {
+  for (bool Enable : {true, false, true}) {
+    auto Assembly = emit(ReplayOptionsIR, {false, false, Enable});
+    ASSERT_TRUE(bool(Assembly)) << toString(Assembly.takeError());
+    EXPECT_EQ(StringRef(*Assembly).count(".word"), Enable ? 5u : 6u);
+    EXPECT_EQ(StringRef(*Assembly).contains("0x100000cc"), Enable);
+    EXPECT_EQ(StringRef(*Assembly).contains("0x100000c0"), Enable);
+  }
+}
+
+TEST_F(RISCVTensixOptimizationTest, CopyCleanupConsumesPerRequestOption) {
+  constexpr StringLiteral IR = R"(
+    declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
+    declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+    declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+    define void @kernel() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" {
+      call void @llvm.riscv.tt.bound.sfpencc(i32 3, i32 10)
+      call void @llvm.riscv.tt.bound.sfpencc(i32 3, i32 10)
+      call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+      call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 0)
+      call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+      ret void
+    }
+  )";
+  for (bool Enable : {true, false, true}) {
+    auto Assembly = emit(IR, {Enable, false, false});
+    ASSERT_TRUE(bool(Assembly)) << toString(Assembly.takeError());
+    EXPECT_EQ(StringRef(*Assembly).count(".word"), Enable ? 3u : 5u);
+  }
+}
+
+TEST_F(RISCVTensixOptimizationTest, DisabledSchedulingStillRepairsHazards) {
+  constexpr StringLiteral IR = R"(
+    declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
+    declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+    declare void @llvm.riscv.tt.bound.sfpadd(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+    declare void @llvm.riscv.tt.bound.sfpiadd(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+    declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+    define void @kernel() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" {
+      call void @llvm.riscv.tt.bound.sfpencc(i32 3, i32 10)
+      call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+      call void @llvm.riscv.tt.bound.sfpadd(i32 0, i32 0, i32 9, i32 10, i32 1)
+      call void @llvm.riscv.tt.bound.sfpiadd(i32 0, i32 0, i32 9, i32 4)
+      call void @llvm.riscv.tt.bound.sfpmov.all(i32 4, i32 10)
+      call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+      call void @llvm.riscv.tt.bound.sfpstore(i32 4, i32 1, i32 0, i32 4)
+      ret void
+    }
+  )";
+  for (bool Enable : {true, false, true}) {
+    auto Assembly = emit(IR, {false, Enable, false});
+    ASSERT_TRUE(bool(Assembly)) << toString(Assembly.takeError());
+    EXPECT_EQ(StringRef(*Assembly).count(".word"), Enable ? 7u : 8u);
+    // The off configuration must still include the mandatory SFPNOP.
+    EXPECT_EQ(StringRef(*Assembly).count("0x3c000002"), Enable ? 0u : 1u);
+  }
+}
+
+#if LLVM_ENABLE_THREADS
+TEST_F(RISCVTensixOptimizationTest, ConcurrentRequestsUseDistinctOptions) {
+  auto Enabled = std::async(std::launch::async, [] {
+    return emit(ReplayOptionsIR, {true, true, true});
+  });
+  auto Disabled = std::async(std::launch::async, [] {
+    return emit(ReplayOptionsIR, {false, false, false});
+  });
+  auto A = Enabled.get();
+  auto B = Disabled.get();
+  ASSERT_TRUE(bool(A)) << toString(A.takeError());
+  ASSERT_TRUE(bool(B)) << toString(B.takeError());
+  EXPECT_EQ(StringRef(*A).count(".word"), 5u);
+  EXPECT_EQ(StringRef(*B).count(".word"), 6u);
+  EXPECT_TRUE(StringRef(*A).contains("0x100000cc"));
+  EXPECT_FALSE(StringRef(*B).contains("0x100000cc"));
+}
+#endif
+
 } // namespace

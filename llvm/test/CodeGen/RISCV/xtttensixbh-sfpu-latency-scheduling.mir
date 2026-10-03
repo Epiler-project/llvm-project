@@ -1,19 +1,27 @@
 # RUN: split-file %s %t
-# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/schedule.mir -o %t.scheduled.mir
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=true -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/schedule.mir -o %t.scheduled.mir
 # RUN: FileCheck %s --check-prefixes=SCHEDULED,SAFE < %t.scheduled.mir
 # RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.scheduled.mir -o /dev/null
-# RUN: llc -O0 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/schedule.mir -o %t.baseline.mir
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/schedule.mir -o %t.baseline.mir
 # RUN: FileCheck %s --check-prefixes=BASELINE,SAFE < %t.baseline.mir
-# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.baseline.mir -o /dev/null
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -run-pass=riscv-tensix-hazards %t.baseline.mir -o /dev/null
 # RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.scheduled.mir -o %t.again.mir
 # RUN: FileCheck %s --check-prefixes=SCHEDULED,SAFE < %t.again.mir
 # RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/call.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
+# RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -run-pass=riscv-tensix-hazards %t/schedule.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNREPAIRED
+# RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/call.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
+# RUN: not llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -run-pass=riscv-tensix-hazards %S/xtttensixbh-sfpu-hazard-cfg.mir -o /dev/null 2>&1 | FileCheck %S/xtttensixbh-sfpu-hazard-cfg.mir --check-prefix=INVALID
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %S/xtttensixbh-sfpu-hazard-cfg.mir -o %t.cfg.repaired.mir
+# RUN: FileCheck %S/xtttensixbh-sfpu-hazard-cfg.mir < %t.cfg.repaired.mir
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -run-pass=riscv-tensix-hazards %t.cfg.repaired.mir -o /dev/null
 #
 # Blackhole MAD/ADD/MUL take two SFPU cycles. IADD's tied destination is
 # not covered by the hardware scoreboard. A pre-existing, independent,
 # unpredicated one-cycle move can fill this gap: P,C,F becomes P,F,C rather
 # than P,NOP,C,F. This is a real instruction-count reduction, not merely
-# insertion of safety NOPs. The O0 stream provides the unscheduled baseline.
+# insertion of safety NOPs. Both participants use O2: only the optional
+# latency scheduler is disabled for the baseline. Repair and final verification
+# stay mandatory, including propagated SFPU/Dst hazards across real backedges.
 #
 # SFPMOV mode 2 ignores lane enable; the selected IADD/ISUB modes preserve CC.
 # Register conflicts, fixed storage, undeclared effects and external issue
@@ -191,6 +199,7 @@
 # SAFE-NEXT: $tt_l0 = TTSFPIADD
 # SAFE-NEXT: $tt_l4 = TTSFPMOVAll $tt_l5,
 # SAFE-NEXT: PseudoRET
+# UNREPAIRED: in function hide_mad_gap void (): unresolved Tensix SFPU MAD to IADD destination hazard
 # CALL: machine call has no verified Tensix SFPU preservation ABI
 
 #--- schedule.mir

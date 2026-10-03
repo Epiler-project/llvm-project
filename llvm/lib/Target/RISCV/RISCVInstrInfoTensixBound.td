@@ -61,6 +61,8 @@ class TensixBoundUnary : TensixBoundPseudo<
 def PseudoTTBoundSFPMOV : TensixBoundUnary;
 def PseudoTTBoundSFPMOVAll : TensixBoundPseudo<
     (ins uimm3:$dst, uimm4:$src)>;
+def PseudoTTBoundSFPMOVPRNGAdvance : TensixBoundPseudo<
+    (ins uimm3:$dst, uimm3:$old)>;
 def PseudoTTBoundSFPARECIP : TensixBoundUnary;
 def PseudoTTBoundSFPEXEXP : TensixBoundUnary;
 def PseudoTTBoundSFPEXMAN : TensixBoundUnary;

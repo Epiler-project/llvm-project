@@ -25,6 +25,9 @@ def int_riscv_tt_bound_sfpmad : TensixBoundIntrinsic<6>;
 def int_riscv_tt_bound_sfpiadd : TensixBoundIntrinsic<4>;
 def int_riscv_tt_bound_sfpmov : TensixBoundIntrinsic<4>;
 def int_riscv_tt_bound_sfpmov_all : TensixBoundIntrinsic<2>;
+// Sample each active lane's pre-transition PRNG word and advance once.
+// Only physical destination and old are authored; special9/mode8 are fixed.
+def int_riscv_tt_bound_sfpmov_prng_advance : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfparecip : TensixBoundIntrinsic<4>;
 def int_riscv_tt_bound_sfpexexp : TensixBoundIntrinsic<4>;
 def int_riscv_tt_bound_sfpexman : TensixBoundIntrinsic<4>;
