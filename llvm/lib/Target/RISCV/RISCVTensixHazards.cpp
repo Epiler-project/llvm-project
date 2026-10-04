@@ -89,7 +89,10 @@ bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
       MI.getOperand(4).getImm() != 0 &&
       (Pending & (lregBit(MI.getOperand(0), TRI) |
                   lregBit(MI.getOperand(1), TRI)));
-  bool ReadsPendingShuffle = MI.getOpcode() == RISCV::TTSFPSHFT2 &&
+  bool ReadsPendingShuffle =
+      (MI.getOpcode() == RISCV::TTSFPSHFT2 ||
+       MI.getOpcode() == RISCV::TTSFPSHFT2Copy4 ||
+       MI.getOpcode() == RISCV::TTSFPSHFT2Rotate4) &&
       (Pending & readMask(MI, TRI));
   bool ReadsPendingLUT = isSFPU(MI) &&
       ((Pending >> 8) & readMask(MI, TRI));
@@ -104,17 +107,15 @@ unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
                     unsigned Pending,
                     const TensixSFPUReplayExecutionEffects *ReplayEffects =
                         nullptr) {
-  // Reuse the replay verifier's exact preceding record, including its final
-  // physical MAD result. The execute pseudo's union of defs cannot identify
-  // which result is still pending, and it must not erase that dependency.
+  // Reuse the replay verifier's native exit state. A union of physical defs
+  // cannot describe the pending MAD/LUT result or a cross-lane cooldown.
   if ((MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
        MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) &&
       MI.getOperand(0).getImm() == 0) {
     assert(ReplayEffects && "SFPU replay requires verified effects");
     auto It = ReplayEffects->find(&MI);
     assert(It != ReplayEffects->end() && "missing SFPU replay effects");
-    MCRegister Result = It->second.PendingMADResult;
-    return Result ? 1u << TRI.getEncodingValue(Result) : 0;
+    return It->second.PendingSFPU;
   }
   // Replay and MOP have finite validated instruction streams, but their final
   // SFPU producer may depend on control values. Fence the SFPU handoff instead
@@ -129,10 +130,14 @@ unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
     return lregBit(MI.getOperand(0), TRI);
   // Unlike MAD's partially tracked dependencies, LUT requires a gap before
   // any next-cycle read of its result.
-  if (MI.getOpcode() == RISCV::TTSFPLUT)
+  if (MI.getOpcode() == RISCV::TTSFPLUTFP32Three)
+    return 0xffu << 8;
+  if (MI.getOpcode() == RISCV::TTSFPLUT ||
+      MI.getOpcode() == RISCV::TTSFPLUTFP32Six)
     return lregBit(MI.getOperand(0), TRI) << 8;
   if (MI.getOpcode() == RISCV::TTSFPSWAP ||
-      MI.getOpcode() == RISCV::TTSFPSHFT2)
+      MI.getOpcode() == RISCV::TTSFPSHFT2 ||
+      MI.getOpcode() == RISCV::TTSFPSHFT2Rotate4)
     return SFPUCooldown;
   return 0;
 }

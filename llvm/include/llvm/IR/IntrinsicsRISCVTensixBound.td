@@ -48,8 +48,16 @@ def int_riscv_tt_bound_sfpxor : TensixBoundIntrinsic<3>;
 def int_riscv_tt_bound_sfpnot : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfpshft_v : TensixBoundIntrinsic<4>;
 def int_riscv_tt_bound_sfpshft2 : TensixBoundIntrinsic<5>;
+// Four simultaneous fixed outputs, four old inputs, and mode0/1 or real VC.
+def int_riscv_tt_bound_sfpshft2_copy4 : TensixBoundIntrinsic<9>;
+def int_riscv_tt_bound_sfpshft2_rotate4 : TensixBoundIntrinsic<9>;
 def int_riscv_tt_bound_sfpstochrnd_i : TensixBoundIntrinsic<6>;
 def int_riscv_tt_bound_sfpstochrnd_v : TensixBoundIntrinsic<6>;
+// Direct form: destination/old, fixed L0..L6, and mode.
+def int_riscv_tt_bound_sfplutfp32_6r : TensixBoundIntrinsic<10>;
+// Blackhole LUT16-3 mode writes per-lane LReg[L7 & 15]. All eight old
+// contents and conditional results are explicit; selector >= 8 writes none.
+def int_riscv_tt_bound_sfplutfp32_3r : TensixBoundIntrinsic<17>;
 def int_riscv_tt_bound_sfplut : TensixBoundIntrinsic<7>;
 def int_riscv_tt_bound_sfpswap : TensixBoundIntrinsic<5>;
 def int_riscv_tt_bound_sfptransp : TensixBoundIntrinsic<12>;

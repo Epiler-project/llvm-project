@@ -66,10 +66,16 @@ constexpr TensixBoundInstruction Instructions[] = {
     {Intrinsic::riscv_tt_bound_sfpxor, RISCV::PseudoTTBoundSFPXOR, 3},
     {Intrinsic::riscv_tt_bound_sfpnot, RISCV::PseudoTTBoundSFPNOT, 2},
     {Intrinsic::riscv_tt_bound_sfpshft2, RISCV::PseudoTTBoundSFPSHFT2, 5},
+    {Intrinsic::riscv_tt_bound_sfpshft2_copy4, RISCV::PseudoTTBoundSFPSHFT2Copy4, 9},
+    {Intrinsic::riscv_tt_bound_sfpshft2_rotate4, RISCV::PseudoTTBoundSFPSHFT2Rotate4, 9},
     {Intrinsic::riscv_tt_bound_sfpstochrnd_i, RISCV::PseudoTTBoundSFPSTOCHRNDI,
      6},
     {Intrinsic::riscv_tt_bound_sfpstochrnd_v, RISCV::PseudoTTBoundSFPSTOCHRNDV,
      6},
+    {Intrinsic::riscv_tt_bound_sfplutfp32_6r,
+     RISCV::PseudoTTBoundSFPLUTFP32Six, 10},
+    {Intrinsic::riscv_tt_bound_sfplutfp32_3r,
+     RISCV::PseudoTTBoundSFPLUTFP32Three, 17},
     {Intrinsic::riscv_tt_bound_sfplut, RISCV::PseudoTTBoundSFPLUT, 7},
     {Intrinsic::riscv_tt_bound_sfpswap, RISCV::PseudoTTBoundSFPSWAP, 5},
     {Intrinsic::riscv_tt_bound_sfptransp, RISCV::PseudoTTBoundSFPTRANSP, 12},
@@ -315,6 +321,26 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
     Select(RISCV::TTSFPSHFT2, {0, 1, 2, 4});
     Old();
     break;
+  case RISCV::PseudoTTBoundSFPSHFT2Copy4:
+  case RISCV::PseudoTTBoundSFPSHFT2Rotate4: {
+    if (Info.Pseudo == RISCV::PseudoTTBoundSFPSHFT2Copy4) {
+      if (Error E = Mode(8, {0, 1}))
+        return std::move(E);
+      Select(RISCV::TTSFPSHFT2Copy4, {8});
+    } else {
+      Select(RISCV::TTSFPSHFT2Rotate4, {8});
+    }
+    const auto &Desc = instructions().get(Map.Native.Opcode);
+    auto Inputs = inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID);
+    auto Outputs = inClass(Desc.implicit_defs(), RISCV::SFPRRegClassID);
+    if (Inputs.size() != 4 || Inputs != Outputs)
+      return invalid("SFPSHFT2 group descriptor lacks four simultaneous accesses");
+    for (unsigned I = 0; I != 4; ++I) {
+      Map.Fixed.push_back({I, Outputs[I], Role::FixedGroupWrite, Access::Write});
+      Map.Fixed.push_back({I + 4, Inputs[I], Role::FixedGroupRead, Access::Read});
+    }
+    break;
+  }
   case RISCV::PseudoTTBoundSFPSTOCHRNDI: {
     if (Error E = Mode(4, {0, 1, 2, 3, 4, 5, 6, 7}))
       return std::move(E);
@@ -331,6 +357,38 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
     Select(RISCV::TTSFPSTOCHRNDV, {0, 1, 2, 3, 4, 5});
     Old();
     break;
+  case RISCV::PseudoTTBoundSFPLUTFP32Six: {
+    if (Error E = Mode(9, {0, 2, 3, 4, 6, 7}))
+      return std::move(E);
+    Select(RISCV::TTSFPLUTFP32Six, {0, 1, 9});
+    auto Inputs = inClass(instructions().get(Map.Native.Opcode).implicit_uses(),
+                          RISCV::SFPRRegClassID);
+    if (Inputs.size() != 7)
+      return invalid("SFPLUTFP32 direct descriptor lacks its fixed inputs");
+    for (auto [I, Reg] : enumerate(Inputs))
+      Map.Fixed.push_back(
+          {unsigned(I + 2), Reg, Role::FixedGroupRead, Access::Read});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPLUTFP32Three: {
+    if (Error E = Mode(16, {10, 14}))
+      return std::move(E);
+    Select(RISCV::TTSFPLUTFP32Three, {});
+    Map.Native.Operands.push_back({std::nullopt, (Args[16].Constant >> 2) & 1});
+    const auto &Desc = instructions().get(Map.Native.Opcode);
+    auto Inputs = inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID);
+    auto Outputs = inClass(Desc.implicit_defs(), RISCV::SFPRRegClassID);
+    if (Inputs.size() != 8 || Inputs != Outputs)
+      return invalid("SFPLUTFP32 indirect descriptor lacks its complete group");
+    for (unsigned I = 0; I != 8; ++I) {
+      Map.Fixed.push_back(
+          {I, Outputs[I], Role::FixedGroupWrite, Access::Write});
+      Map.Fixed.push_back(
+          {I + 8, Inputs[I], Role::FixedGroupRead, Access::Read});
+    }
+    break;
+  }
   case RISCV::PseudoTTBoundSFPLUT: {
     Select(RISCV::TTSFPLUT, {0, 1, 6});
     auto Inputs = inClass(instructions().get(Map.Native.Opcode).implicit_uses(),

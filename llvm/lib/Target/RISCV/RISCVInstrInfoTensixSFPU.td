@@ -94,6 +94,26 @@ def TTSFPSHFT : TensixSignedImmediate<0x7a, "ttsfpshft", 0x00af>;
 
 def TTSFPSHFT2 : TensixUnary<0x94, "ttsfpshft2", 0x0018>;
 
+// Group forms read the complete previous L0..L3 state before any write. VD=0
+// selects the normal enabled-lane path; it is not an extra destination.
+def TTSFPSHFT2Copy4 : TensixPhysicalInst<0x94, (outs),
+    (ins uimm1:$mode), "ttsfpshft2.copy4", "$mode"> {
+  bits<1> mode;
+  let RawWord{0} = mode;
+  let ModeOperandIndex = 0;
+  let AllowedModes = 0x0003;
+  let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_L0, TT_L1, TT_L2, TT_L3, TT_ISSUE];
+}
+def TTSFPSHFT2Rotate4 : TensixPhysicalInst<0x94, (outs),
+    (ins SFPRRead:$value), "ttsfpshft2.rotate4", "$value"> {
+  bits<4> value;
+  let RawWord{11-8} = value;
+  let RawWord{3-0} = 2;
+  let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_L0, TT_L1, TT_L2, TT_L3, TT_ISSUE];
+}
+
 class TensixStochRound<string Name, bit Immediate>
     : TensixPhysicalInst<0x8e, (outs SFPR:$dst),
         !if(Immediate,
@@ -148,6 +168,35 @@ def TTSFPLUT : TensixPhysicalInst<0x73, (outs SFPR:$dst),
   let ModeOperandIndex = 2;
   let AllowedModes = 0x0011;
   let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];
+}
+// Blackhole direct SFPLUTFP32 forms read seven fixed LRegs: six table
+// registers plus L3. Mode bit3 stays clear in both compute and scheduler mirror.
+def TTSFPLUTFP32Six : TensixPhysicalInst<0x95, (outs SFPR:$dst),
+    (ins SFPR:$old, uimm3:$mode), "ttsfplutfp32.6r", "$dst, $mode"> {
+  bits<4> dst;
+  bits<3> mode;
+  let RawWord{7-4} = dst;
+  let RawWord{2-0} = mode;
+  let RawWord{18-16} = mode;
+  let Constraints = "$dst = $old";
+  let ModeOperandIndex = 2;
+  let AllowedModes = 0x00dd; // FP32-3entry, LUT16-6entry table1/table2, sign.
+  let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_L4, TT_L5, TT_L6,
+              TT_CC, TT_CONFIG, TT_ISSUE];
+}
+// Modes10/14 select the destination from each lane's old L7. Model the
+// conditional whole-group update, never a fabricated single static write.
+def TTSFPLUTFP32Three : TensixPhysicalInst<0x95, (outs),
+    (ins uimm1:$sign), "ttsfplutfp32.3r", "$sign"> {
+  bits<1> sign;
+  let RawWord{3-0} = {1, sign, 1, 0};
+  let RawWord{19-16} = {1, sign, 1, 0};
+  let ModeOperandIndex = 0;
+  let AllowedModes = 0x0003;
+  let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_L4, TT_L5, TT_L6, TT_L7,
+              TT_CC, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_L0, TT_L1, TT_L2, TT_L3, TT_L4, TT_L5, TT_L6, TT_L7,
+              TT_ISSUE];
 }
 def TTSFPTRANSP : TensixPhysicalInst<0x8c, (outs), (ins), "ttsfptransp", ""> {
   let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];

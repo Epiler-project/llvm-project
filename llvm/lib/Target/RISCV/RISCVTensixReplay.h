@@ -38,9 +38,9 @@ TensixReplayHazardState advanceTensixReplayHazard(
 struct TensixSFPUReplayEffects {
   SmallVector<MCRegister, 16> Uses;
   SmallVector<MCRegister, 8> Defs;
-  // ADD/MUL/MAD share the two-cycle MAD datapath. All other admitted issues
-  // finish any preceding MAD result; a trailing NOP therefore clears this.
-  MCRegister PendingMADResult;
+  // Exact exit dependency/cooldown from the shared native hazard transfer.
+  // A trailing NOP clears the state; an explicit grouped rotate retains it.
+  unsigned PendingSFPU = 0;
 };
 using TensixSFPUReplayExecutionEffects =
     DenseMap<const MachineInstr *, TensixSFPUReplayEffects>;

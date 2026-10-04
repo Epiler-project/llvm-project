@@ -155,6 +155,9 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
           "Tensix instruction requires immediate operands");
     unsigned Bits;
     switch (Info.OperandType) {
+    case RISCVOp::OPERAND_UIMM1:
+      Bits = 1;
+      break;
     case RISCVOp::OPERAND_UIMM2:
       Bits = 2;
       break;

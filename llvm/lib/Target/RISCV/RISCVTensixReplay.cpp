@@ -65,6 +65,9 @@ bool isDirectSFPURecordedOpcode(unsigned Opcode) {
   // separate; MOP and CC-stack words are not admitted. Dynamic Dst captures
   // use their scalar-aware receiver and project to these same native effects.
   switch (Opcode) {
+  case RISCV::TTSFPSHFT2Copy4:
+  case RISCV::TTSFPSHFT2Rotate4:
+  case RISCV::TTSFPSHFT2:
   case RISCV::TTSFPLOAD:
   case RISCV::TTSFPSTORE:
   case RISCV::TTSFPENCC:
@@ -175,12 +178,10 @@ bool llvm::isTensixSFPUReplayCandidate(const MachineInstr &MI) {
 
 namespace {
 void composeSFPUReplayWord(const MachineInstr &MI,
+                           const TargetRegisterInfo &TRI,
                            TensixSFPUReplayEffects &Effects) {
-  Effects.PendingMADResult = MI.getOpcode() == RISCV::TTSFPADD ||
-                                     MI.getOpcode() == RISCV::TTSFPMUL ||
-                                     MI.getOpcode() == RISCV::TTSFPMAD
-                                 ? MI.getOperand(0).getReg().asMCReg()
-                                 : MCRegister();
+  Effects.PendingSFPU = advanceTensixReplayHazard(
+      MI, TRI, {Effects.PendingSFPU, 0}).SFPU;
   // Reads precede writes, including destructive old-value ties and implicit
   // native state. Word identity never captures the runtime register value.
   for (const MachineOperand &MO : MI.operands())
@@ -206,7 +207,7 @@ llvm::getTensixSFPUReplayEffects(ArrayRef<const MachineInstr *> Body) {
     if (!isTensixSFPUReplayCandidate(*MI))
       return createStringError(
           "automatic SFPU replay body has unsupported physical effects");
-    composeSFPUReplayWord(*MI, Effects);
+    composeSFPUReplayWord(*MI, *MI->getMF()->getSubtarget().getRegisterInfo(), Effects);
     for (const MachineOperand &MO : MI->operands())
       if (MO.isReg() && MO.isDef())
         HasValue |= RISCV::SFPRRegClass.contains(MO.getReg());
@@ -512,7 +513,7 @@ llvm::getTensixExplicitReplayEffects(ArrayRef<TensixRecordedWord> Words,
     auto MI = createTensixRecordedInstruction(Word, Allocator);
     if (!MI)
       return MI.takeError();
-    composeSFPUReplayWord(**MI, Effects);
+    composeSFPUReplayWord(**MI, *MF.getSubtarget().getRegisterInfo(), Effects);
     Allocator.deleteMachineInstr(*MI);
   }
   // The control itself reads configuration/issue state, even a one-word NOP

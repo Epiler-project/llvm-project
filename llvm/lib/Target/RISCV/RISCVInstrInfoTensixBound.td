@@ -99,6 +99,12 @@ def PseudoTTBoundSFPNOT : TensixBoundPseudo<
 def PseudoTTBoundSFPSHFT2 : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old, uimm4:$value, uimm16:$immediate,
          uimm4:$mode)>;
+def PseudoTTBoundSFPSHFT2Copy4 : TensixBoundPseudo<
+    (ins uimm3:$out0, uimm3:$out1, uimm3:$out2, uimm3:$out3,
+         uimm3:$in0, uimm3:$in1, uimm3:$in2, uimm3:$in3, uimm1:$mode)>;
+def PseudoTTBoundSFPSHFT2Rotate4 : TensixBoundPseudo<
+    (ins uimm3:$out0, uimm3:$out1, uimm3:$out2, uimm3:$out3,
+         uimm3:$in0, uimm3:$in1, uimm3:$in2, uimm3:$in3, uimm4:$value)>;
 def PseudoTTBoundSFPSTOCHRNDI : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old, uimm4:$value, uimm8:$descale,
          uimm4:$mode, uimm2:$round)>;
@@ -106,6 +112,16 @@ def PseudoTTBoundSFPSTOCHRNDV : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old, uimm4:$value, uimm4:$descale,
          uimm4:$mode, uimm2:$round)>;
 
+def PseudoTTBoundSFPLUTFP32Six : TensixBoundPseudo<
+    (ins uimm3:$dst, uimm3:$old, uimm3:$l0, uimm3:$l1,
+         uimm3:$l2, uimm3:$l3, uimm3:$l4, uimm3:$l5, uimm3:$l6,
+         uimm4:$mode)>;
+def PseudoTTBoundSFPLUTFP32Three : TensixBoundPseudo<
+    (ins uimm3:$out0, uimm3:$out1, uimm3:$out2, uimm3:$out3,
+         uimm3:$out4, uimm3:$out5, uimm3:$out6, uimm3:$out7,
+         uimm3:$in0, uimm3:$in1, uimm3:$in2, uimm3:$in3,
+         uimm3:$in4, uimm3:$in5, uimm3:$in6, uimm3:$in7,
+         uimm4:$mode)>;
 def PseudoTTBoundSFPLUT : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old, uimm3:$table0, uimm3:$table1,
          uimm3:$table2, uimm3:$input, uimm4:$mode)>;
