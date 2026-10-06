@@ -75,6 +75,7 @@ add_llvm_target(RISCVCodeGen
   RISCVTensixCopyCCCleanup.cpp
   RISCVTensixHazards.cpp
   RISCVTensixIRVerification.cpp
+  RISCVTensixIssueWordFold.cpp
   RISCVTensixLowering.cpp
   RISCVTensixBoundLowering.cpp
   RISCVTensixBoundVerification.cpp

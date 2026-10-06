@@ -18,19 +18,20 @@
 # optional pass-time MachineVerifier to exercise the production boundary.
 # The MIR parser itself always runs MachineVerifier; the four register-class
 # negatives are rejected there before this pass, with its crash diagnostic.
-# MachineInstr::addOperand also restores descriptor-required early-clobber
-# flags omitted in MIR. Check that normalization as a positive; the overlap
-# negative omits the same flag and must still reject its destructive scratch.
+# Ordinary port issue receives its encoded word and port address as GPR
+# uses. Field-form MOP control keeps scalar scratch: MachineInstr::addOperand
+# restores descriptor-required early-clobber flags omitted in MIR, checked as
+# a positive; the overlap negative must still reject its destructive scratch.
 #
 # GPR-LABEL: name: scalar_issue
-# GPR: early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13,
+# GPR: PseudoTTSETADCPort 0, $x10, $x11,
 # GPR: early-clobber $x5, early-clobber $x6 = PseudoTTSETADCMop 2, 1, 0, 0, 1,
 # GPR: early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3,
 # GPR: $tt_l0 = TTSFPMOVAll $tt_c9,
 # GPR-LABEL: name: virtual_scalar_issue
-# GPR: early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSETADCPort 0,
+# GPR: PseudoTTSETADCPort 0, %{{[0-9]+}}, %{{[0-9]+}},
 # EARLY-LABEL: name: port_missing_early_clobber
-# EARLY: early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0,
+# EARLY: early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTMOP_CFGPort 0,
 # CLASS: Illegal physical register for instruction
 # CLASS: $tt_l0 is not a GPR register.
 # ROLE: bound Tensix SFPU operand does not match its native register role
@@ -51,7 +52,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTSETADCPort 0, $x10, $x11, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     early-clobber $x5, early-clobber $x6 = PseudoTTSETADCMop 2, 1, 0, 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
     early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
     $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
@@ -68,7 +69,7 @@ body: |
     %1:gpr = COPY $x11
     %2:gpr = COPY $x12
     %3:gpr = COPY $x13
-    early-clobber %4:gpr, early-clobber %5:gpr, early-clobber %6:gpr = PseudoTTSETADCPort 0, %0, %1, %2, %3, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTSETADCPort 0, %0, %1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 
@@ -83,7 +84,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    early-clobber $tt_l0, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTSETADCPort 0, $x10, $tt_l0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 
@@ -128,7 +129,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $tt_l0, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTSETADCPort 0, $tt_l0, $x11, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 
@@ -143,7 +144,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $x5, early-clobber $x6, early-clobber $x7 = PseudoTTMOP_CFGPort 0, $x10, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 
@@ -158,7 +159,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, undef $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTSETADCPort 0, undef $x10, $x11, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 
@@ -173,7 +174,7 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    $x10, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 0, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $x10, early-clobber $x6, early-clobber $x7 = PseudoTTMOP_CFGPort 0, $x10, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...
 
@@ -233,6 +234,6 @@ machineFunctionInfo:
   usesBoundTensixSFPU: true
 body: |
   bb.0:
-    early-clobber $x5, early-clobber $x6, early-clobber $x7 = PseudoTTSETADCPort 1, $x10, $x11, $x12, $x13, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTSETADCPort 1, $x10, $x11, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoRET
 ...

@@ -527,6 +527,17 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
     return;
   }
 
+  if (const auto *Machine = RISCV::getTensixMachineInfoByPort(MI->getOpcode());
+      Machine && !RISCV::isTensixFieldPortOpcode(Machine->Opcode)) {
+    // The issue-word fold already encoded the complete word; the port
+    // address is an ordinary scalar operand.
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SW)
+                                     .addReg(MI->getOperand(1).getReg())
+                                     .addReg(MI->getOperand(2).getReg())
+                                     .addImm(0));
+    return;
+  }
+
   if (const auto *Machine = RISCV::getTensixMachineInfoByPort(MI->getOpcode())) {
     const auto *Info = RISCV::getTensixInstructionByIntrinsic(
         static_cast<Intrinsic::ID>(Machine->IntrinsicID));

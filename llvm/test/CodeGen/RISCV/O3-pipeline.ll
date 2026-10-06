@@ -101,6 +101,8 @@
 ; CHECK-NEXT:       Natural Loop Information
 ; CHECK-NEXT:       Scalar Evolution Analysis
 ; CHECK-NEXT:       Verify Tensix SFPU IR
+; CHECK-NEXT:       RISC-V Tensix issue-word fold
+; CHECK-NEXT:       Dominator Tree Construction
 ; CHECK-NEXT:       Basic Alias Analysis (stateless AA impl)
 ; CHECK-NEXT:       Function Alias Analysis Results
 ; CHECK-NEXT:       Cycle Info Analysis

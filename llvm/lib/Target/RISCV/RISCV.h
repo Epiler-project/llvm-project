@@ -34,6 +34,16 @@ public:
   explicit RISCVTensixNewPMGate(const RISCVTargetMachine *TM) : TM(TM) {}
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
 };
+class RISCVTensixIssueWordFoldPass
+    : public RequiredPassInfoMixin<RISCVTensixIssueWordFoldPass> {
+  const RISCVTargetMachine *TM;
+public:
+  explicit RISCVTensixIssueWordFoldPass(const RISCVTargetMachine *TM)
+      : TM(TM) {}
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+};
+FunctionPass *createRISCVTensixIssueWordFoldPass();
+void initializeRISCVTensixIssueWordFoldPass(PassRegistry &);
 FunctionPass *createRISCVTensixIRVerificationPass(bool Supported = true);
 void initializeRISCVTensixIRVerificationPass(PassRegistry &);
 FunctionPass *createRISCVTensixBoundVerificationPass();

@@ -545,8 +545,12 @@ std::optional<Issue> getIssue(const MachineInstr &MI) {
     return Issue{MI.getOpcode(), 0, 0};
   if (RISCV::getTensixEncoding(MI.getOpcode()))
     return Issue{MI.getOpcode(), 0, 0};
-  if (const auto *Info = RISCV::getTensixMachineInfoByPort(MI.getOpcode()))
-    return Issue{Info->Opcode, unsigned(MI.getOperand(3).getImm()), 4};
+  if (const auto *Info = RISCV::getTensixMachineInfoByPort(MI.getOpcode())) {
+    // Field-form REPLAY/MOP control keeps logical fields after the port.
+    unsigned PortIndex = RISCV::getTensixPortOperandIndex(MI.getDesc());
+    return Issue{Info->Opcode, unsigned(MI.getOperand(PortIndex).getImm()),
+                 PortIndex + 1};
+  }
   if (MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
       MI.getOpcode() == RISCV::PseudoTTSFPSTORE)
     return Issue{MI.getOpcode(), 0, 0};

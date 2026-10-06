@@ -95,6 +95,7 @@ void RISCVCodeGenPassBuilder::addCodeGenPrepare(PassManagerWrapper &PMW) {
 
 Error RISCVCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {
   addFunctionPass(RISCVTensixNewPMGate(&getTM()), PMW);
+  addFunctionPass(RISCVTensixIssueWordFoldPass(&getTM()), PMW);
   addMachineFunctionPass(RISCVISelDAGToDAGPass(getTM(), getOptLevel()), PMW);
   return Error::success();
 }

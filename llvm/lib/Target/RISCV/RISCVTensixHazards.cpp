@@ -153,7 +153,8 @@ unsigned afterDstIssue(const MachineInstr &MI, unsigned Cycles) {
   const auto *Ordinary = RISCV::getTensixMachineInfo(MI.getOpcode());
   if (!Ordinary)
     if (const auto *Port = RISCV::getTensixMachineInfoByPort(MI.getOpcode()))
-      if (MI.getOperand(3).getImm() == 0)
+      if (MI.getOperand(RISCV::getTensixPortOperandIndex(MI.getDesc()))
+              .getImm() == 0)
         Ordinary = Port;
   if (Ordinary && Ordinary->WritesDst)
     return 3;

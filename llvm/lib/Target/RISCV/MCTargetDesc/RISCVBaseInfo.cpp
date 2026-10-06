@@ -13,11 +13,14 @@
 
 #include "RISCVBaseInfo.h"
 #include "RISCVMCAsmInfo.h"
+#include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
@@ -66,6 +69,63 @@ uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port) {
     return 0xffe60000;
   }
   llvm_unreachable("unknown Tensix instruction port");
+}
+
+bool isTensixFieldPortOpcode(unsigned MachineOpcode) {
+  return MachineOpcode == TTREPLAY || MachineOpcode == TTMOP ||
+         MachineOpcode == TTMOP_CFG;
+}
+
+unsigned getTensixPortOperandIndex(const MCInstrDesc &Desc) {
+  return Desc.getNumDefs();
+}
+
+Expected<TensixPortLayout> getTensixPortLayout(unsigned MachineOpcode,
+                                               const MCInstrInfo &MCII,
+                                               const MCSubtargetInfo &STI,
+                                               MCContext &Context) {
+  const auto *Machine = getTensixMachineInfo(MachineOpcode);
+  const auto *Info =
+      Machine ? getTensixInstructionByIntrinsic(
+                    static_cast<Intrinsic::ID>(Machine->IntrinsicID))
+              : nullptr;
+  if (!Info || isTensixFieldPortOpcode(MachineOpcode))
+    return createStringError("not an ordinary Tensix port instruction");
+  std::unique_ptr<MCCodeEmitter> Encoder(
+      createRISCVMCCodeEmitter(MCII, Context));
+  // The MC encoding owns the opcode and every logical field position. Encode
+  // with each field at zero or one; no second mask/shift table exists.
+  auto Encode = [&](int FieldNumber) -> Expected<uint32_t> {
+    MCInst Static;
+    Static.setOpcode(MachineOpcode);
+    for (unsigned I = 0; I != Info->NumFields; ++I)
+      Static.addOperand(MCOperand::createImm(int(I) == FieldNumber ? 1 : 0));
+    SmallVector<char, 4> Bytes;
+    SmallVector<MCFixup, 0> Fixups;
+    Encoder->encodeInstruction(Static, Bytes, Fixups, STI);
+    if (Bytes.size() != 4 || !Fixups.empty())
+      return createStringError("failed to encode a Tensix port instruction");
+    return rotr(support::endian::read32le(Bytes.data()), 2);
+  };
+  TensixPortLayout Layout;
+  auto Base = Encode(-1);
+  if (!Base)
+    return Base.takeError();
+  if ((*Base & 0x00ffffffu) != 0 || (*Base >> 24) != Machine->RawOpcode)
+    return createStringError(
+        "Tensix port base must contain only its raw opcode");
+  Layout.Base = *Base;
+  for (unsigned I = 0; I != Info->NumFields; ++I) {
+    auto One = Encode(I);
+    if (!One)
+      return One.takeError();
+    uint32_t Position = *One ^ *Base;
+    if (!isPowerOf2_32(Position) || Position >= (1u << 24))
+      return createStringError(
+          "Tensix logical field has no single bit position");
+    Layout.Shifts.push_back(countr_zero(Position));
+  }
+  return Layout;
 }
 
 Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits) {

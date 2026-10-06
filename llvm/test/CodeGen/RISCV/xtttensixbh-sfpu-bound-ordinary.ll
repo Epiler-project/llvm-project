@@ -27,7 +27,7 @@ define i32 @bound_with_ordinary(i8 noundef %field) "tensix-executor"="trisc2" {
 ; ISEL-LABEL: name: bound_with_ordinary
 ; ISEL-NOT: class: sfpr
 ; ISEL: TTSETADC 7, 0, 0, 1,
-; ISEL: early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSETADCPort 0,
+; ISEL: PseudoTTSETADCPort 0, {{(killed )?}}%{{[0-9]+}}, {{(killed )?}}%{{[0-9]+}},
 ; ISEL: early-clobber %{{[0-9]+}}:gpr, early-clobber %{{[0-9]+}}:gpr = PseudoTTSETADCMop 2, 1, 0, 0, 1,
 ; ISEL: PseudoTTMOPClear 3,
 ; ISEL: PseudoTTMOPClear 8,

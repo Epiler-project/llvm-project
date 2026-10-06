@@ -16,6 +16,7 @@
 #include "MCTargetDesc/RISCVMCTargetDesc.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringTable.h"
@@ -28,6 +29,7 @@
 
 namespace llvm {
 
+class MCContext;
 class MCSubtargetInfo;
 class MCInst;
 class MCInstrInfo;
@@ -955,6 +957,15 @@ struct TensixMachineInfo {
   unsigned MopOpcode;
   unsigned IntrinsicID;
   bool WritesDst;
+  uint8_t RawOpcode;
+};
+
+// Bit layout of an ordinary instruction-port word, derived from the MC encoder.
+// Base holds the opcode with all logical fields zero; Shifts[I] is the lowest
+// bit of logical field I.
+struct TensixPortLayout {
+  uint32_t Base = 0;
+  SmallVector<uint8_t, 16> Shifts;
 };
 
 enum class TensixInstructionPort : uint8_t {
@@ -964,6 +975,14 @@ enum class TensixInstructionPort : uint8_t {
 };
 
 uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port);
+// Ordinary (non-REPLAY/MOP) instruction-port issue receives a precomputed word.
+bool isTensixFieldPortOpcode(unsigned MachineOpcode);
+// Index of the immediate port operand of a Tensix instruction-port pseudo.
+unsigned getTensixPortOperandIndex(const MCInstrDesc &Desc);
+Expected<TensixPortLayout> getTensixPortLayout(unsigned MachineOpcode,
+                                               const MCInstrInfo &MCII,
+                                               const MCSubtargetInfo &STI,
+                                               MCContext &Context);
 // Validate only logical fields. Register slots may be absent for symbolic
 // bound-contract queries; this is not complete MC instruction admission.
 Error verifyTensixMCInstructionFields(const MCInst &MI,

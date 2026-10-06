@@ -27,6 +27,13 @@ def int_riscv_tt_replay_template_execute : TensixIntrinsic<[], [llvm_i32_ty],
 def int_riscv_tt_replay_template_mop : TensixIntrinsic<[],
     [llvm_i32_ty, llvm_i32_ty],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
+// Compiler-private instruction-port issue after field encoding. Operands are
+// the port, the raw opcode byte and the complete instruction word. Only the
+// codegen issue-word fold creates it, from a verified `_port` call; input IR
+// containing it is rejected.
+def int_riscv_tt_issue_word : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
 class TensixOrdinaryIntrinsic<int N, bit Port>
     : Intrinsic<[], !listsplat(llvm_i32_ty, !add(N, !if(Port, 1, 0))),
         !listconcat([IntrHasSideEffects, IntrConvergent, IntrNoDuplicate],

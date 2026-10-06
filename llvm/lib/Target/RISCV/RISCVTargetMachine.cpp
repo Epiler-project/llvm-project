@@ -168,6 +168,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   auto *PR = PassRegistry::getPassRegistry();
   initializeGlobalISel(*PR);
   initializeRISCVTensixIRVerificationPass(*PR);
+  initializeRISCVTensixIssueWordFoldPass(*PR);
   initializeRISCVTensixBoundVerificationPass(*PR);
   initializeRISCVTensixSFPUPhysicalIngressPass(*PR);
   initializeRISCVTensixCopyCCCleanupPass(*PR);
@@ -577,6 +578,7 @@ void RISCVPassConfig::addCodeGenPrepare() {
 
 bool RISCVPassConfig::addInstSelector() {
   addPass(createRISCVTensixIRVerificationPass());
+  addPass(createRISCVTensixIssueWordFoldPass());
   addPass(createRISCVISelDagLegacyPass(getRISCVTargetMachine(), getOptLevel()));
 
   return false;

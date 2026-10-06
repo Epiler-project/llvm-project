@@ -45,11 +45,32 @@ SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
     break;
   }
   const auto *Info = RISCV::getTensixInstructionByIntrinsic(ID);
-  if (!Info && !Clear && !Control && !End && !TemplateOpcode)
+  bool Word = ID == Intrinsic::riscv_tt_issue_word;
+  if (!Info && !Clear && !Control && !End && !TemplateOpcode && !Word)
     return SDValue();
   if (!ST.hasVendorXTTTensixBH())
     reportFatalUsageError("Tensix intrinsic requires +xtttensixbh");
   SDLoc DL(Op);
+  if (Word) {
+    // The issue-word fold encoded every field; only the port store remains.
+    const auto *Machine = RISCV::getTensixMachineInfoByRawOpcode(
+        Op.getConstantOperandVal(3));
+    unsigned Port = Op.getConstantOperandVal(2);
+    if (!Machine || RISCV::isTensixFieldPortOpcode(Machine->Opcode) ||
+        Port > unsigned(RISCV::TensixInstructionPort::BriscToTrisc2))
+      reportFatalUsageError("invalid compiler-private Tensix issue word");
+    SDValue Address = DAG.getConstant(
+        RISCV::getTensixInstructionPortAddress(
+            static_cast<RISCV::TensixInstructionPort>(Port)),
+        DL, MVT::i32);
+    MachineSDNode *Node = DAG.getMachineNode(
+        Machine->PortOpcode, DL, MVT::Other,
+        {DAG.getTargetConstant(Port, DL, MVT::i32), Op.getOperand(4), Address,
+         Op.getOperand(0)});
+    attachIssueMemory(Node, DAG,
+                      MachineMemOperand::MOLoad | MachineMemOperand::MOStore);
+    return SDValue(Node, 0);
+  }
   if (Control) {
     auto *Constant = dyn_cast<ConstantSDNode>(Op.getOperand(3));
     // Machine immediates use a signed 64-bit container. Keep the i32 payload
@@ -98,6 +119,10 @@ SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
   bool Mop = Clear || (Info && ID == Info->MopIntrinsicID);
   const auto *Machine = Info ? RISCV::getTensixMachineInfoByIntrinsic(
                                   Info->IntrinsicID) : nullptr;
+  if (Port && !RISCV::isTensixFieldPortOpcode(Machine->Opcode))
+    reportFatalUsageError(
+        "Tensix instruction-port issue reached selection without its "
+        "issue-word fold");
   SmallVector<SDValue, 16> Operands;
   unsigned First = Port || Mop ? 3 : 2;
   if (Port || Mop)

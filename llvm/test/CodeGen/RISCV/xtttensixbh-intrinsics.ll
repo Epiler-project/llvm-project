@@ -21,16 +21,16 @@ define void @direct() "tensix-executor"="trisc1" {
 
 define void @local_port(i16 noundef zeroext %input) "tensix-executor"="trisc2" {
 ; CHECK-LABEL: local_port:
-; CHECK: lui [[WORD:[a-z0-9]+]], 729088
-; CHECK: or [[WORD]], [[WORD]], {{[a-z0-9]+}}
+; The constant field folds into the opcode word: 0xb2000000 | 1 << 16.
+; CHECK: lui [[BASE:[a-z0-9]+]], 729104
+; CHECK: or [[WORD:[a-z0-9]+]], {{[a-z0-9]+}}, [[BASE]]
 ; CHECK: lui [[PORT:[a-z0-9]+]], 1048128
 ; CHECK: sw [[WORD]], 0([[PORT]])
 ; CHECK: ret
 ; O0-LABEL: local_port:
 ; O0: sw
 ; ISEL-LABEL: name: local_port
-; ISEL: early-clobber
-; ISEL-SAME: PseudoTTSETC16Port
+; ISEL: PseudoTTSETC16Port 0, killed %{{[0-9]+}}, killed %{{[0-9]+}},
   %value = zext i16 %input to i32
   call void @llvm.riscv.tt.setc16.port(i32 0, i32 %value, i32 1)
   ret void
@@ -38,8 +38,10 @@ define void @local_port(i16 noundef zeroext %input) "tensix-executor"="trisc2" {
 
 define void @brisc_remote_ports(i16 noundef zeroext %input) "tensix-executor"="brisc" {
 ; CHECK-LABEL: brisc_remote_ports:
+; CHECK: lui {{[a-z0-9]+}}, 729392
 ; CHECK: lui [[P1:[a-z0-9]+]], 1048144
 ; CHECK: sw {{[a-z0-9]+}}, 0([[P1]])
+; CHECK: lui {{[a-z0-9]+}}, 729648
 ; CHECK: lui [[P2:[a-z0-9]+]], 1048160
 ; CHECK: sw {{[a-z0-9]+}}, 0([[P2]])
 ; CHECK: ret

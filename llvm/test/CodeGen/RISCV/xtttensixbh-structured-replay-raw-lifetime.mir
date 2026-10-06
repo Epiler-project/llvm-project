@@ -722,7 +722,7 @@ machineFunctionInfo:
 body: |
   bb.0:
     early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTREPLAYPort 1, 1, 0, 1, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
-    early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTNOPPort 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTNOPPort 1, $x10, $x11, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
     PseudoTTReplayTemplateBegin 517, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
     TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue

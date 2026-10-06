@@ -341,7 +341,8 @@ public:
         if (Error E = verifyTensixMachineOperands(MI, MRI, TRI))
           return Fail(toString(std::move(E)));
         if (RISCV::getTensixMachineInfoByPort(MI.getOpcode()) &&
-            MI.getOperand(3).getImm() !=
+            MI.getOperand(RISCV::getTensixPortOperandIndex(MI.getDesc()))
+                    .getImm() !=
                 static_cast<int64_t>(RISCV::TensixInstructionPort::Local))
           return Fail("bound Tensix SFPU requires the local instruction port");
       }

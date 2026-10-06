@@ -48,7 +48,25 @@ class TensixOrdinaryInst<string LogicalName, bits<8> RawOpcodeValue,
   let Defs = [TT_CONFIG, TT_DST, TT_ISSUE];
 }
 
-class TensixOrdinaryPort<dag Inputs>
+// Ordinary instruction-port issue receives the complete encoded word. The
+// issue-word fold owns field encoding before instruction selection, so the
+// word and port address are ordinary SSA values for scalar optimization.
+class TensixOrdinaryPort
+    : Pseudo<(outs), (ins uimm8:$port, GPR:$word, GPR:$address), []> {
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensixBH];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CONFIG, TT_DST, TT_ISSUE];
+  let Defs = [TT_CONFIG, TT_DST, TT_ISSUE];
+}
+
+// REPLAY and MOP control remain field-form: replay/MOP analyses read their
+// logical fields until final expansion.
+class TensixFieldPort<dag Inputs>
     : Pseudo<(outs GPR:$word, GPR:$address, GPR:$field), Inputs, []> {
   let Constraints = "@earlyclobber $word,@earlyclobber $address,@earlyclobber $field";
   // Conservative expansion bound for branch relaxation, including port store.
@@ -214,8 +232,7 @@ def PseudoTTSFPUDstRecordWord : TensixDstRecordPayload<
     (ins uimm32:$opcode, uimm32:$reg, uimm32:$old,
          GPR:$offset, uimm3:$addrmode, uimm4:$format)>;
 
-def PseudoTTADDDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opbisconst)>;
+def PseudoTTADDDMAREGPort : TensixOrdinaryPort;
 def PseudoTTADDDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst)>;
 def TTADDDMAREG : TensixOrdinaryInst<"ADDDMAREG", 0x58,
@@ -233,8 +250,7 @@ def TTADDDMAREG : TensixOrdinaryInst<"ADDDMAREG", 0x58,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTADDRCRXYPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$bitmask, GPR:$ch0_x, GPR:$ch0_y, GPR:$ch1_x, GPR:$ch1_y, GPR:$cntsetmask)>;
+def PseudoTTADDRCRXYPort : TensixOrdinaryPort;
 def PseudoTTADDRCRXYMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$bitmask, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
 def TTADDRCRXY : TensixOrdinaryInst<"ADDRCRXY", 0x53,
@@ -256,8 +272,7 @@ def TTADDRCRXY : TensixOrdinaryInst<"ADDRCRXY", 0x53,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTADDRCRZWPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$bitmask, GPR:$ch0_x, GPR:$ch0_y, GPR:$ch1_x, GPR:$ch1_y, GPR:$cntsetmask)>;
+def PseudoTTADDRCRZWPort : TensixOrdinaryPort;
 def PseudoTTADDRCRZWMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$bitmask, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
 def TTADDRCRZW : TensixOrdinaryInst<"ADDRCRZW", 0x56,
@@ -279,8 +294,7 @@ def TTADDRCRZW : TensixOrdinaryInst<"ADDRCRZW", 0x56,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTAPOOL3S1Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$index_en, GPR:$pool_addr_mode, GPR:$clear_dvalid)>;
+def PseudoTTAPOOL3S1Port : TensixOrdinaryPort;
 def PseudoTTAPOOL3S1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$index_en, uimm32:$pool_addr_mode, uimm32:$clear_dvalid)>;
 def TTAPOOL3S1 : TensixOrdinaryInst<"APOOL3S1", 0x25,
@@ -298,8 +312,7 @@ def TTAPOOL3S1 : TensixOrdinaryInst<"APOOL3S1", 0x25,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTAPOOL3S2Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$index_en, GPR:$pool_addr_mode, GPR:$clear_dvalid)>;
+def PseudoTTAPOOL3S2Port : TensixOrdinaryPort;
 def PseudoTTAPOOL3S2Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$index_en, uimm32:$pool_addr_mode, uimm32:$clear_dvalid)>;
 def TTAPOOL3S2 : TensixOrdinaryInst<"APOOL3S2", 0x32,
@@ -317,8 +330,7 @@ def TTAPOOL3S2 : TensixOrdinaryInst<"APOOL3S2", 0x32,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTATCASPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$addrregindex, GPR:$dataregindex, GPR:$sel32b, GPR:$cmpval, GPR:$swapval, GPR:$memhiersel)>;
+def PseudoTTATCASPort : TensixOrdinaryPort;
 def PseudoTTATCASMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$addrregindex, uimm32:$dataregindex, uimm32:$sel32b, uimm32:$cmpval, uimm32:$swapval, uimm32:$memhiersel)>;
 def TTATCAS : TensixOrdinaryInst<"ATCAS", 0x64,
@@ -340,8 +352,7 @@ def TTATCAS : TensixOrdinaryInst<"ATCAS", 0x64,
   let RawWord{23} = memhiersel;
 }
 
-def PseudoTTATGETMPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$mutex_index)>;
+def PseudoTTATGETMPort : TensixOrdinaryPort;
 def PseudoTTATGETMMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$mutex_index)>;
 def TTATGETM : TensixOrdinaryInst<"ATGETM", 0xa0,
@@ -353,8 +364,7 @@ def TTATGETM : TensixOrdinaryInst<"ATGETM", 0xa0,
   let RawWord{23-0} = mutex_index;
 }
 
-def PseudoTTATINCGETPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$addrregindex, GPR:$dataregindex, GPR:$sel32b, GPR:$wrapval, GPR:$memhiersel)>;
+def PseudoTTATINCGETPort : TensixOrdinaryPort;
 def PseudoTTATINCGETMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$addrregindex, uimm32:$dataregindex, uimm32:$sel32b, uimm32:$wrapval, uimm32:$memhiersel)>;
 def TTATINCGET : TensixOrdinaryInst<"ATINCGET", 0x61,
@@ -374,8 +384,7 @@ def TTATINCGET : TensixOrdinaryInst<"ATINCGET", 0x61,
   let RawWord{23} = memhiersel;
 }
 
-def PseudoTTATINCGETPTRPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$addrregindex, GPR:$dataregindex, GPR:$sel32b, GPR:$wrapval, GPR:$incrval, GPR:$noincr, GPR:$memhiersel)>;
+def PseudoTTATINCGETPTRPort : TensixOrdinaryPort;
 def PseudoTTATINCGETPTRMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$addrregindex, uimm32:$dataregindex, uimm32:$sel32b, uimm32:$wrapval, uimm32:$incrval, uimm32:$noincr, uimm32:$memhiersel)>;
 def TTATINCGETPTR : TensixOrdinaryInst<"ATINCGETPTR", 0x62,
@@ -399,8 +408,7 @@ def TTATINCGETPTR : TensixOrdinaryInst<"ATINCGETPTR", 0x62,
   let RawWord{23} = memhiersel;
 }
 
-def PseudoTTATRELMPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$mutex_index)>;
+def PseudoTTATRELMPort : TensixOrdinaryPort;
 def PseudoTTATRELMMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$mutex_index)>;
 def TTATRELM : TensixOrdinaryInst<"ATRELM", 0xa1,
@@ -412,8 +420,7 @@ def TTATRELM : TensixOrdinaryInst<"ATRELM", 0xa1,
   let RawWord{23-0} = mutex_index;
 }
 
-def PseudoTTATSWAPPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$addrregindex, GPR:$dataregindex, GPR:$swapmask, GPR:$memhiersel)>;
+def PseudoTTATSWAPPort : TensixOrdinaryPort;
 def PseudoTTATSWAPMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$addrregindex, uimm32:$dataregindex, uimm32:$swapmask, uimm32:$memhiersel)>;
 def TTATSWAP : TensixOrdinaryInst<"ATSWAP", 0x63,
@@ -431,8 +438,7 @@ def TTATSWAP : TensixOrdinaryInst<"ATSWAP", 0x63,
   let RawWord{23} = memhiersel;
 }
 
-def PseudoTTBITWOPDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opsel, GPR:$opbisconst)>;
+def PseudoTTBITWOPDMAREGPort : TensixOrdinaryPort;
 def PseudoTTBITWOPDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opsel, uimm32:$opbisconst)>;
 def TTBITWOPDMAREG : TensixOrdinaryInst<"BITWOPDMAREG", 0x5b,
@@ -452,8 +458,7 @@ def TTBITWOPDMAREG : TensixOrdinaryInst<"BITWOPDMAREG", 0x5b,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTCFGSHIFTMASKPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgreg, GPR:$scratch_sel, GPR:$right_cshift_amt, GPR:$mask_width, GPR:$operation, GPR:$disable_mask_on_old_val)>;
+def PseudoTTCFGSHIFTMASKPort : TensixOrdinaryPort;
 def PseudoTTCFGSHIFTMASKMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgreg, uimm32:$scratch_sel, uimm32:$right_cshift_amt, uimm32:$mask_width, uimm32:$operation, uimm32:$disable_mask_on_old_val)>;
 def TTCFGSHIFTMASK : TensixOrdinaryInst<"CFGSHIFTMASK", 0xb8,
@@ -475,8 +480,7 @@ def TTCFGSHIFTMASK : TensixOrdinaryInst<"CFGSHIFTMASK", 0xb8,
   let RawWord{23} = disable_mask_on_old_val;
 }
 
-def PseudoTTCLEARDVALIDPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$reset, GPR:$cleardvalid)>;
+def PseudoTTCLEARDVALIDPort : TensixOrdinaryPort;
 def PseudoTTCLEARDVALIDMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$reset, uimm32:$cleardvalid)>;
 def TTCLEARDVALID : TensixOrdinaryInst<"CLEARDVALID", 0x36,
@@ -490,8 +494,7 @@ def TTCLEARDVALID : TensixOrdinaryInst<"CLEARDVALID", 0x36,
   let RawWord{23-22} = cleardvalid;
 }
 
-def PseudoTTCLREXPHISTPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTCLREXPHISTPort : TensixOrdinaryPort;
 def PseudoTTCLREXPHISTMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTCLREXPHIST : TensixOrdinaryInst<"CLREXPHIST", 0x21,
@@ -501,8 +504,7 @@ def TTCLREXPHIST : TensixOrdinaryInst<"CLREXPHIST", 0x21,
     []> {
 }
 
-def PseudoTTCMPDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opsel, GPR:$opbisconst)>;
+def PseudoTTCMPDMAREGPort : TensixOrdinaryPort;
 def PseudoTTCMPDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opsel, uimm32:$opbisconst)>;
 def TTCMPDMAREG : TensixOrdinaryInst<"CMPDMAREG", 0x5d,
@@ -522,8 +524,7 @@ def TTCMPDMAREG : TensixOrdinaryInst<"CMPDMAREG", 0x5d,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTCONV3S1Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$rotate_weights, GPR:$clear_dvalid)>;
+def PseudoTTCONV3S1Port : TensixOrdinaryPort;
 def PseudoTTCONV3S1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$rotate_weights, uimm32:$clear_dvalid)>;
 def TTCONV3S1 : TensixOrdinaryInst<"CONV3S1", 0x22,
@@ -541,8 +542,7 @@ def TTCONV3S1 : TensixOrdinaryInst<"CONV3S1", 0x22,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTCONV3S2Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$rotate_weights, GPR:$clear_dvalid)>;
+def PseudoTTCONV3S2Port : TensixOrdinaryPort;
 def PseudoTTCONV3S2Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$rotate_weights, uimm32:$clear_dvalid)>;
 def TTCONV3S2 : TensixOrdinaryInst<"CONV3S2", 0x23,
@@ -560,8 +560,7 @@ def TTCONV3S2 : TensixOrdinaryInst<"CONV3S2", 0x23,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTDMANOPPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTDMANOPPort : TensixOrdinaryPort;
 def PseudoTTDMANOPMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTDMANOP : TensixOrdinaryInst<"DMANOP", 0x60,
@@ -571,8 +570,7 @@ def TTDMANOP : TensixOrdinaryInst<"DMANOP", 0x60,
     []> {
 }
 
-def PseudoTTDOTPVPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$instr_mod19, GPR:$dest_accum_en, GPR:$clear_dvalid)>;
+def PseudoTTDOTPVPort : TensixOrdinaryPort;
 def PseudoTTDOTPVMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$dest_accum_en, uimm32:$clear_dvalid)>;
 def TTDOTPV : TensixOrdinaryInst<"DOTPV", 0x29,
@@ -592,8 +590,7 @@ def TTDOTPV : TensixOrdinaryInst<"DOTPV", 0x29,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTELWADDPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$instr_mod19, GPR:$dest_accum_en, GPR:$clear_dvalid)>;
+def PseudoTTELWADDPort : TensixOrdinaryPort;
 def PseudoTTELWADDMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$dest_accum_en, uimm32:$clear_dvalid)>;
 def TTELWADD : TensixOrdinaryInst<"ELWADD", 0x28,
@@ -613,8 +610,7 @@ def TTELWADD : TensixOrdinaryInst<"ELWADD", 0x28,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTELWMULPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$instr_mod19, GPR:$dest_accum_en, GPR:$clear_dvalid)>;
+def PseudoTTELWMULPort : TensixOrdinaryPort;
 def PseudoTTELWMULMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$dest_accum_en, uimm32:$clear_dvalid)>;
 def TTELWMUL : TensixOrdinaryInst<"ELWMUL", 0x27,
@@ -634,8 +630,7 @@ def TTELWMUL : TensixOrdinaryInst<"ELWMUL", 0x27,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTELWSUBPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$instr_mod19, GPR:$dest_accum_en, GPR:$clear_dvalid)>;
+def PseudoTTELWSUBPort : TensixOrdinaryPort;
 def PseudoTTELWSUBMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$dest_accum_en, uimm32:$clear_dvalid)>;
 def TTELWSUB : TensixOrdinaryInst<"ELWSUB", 0x30,
@@ -655,8 +650,7 @@ def TTELWSUB : TensixOrdinaryInst<"ELWSUB", 0x30,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTFLUSHDMAPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$flushspec)>;
+def PseudoTTFLUSHDMAPort : TensixOrdinaryPort;
 def PseudoTTFLUSHDMAMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$flushspec)>;
 def TTFLUSHDMA : TensixOrdinaryInst<"FLUSHDMA", 0x46,
@@ -668,8 +662,7 @@ def TTFLUSHDMA : TensixOrdinaryInst<"FLUSHDMA", 0x46,
   let RawWord{23-0} = flushspec;
 }
 
-def PseudoTTGAPOOLPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$max_pool_index_en, GPR:$pool_addr_mode, GPR:$instr_mod19, GPR:$clear_dvalid)>;
+def PseudoTTGAPOOLPort : TensixOrdinaryPort;
 def PseudoTTGAPOOLMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$max_pool_index_en, uimm32:$pool_addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid)>;
 def TTGAPOOL : TensixOrdinaryInst<"GAPOOL", 0x34,
@@ -689,8 +682,7 @@ def TTGAPOOL : TensixOrdinaryInst<"GAPOOL", 0x34,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTGATESRCRSTPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$reset_srca_gate_control, GPR:$reset_srcb_gate_control)>;
+def PseudoTTGATESRCRSTPort : TensixOrdinaryPort;
 def PseudoTTGATESRCRSTMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$reset_srca_gate_control, uimm32:$reset_srcb_gate_control)>;
 def TTGATESRCRST : TensixOrdinaryInst<"GATESRCRST", 0x35,
@@ -704,8 +696,7 @@ def TTGATESRCRST : TensixOrdinaryInst<"GATESRCRST", 0x35,
   let RawWord{23-1} = reset_srcb_gate_control;
 }
 
-def PseudoTTGMPOOLPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$max_pool_index_en, GPR:$pool_addr_mode, GPR:$instr_mod19, GPR:$clear_dvalid)>;
+def PseudoTTGMPOOLPort : TensixOrdinaryPort;
 def PseudoTTGMPOOLMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$max_pool_index_en, uimm32:$pool_addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid)>;
 def TTGMPOOL : TensixOrdinaryInst<"GMPOOL", 0x33,
@@ -725,8 +716,7 @@ def TTGMPOOL : TensixOrdinaryInst<"GMPOOL", 0x33,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTINCADCXYPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$ch0_x, GPR:$ch0_y, GPR:$ch1_x, GPR:$ch1_y, GPR:$cntsetmask)>;
+def PseudoTTINCADCXYPort : TensixOrdinaryPort;
 def PseudoTTINCADCXYMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
 def TTINCADCXY : TensixOrdinaryInst<"INCADCXY", 0x52,
@@ -746,8 +736,7 @@ def TTINCADCXY : TensixOrdinaryInst<"INCADCXY", 0x52,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTINCADCZWPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$ch0_x, GPR:$ch0_y, GPR:$ch1_x, GPR:$ch1_y, GPR:$cntsetmask)>;
+def PseudoTTINCADCZWPort : TensixOrdinaryPort;
 def PseudoTTINCADCZWMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
 def TTINCADCZW : TensixOrdinaryInst<"INCADCZW", 0x55,
@@ -767,8 +756,7 @@ def TTINCADCZW : TensixOrdinaryInst<"INCADCZW", 0x55,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTINCRWCPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$rwc_a, GPR:$rwc_b, GPR:$rwc_d, GPR:$rwc_cr)>;
+def PseudoTTINCRWCPort : TensixOrdinaryPort;
 def PseudoTTINCRWCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$rwc_a, uimm32:$rwc_b, uimm32:$rwc_d, uimm32:$rwc_cr)>;
 def TTINCRWC : TensixOrdinaryInst<"INCRWC", 0x38,
@@ -786,8 +774,7 @@ def TTINCRWC : TensixOrdinaryInst<"INCRWC", 0x38,
   let RawWord{23-18} = rwc_cr;
 }
 
-def PseudoTTLOADINDPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$addrregindex, GPR:$dataregindex, GPR:$autoincspec, GPR:$offsetindex, GPR:$sizesel)>;
+def PseudoTTLOADINDPort : TensixOrdinaryPort;
 def PseudoTTLOADINDMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$addrregindex, uimm32:$dataregindex, uimm32:$autoincspec, uimm32:$offsetindex, uimm32:$sizesel)>;
 def TTLOADIND : TensixOrdinaryInst<"LOADIND", 0x49,
@@ -807,8 +794,7 @@ def TTLOADIND : TensixOrdinaryInst<"LOADIND", 0x49,
   let RawWord{23-22} = sizesel;
 }
 
-def PseudoTTLOADREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$regaddr, GPR:$tdmadataregindex)>;
+def PseudoTTLOADREGPort : TensixOrdinaryPort;
 def PseudoTTLOADREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$regaddr, uimm32:$tdmadataregindex)>;
 def TTLOADREG : TensixOrdinaryInst<"LOADREG", 0x68,
@@ -822,8 +808,7 @@ def TTLOADREG : TensixOrdinaryInst<"LOADREG", 0x68,
   let RawWord{23-18} = tdmadataregindex;
 }
 
-def PseudoTTMFCONV3S1Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$rotate_weights, GPR:$clear_dvalid)>;
+def PseudoTTMFCONV3S1Port : TensixOrdinaryPort;
 def PseudoTTMFCONV3S1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$rotate_weights, uimm32:$clear_dvalid)>;
 def TTMFCONV3S1 : TensixOrdinaryInst<"MFCONV3S1", 0x3a,
@@ -841,7 +826,7 @@ def TTMFCONV3S1 : TensixOrdinaryInst<"MFCONV3S1", 0x3a,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTMOPPort : TensixOrdinaryPort<
+def PseudoTTMOPPort : TensixFieldPort<
     (ins uimm8:$port, GPR:$zmask_lo16_or_loop_count, GPR:$loop_count, GPR:$mop_type)>;
 def PseudoTTMOPMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$zmask_lo16_or_loop_count, uimm32:$loop_count, uimm32:$mop_type)>;
@@ -858,7 +843,7 @@ def TTMOP : TensixOrdinaryInst<"MOP", 0x01,
   let RawWord{23} = mop_type;
 }
 
-def PseudoTTMOP_CFGPort : TensixOrdinaryPort<
+def PseudoTTMOP_CFGPort : TensixFieldPort<
     (ins uimm8:$port, GPR:$zmask_hi16)>;
 def PseudoTTMOP_CFGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$zmask_hi16)>;
@@ -871,8 +856,7 @@ def TTMOP_CFG : TensixOrdinaryInst<"MOP_CFG", 0x03,
   let RawWord{23-0} = zmask_hi16;
 }
 
-def PseudoTTMOVA2DPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$instr_mod, GPR:$addr_mode, GPR:$src, GPR:$dest_32b_lo)>;
+def PseudoTTMOVA2DPort : TensixOrdinaryPort;
 def PseudoTTMOVA2DMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$instr_mod, uimm32:$addr_mode, uimm32:$src, uimm32:$dest_32b_lo)>;
 def TTMOVA2D : TensixOrdinaryInst<"MOVA2D", 0x12,
@@ -892,8 +876,7 @@ def TTMOVA2D : TensixOrdinaryInst<"MOVA2D", 0x12,
   let RawWord{23} = dest_32b_lo;
 }
 
-def PseudoTTMOVB2APort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$srcb, GPR:$instr_mod, GPR:$addr_mode, GPR:$srca)>;
+def PseudoTTMOVB2APort : TensixOrdinaryPort;
 def PseudoTTMOVB2AMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$srcb, uimm32:$instr_mod, uimm32:$addr_mode, uimm32:$srca)>;
 def TTMOVB2A : TensixOrdinaryInst<"MOVB2A", 0x0b,
@@ -911,8 +894,7 @@ def TTMOVB2A : TensixOrdinaryInst<"MOVB2A", 0x0b,
   let RawWord{23-17} = srca;
 }
 
-def PseudoTTMOVB2DPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$movb2d_instr_mod, GPR:$addr_mode, GPR:$src, GPR:$dest_32b_lo)>;
+def PseudoTTMOVB2DPort : TensixOrdinaryPort;
 def PseudoTTMOVB2DMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$movb2d_instr_mod, uimm32:$addr_mode, uimm32:$src, uimm32:$dest_32b_lo)>;
 def TTMOVB2D : TensixOrdinaryInst<"MOVB2D", 0x13,
@@ -932,8 +914,7 @@ def TTMOVB2D : TensixOrdinaryInst<"MOVB2D", 0x13,
   let RawWord{23} = dest_32b_lo;
 }
 
-def PseudoTTMOVD2APort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$instr_mod, GPR:$addr_mode, GPR:$src, GPR:$dest_32b_lo)>;
+def PseudoTTMOVD2APort : TensixOrdinaryPort;
 def PseudoTTMOVD2AMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$instr_mod, uimm32:$addr_mode, uimm32:$src, uimm32:$dest_32b_lo)>;
 def TTMOVD2A : TensixOrdinaryInst<"MOVD2A", 0x08,
@@ -953,8 +934,7 @@ def TTMOVD2A : TensixOrdinaryInst<"MOVD2A", 0x08,
   let RawWord{23} = dest_32b_lo;
 }
 
-def PseudoTTMOVD2BPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$instr_mod, GPR:$addr_mode, GPR:$src, GPR:$dest_32b_lo)>;
+def PseudoTTMOVD2BPort : TensixOrdinaryPort;
 def PseudoTTMOVD2BMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$instr_mod, uimm32:$addr_mode, uimm32:$src, uimm32:$dest_32b_lo)>;
 def TTMOVD2B : TensixOrdinaryInst<"MOVD2B", 0x0a,
@@ -974,8 +954,7 @@ def TTMOVD2B : TensixOrdinaryInst<"MOVD2B", 0x0a,
   let RawWord{23} = dest_32b_lo;
 }
 
-def PseudoTTMOVDBGA2DPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$instr_mod, GPR:$addr_mode, GPR:$src, GPR:$dest_32b_lo)>;
+def PseudoTTMOVDBGA2DPort : TensixOrdinaryPort;
 def PseudoTTMOVDBGA2DMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$instr_mod, uimm32:$addr_mode, uimm32:$src, uimm32:$dest_32b_lo)>;
 def TTMOVDBGA2D : TensixOrdinaryInst<"MOVDBGA2D", 0x09,
@@ -995,8 +974,7 @@ def TTMOVDBGA2D : TensixOrdinaryInst<"MOVDBGA2D", 0x09,
   let RawWord{23} = dest_32b_lo;
 }
 
-def PseudoTTMOVDBGB2DPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$movb2d_instr_mod, GPR:$addr_mode, GPR:$src, GPR:$dest_32b_lo)>;
+def PseudoTTMOVDBGB2DPort : TensixOrdinaryPort;
 def PseudoTTMOVDBGB2DMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$movb2d_instr_mod, uimm32:$addr_mode, uimm32:$src, uimm32:$dest_32b_lo)>;
 def TTMOVDBGB2D : TensixOrdinaryInst<"MOVDBGB2D", 0x0c,
@@ -1016,8 +994,7 @@ def TTMOVDBGB2D : TensixOrdinaryInst<"MOVDBGB2D", 0x0c,
   let RawWord{23} = dest_32b_lo;
 }
 
-def PseudoTTMPOOL3S1Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$index_en, GPR:$pool_addr_mode, GPR:$clear_dvalid)>;
+def PseudoTTMPOOL3S1Port : TensixOrdinaryPort;
 def PseudoTTMPOOL3S1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$index_en, uimm32:$pool_addr_mode, uimm32:$clear_dvalid)>;
 def TTMPOOL3S1 : TensixOrdinaryInst<"MPOOL3S1", 0x24,
@@ -1035,8 +1012,7 @@ def TTMPOOL3S1 : TensixOrdinaryInst<"MPOOL3S1", 0x24,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTMPOOL3S2Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$index_en, GPR:$pool_addr_mode, GPR:$clear_dvalid)>;
+def PseudoTTMPOOL3S2Port : TensixOrdinaryPort;
 def PseudoTTMPOOL3S2Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$index_en, uimm32:$pool_addr_mode, uimm32:$clear_dvalid)>;
 def TTMPOOL3S2 : TensixOrdinaryInst<"MPOOL3S2", 0x31,
@@ -1054,8 +1030,7 @@ def TTMPOOL3S2 : TensixOrdinaryInst<"MPOOL3S2", 0x31,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTMULDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opbisconst)>;
+def PseudoTTMULDMAREGPort : TensixOrdinaryPort;
 def PseudoTTMULDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst)>;
 def TTMULDMAREG : TensixOrdinaryInst<"MULDMAREG", 0x5a,
@@ -1073,8 +1048,7 @@ def TTMULDMAREG : TensixOrdinaryInst<"MULDMAREG", 0x5a,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTMVMULPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$dst, GPR:$addr_mode, GPR:$instr_mod19, GPR:$clear_dvalid)>;
+def PseudoTTMVMULPort : TensixOrdinaryPort;
 def PseudoTTMVMULMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid)>;
 def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
@@ -1092,8 +1066,7 @@ def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTNOPPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTNOPPort : TensixOrdinaryPort;
 def PseudoTTNOPMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTNOP : TensixOrdinaryInst<"NOP", 0x02,
@@ -1103,8 +1076,7 @@ def TTNOP : TensixOrdinaryInst<"NOP", 0x02,
     []> {
 }
 
-def PseudoTTPACRPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$last, GPR:$flush, GPR:$ctxtctrl, GPR:$concat, GPR:$ovrdthreadid, GPR:$readintfsel, GPR:$zerowrite, GPR:$addrcntcontext, GPR:$addrmode, GPR:$dstaccessmode, GPR:$rowpadzero, GPR:$cfgcontext)>;
+def PseudoTTPACRPort : TensixOrdinaryPort;
 def PseudoTTPACRMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$last, uimm32:$flush, uimm32:$ctxtctrl, uimm32:$concat, uimm32:$ovrdthreadid, uimm32:$readintfsel, uimm32:$zerowrite, uimm32:$addrcntcontext, uimm32:$addrmode, uimm32:$dstaccessmode, uimm32:$rowpadzero, uimm32:$cfgcontext)>;
 def TTPACR : TensixOrdinaryInst<"PACR", 0x41,
@@ -1138,8 +1110,7 @@ def TTPACR : TensixOrdinaryInst<"PACR", 0x41,
   let RawWord{23-21} = cfgcontext;
 }
 
-def PseudoTTPACR_SETREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$last, GPR:$flush, GPR:$streamid, GPR:$addrsel, GPR:$disablestall, GPR:$unused, GPR:$modesel, GPR:$push)>;
+def PseudoTTPACR_SETREGPort : TensixOrdinaryPort;
 def PseudoTTPACR_SETREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$last, uimm32:$flush, uimm32:$streamid, uimm32:$addrsel, uimm32:$disablestall, uimm32:$unused, uimm32:$modesel, uimm32:$push)>;
 def TTPACR_SETREG : TensixOrdinaryInst<"PACR_SETREG", 0x4a,
@@ -1165,8 +1136,7 @@ def TTPACR_SETREG : TensixOrdinaryInst<"PACR_SETREG", 0x4a,
   let RawWord{23} = push;
 }
 
-def PseudoTTRAREBPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTRAREBPort : TensixOrdinaryPort;
 def PseudoTTRAREBMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTRAREB : TensixOrdinaryInst<"RAREB", 0x15,
@@ -1176,8 +1146,7 @@ def TTRAREB : TensixOrdinaryInst<"RAREB", 0x15,
     []> {
 }
 
-def PseudoTTRDCFGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgreg, GPR:$gpraddress)>;
+def PseudoTTRDCFGPort : TensixOrdinaryPort;
 def PseudoTTRDCFGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgreg, uimm32:$gpraddress)>;
 def TTRDCFG : TensixOrdinaryInst<"RDCFG", 0xb1,
@@ -1191,8 +1160,7 @@ def TTRDCFG : TensixOrdinaryInst<"RDCFG", 0xb1,
   let RawWord{23-16} = gpraddress;
 }
 
-def PseudoTTREG2FLOPPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$regindex, GPR:$flopindex, GPR:$contextid_2, GPR:$byteoffset, GPR:$targetsel, GPR:$sizesel)>;
+def PseudoTTREG2FLOPPort : TensixOrdinaryPort;
 def PseudoTTREG2FLOPMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$regindex, uimm32:$flopindex, uimm32:$contextid_2, uimm32:$byteoffset, uimm32:$targetsel, uimm32:$sizesel)>;
 def TTREG2FLOP : TensixOrdinaryInst<"REG2FLOP", 0x48,
@@ -1214,7 +1182,7 @@ def TTREG2FLOP : TensixOrdinaryInst<"REG2FLOP", 0x48,
   let RawWord{23-22} = sizesel;
 }
 
-def PseudoTTREPLAYPort : TensixOrdinaryPort<
+def PseudoTTREPLAYPort : TensixFieldPort<
     (ins uimm8:$port, uimm32:$load_mode, uimm32:$execute_while_loading, uimm32:$len, uimm32:$start_idx)>;
 def PseudoTTREPLAYMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$load_mode, uimm32:$execute_while_loading, uimm32:$len, uimm32:$start_idx)>;
@@ -1233,8 +1201,7 @@ def TTREPLAY : TensixOrdinaryInst<"REPLAY", 0x04,
   let RawWord{23-14} = start_idx;
 }
 
-def PseudoTTRESOURCEDECLPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$op_class, GPR:$resources, GPR:$linger_time)>;
+def PseudoTTRESOURCEDECLPort : TensixOrdinaryPort;
 def PseudoTTRESOURCEDECLMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$op_class, uimm32:$resources, uimm32:$linger_time)>;
 def TTRESOURCEDECL : TensixOrdinaryInst<"RESOURCEDECL", 0x05,
@@ -1250,8 +1217,7 @@ def TTRESOURCEDECL : TensixOrdinaryInst<"RESOURCEDECL", 0x05,
   let RawWord{23-13} = linger_time;
 }
 
-def PseudoTTRMWCIB0Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgregaddr, GPR:$data, GPR:$mask)>;
+def PseudoTTRMWCIB0Port : TensixOrdinaryPort;
 def PseudoTTRMWCIB0Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask)>;
 def TTRMWCIB0 : TensixOrdinaryInst<"RMWCIB0", 0xb3,
@@ -1267,8 +1233,7 @@ def TTRMWCIB0 : TensixOrdinaryInst<"RMWCIB0", 0xb3,
   let RawWord{23-16} = mask;
 }
 
-def PseudoTTRMWCIB1Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgregaddr, GPR:$data, GPR:$mask)>;
+def PseudoTTRMWCIB1Port : TensixOrdinaryPort;
 def PseudoTTRMWCIB1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask)>;
 def TTRMWCIB1 : TensixOrdinaryInst<"RMWCIB1", 0xb4,
@@ -1284,8 +1249,7 @@ def TTRMWCIB1 : TensixOrdinaryInst<"RMWCIB1", 0xb4,
   let RawWord{23-16} = mask;
 }
 
-def PseudoTTRMWCIB2Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgregaddr, GPR:$data, GPR:$mask)>;
+def PseudoTTRMWCIB2Port : TensixOrdinaryPort;
 def PseudoTTRMWCIB2Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask)>;
 def TTRMWCIB2 : TensixOrdinaryInst<"RMWCIB2", 0xb5,
@@ -1301,8 +1265,7 @@ def TTRMWCIB2 : TensixOrdinaryInst<"RMWCIB2", 0xb5,
   let RawWord{23-16} = mask;
 }
 
-def PseudoTTRMWCIB3Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgregaddr, GPR:$data, GPR:$mask)>;
+def PseudoTTRMWCIB3Port : TensixOrdinaryPort;
 def PseudoTTRMWCIB3Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgregaddr, uimm32:$data, uimm32:$mask)>;
 def TTRMWCIB3 : TensixOrdinaryInst<"RMWCIB3", 0xb6,
@@ -1318,8 +1281,7 @@ def TTRMWCIB3 : TensixOrdinaryInst<"RMWCIB3", 0xb6,
   let RawWord{23-16} = mask;
 }
 
-def PseudoTTRSTDMAPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTRSTDMAPort : TensixOrdinaryPort;
 def PseudoTTRSTDMAMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTRSTDMA : TensixOrdinaryInst<"RSTDMA", 0x44,
@@ -1329,8 +1291,7 @@ def TTRSTDMA : TensixOrdinaryInst<"RSTDMA", 0x44,
     []> {
 }
 
-def PseudoTTSEMGETPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$sem_sel)>;
+def PseudoTTSEMGETPort : TensixOrdinaryPort;
 def PseudoTTSEMGETMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$sem_sel)>;
 def TTSEMGET : TensixOrdinaryInst<"SEMGET", 0xa5,
@@ -1342,8 +1303,7 @@ def TTSEMGET : TensixOrdinaryInst<"SEMGET", 0xa5,
   let RawWord{23-2} = sem_sel;
 }
 
-def PseudoTTSEMINITPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$sem_sel, GPR:$init_value, GPR:$max_value)>;
+def PseudoTTSEMINITPort : TensixOrdinaryPort;
 def PseudoTTSEMINITMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$sem_sel, uimm32:$init_value, uimm32:$max_value)>;
 def TTSEMINIT : TensixOrdinaryInst<"SEMINIT", 0xa3,
@@ -1359,8 +1319,7 @@ def TTSEMINIT : TensixOrdinaryInst<"SEMINIT", 0xa3,
   let RawWord{23-20} = max_value;
 }
 
-def PseudoTTSEMPOSTPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$sem_sel)>;
+def PseudoTTSEMPOSTPort : TensixOrdinaryPort;
 def PseudoTTSEMPOSTMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$sem_sel)>;
 def TTSEMPOST : TensixOrdinaryInst<"SEMPOST", 0xa4,
@@ -1372,8 +1331,7 @@ def TTSEMPOST : TensixOrdinaryInst<"SEMPOST", 0xa4,
   let RawWord{23-2} = sem_sel;
 }
 
-def PseudoTTSEMWAITPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$wait_sem_cond, GPR:$sem_sel, GPR:$stall_res)>;
+def PseudoTTSEMWAITPort : TensixOrdinaryPort;
 def PseudoTTSEMWAITMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$wait_sem_cond, uimm32:$sem_sel, uimm32:$stall_res)>;
 def TTSEMWAIT : TensixOrdinaryInst<"SEMWAIT", 0xa6,
@@ -1389,8 +1347,7 @@ def TTSEMWAIT : TensixOrdinaryInst<"SEMWAIT", 0xa6,
   let RawWord{23-15} = stall_res;
 }
 
-def PseudoTTSETADCPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$value, GPR:$dimensionindex, GPR:$channelindex, GPR:$cntsetmask)>;
+def PseudoTTSETADCPort : TensixOrdinaryPort;
 def PseudoTTSETADCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$value, uimm32:$dimensionindex, uimm32:$channelindex, uimm32:$cntsetmask)>;
 def TTSETADC : TensixOrdinaryInst<"SETADC", 0x50,
@@ -1408,8 +1365,7 @@ def TTSETADC : TensixOrdinaryInst<"SETADC", 0x50,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTSETADCXXPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$x_start, GPR:$x_end2, GPR:$cntsetmask)>;
+def PseudoTTSETADCXXPort : TensixOrdinaryPort;
 def PseudoTTSETADCXXMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$x_start, uimm32:$x_end2, uimm32:$cntsetmask)>;
 def TTSETADCXX : TensixOrdinaryInst<"SETADCXX", 0x5e,
@@ -1425,8 +1381,7 @@ def TTSETADCXX : TensixOrdinaryInst<"SETADCXX", 0x5e,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTSETADCXYPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$bitmask, GPR:$ch0_x, GPR:$ch0_y, GPR:$ch1_x, GPR:$ch1_y, GPR:$cntsetmask)>;
+def PseudoTTSETADCXYPort : TensixOrdinaryPort;
 def PseudoTTSETADCXYMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$bitmask, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
 def TTSETADCXY : TensixOrdinaryInst<"SETADCXY", 0x51,
@@ -1448,8 +1403,7 @@ def TTSETADCXY : TensixOrdinaryInst<"SETADCXY", 0x51,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTSETADCZWPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$bitmask, GPR:$ch0_x, GPR:$ch0_y, GPR:$ch1_x, GPR:$ch1_y, GPR:$cntsetmask)>;
+def PseudoTTSETADCZWPort : TensixOrdinaryPort;
 def PseudoTTSETADCZWMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$bitmask, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
 def TTSETADCZW : TensixOrdinaryInst<"SETADCZW", 0x54,
@@ -1471,8 +1425,7 @@ def TTSETADCZW : TensixOrdinaryInst<"SETADCZW", 0x54,
   let RawWord{23-21} = cntsetmask;
 }
 
-def PseudoTTSETASHRMHPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$halo_mask, GPR:$reg_mask)>;
+def PseudoTTSETASHRMHPort : TensixOrdinaryPort;
 def PseudoTTSETASHRMHMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$halo_mask, uimm32:$reg_mask)>;
 def TTSETASHRMH : TensixOrdinaryInst<"SETASHRMH", 0x1e,
@@ -1486,8 +1439,7 @@ def TTSETASHRMH : TensixOrdinaryInst<"SETASHRMH", 0x1e,
   let RawWord{23-1} = reg_mask;
 }
 
-def PseudoTTSETASHRMH0Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$halo_mask, GPR:$reg_mask)>;
+def PseudoTTSETASHRMH0Port : TensixOrdinaryPort;
 def PseudoTTSETASHRMH0Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$halo_mask, uimm32:$reg_mask)>;
 def TTSETASHRMH0 : TensixOrdinaryInst<"SETASHRMH0", 0x1a,
@@ -1501,8 +1453,7 @@ def TTSETASHRMH0 : TensixOrdinaryInst<"SETASHRMH0", 0x1a,
   let RawWord{23-1} = reg_mask;
 }
 
-def PseudoTTSETASHRMH1Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$halo_mask, GPR:$reg_mask)>;
+def PseudoTTSETASHRMH1Port : TensixOrdinaryPort;
 def PseudoTTSETASHRMH1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$halo_mask, uimm32:$reg_mask)>;
 def TTSETASHRMH1 : TensixOrdinaryInst<"SETASHRMH1", 0x1b,
@@ -1516,8 +1467,7 @@ def TTSETASHRMH1 : TensixOrdinaryInst<"SETASHRMH1", 0x1b,
   let RawWord{23-1} = reg_mask;
 }
 
-def PseudoTTSETASHRMVPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$reg_mask2)>;
+def PseudoTTSETASHRMVPort : TensixOrdinaryPort;
 def PseudoTTSETASHRMVMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$reg_mask2)>;
 def TTSETASHRMV : TensixOrdinaryInst<"SETASHRMV", 0x1c,
@@ -1529,8 +1479,7 @@ def TTSETASHRMV : TensixOrdinaryInst<"SETASHRMV", 0x1c,
   let RawWord{23-0} = reg_mask2;
 }
 
-def PseudoTTSETC16Port : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$setc16_value, GPR:$setc16_reg)>;
+def PseudoTTSETC16Port : TensixOrdinaryPort;
 def PseudoTTSETC16Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$setc16_value, uimm32:$setc16_reg)>;
 def TTSETC16 : TensixOrdinaryInst<"SETC16", 0xb2,
@@ -1544,8 +1493,7 @@ def TTSETC16 : TensixOrdinaryInst<"SETC16", 0xb2,
   let RawWord{23-16} = setc16_reg;
 }
 
-def PseudoTTSETDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$regindex16b, GPR:$setsignalsmode, GPR:$payload_sigsel, GPR:$payload_sigselsize)>;
+def PseudoTTSETDMAREGPort : TensixOrdinaryPort;
 def PseudoTTSETDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$regindex16b, uimm32:$setsignalsmode, uimm32:$payload_sigsel, uimm32:$payload_sigselsize)>;
 def TTSETDMAREG : TensixOrdinaryInst<"SETDMAREG", 0x45,
@@ -1563,8 +1511,7 @@ def TTSETDMAREG : TensixOrdinaryInst<"SETDMAREG", 0x45,
   let RawWord{23-22} = payload_sigselsize;
 }
 
-def PseudoTTSETDVALIDPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$setvalid)>;
+def PseudoTTSETDVALIDPort : TensixOrdinaryPort;
 def PseudoTTSETDVALIDMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$setvalid)>;
 def TTSETDVALID : TensixOrdinaryInst<"SETDVALID", 0x57,
@@ -1576,8 +1523,7 @@ def TTSETDVALID : TensixOrdinaryInst<"SETDVALID", 0x57,
   let RawWord{23-0} = setvalid;
 }
 
-def PseudoTTSETIBRWCPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$set_inc_ctrl, GPR:$rwc_bias, GPR:$rwc_cr)>;
+def PseudoTTSETIBRWCPort : TensixOrdinaryPort;
 def PseudoTTSETIBRWCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$set_inc_ctrl, uimm32:$rwc_bias, uimm32:$rwc_cr)>;
 def TTSETIBRWC : TensixOrdinaryInst<"SETIBRWC", 0x39,
@@ -1593,8 +1539,7 @@ def TTSETIBRWC : TensixOrdinaryInst<"SETIBRWC", 0x39,
   let RawWord{23-18} = rwc_cr;
 }
 
-def PseudoTTSETPKEDGOFPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$x_start, GPR:$x_end, GPR:$y_start, GPR:$y_end)>;
+def PseudoTTSETPKEDGOFPort : TensixOrdinaryPort;
 def PseudoTTSETPKEDGOFMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$x_start, uimm32:$x_end, uimm32:$y_start, uimm32:$y_end)>;
 def TTSETPKEDGOF : TensixOrdinaryInst<"SETPKEDGOF", 0x1d,
@@ -1612,8 +1557,7 @@ def TTSETPKEDGOF : TensixOrdinaryInst<"SETPKEDGOF", 0x1d,
   let RawWord{23-12} = y_end;
 }
 
-def PseudoTTSETRWCPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$bitmask, GPR:$rwc_a, GPR:$rwc_b, GPR:$rwc_d, GPR:$rwc_cr, GPR:$clear_ab_vld)>;
+def PseudoTTSETRWCPort : TensixOrdinaryPort;
 def PseudoTTSETRWCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$bitmask, uimm32:$rwc_a, uimm32:$rwc_b, uimm32:$rwc_d, uimm32:$rwc_cr, uimm32:$clear_ab_vld)>;
 def TTSETRWC : TensixOrdinaryInst<"SETRWC", 0x37,
@@ -1635,8 +1579,7 @@ def TTSETRWC : TensixOrdinaryInst<"SETRWC", 0x37,
   let RawWord{23-22} = clear_ab_vld;
 }
 
-def PseudoTTSHIFTDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opsel, GPR:$opbisconst)>;
+def PseudoTTSHIFTDMAREGPort : TensixOrdinaryPort;
 def PseudoTTSHIFTDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opsel, uimm32:$opbisconst)>;
 def TTSHIFTDMAREG : TensixOrdinaryInst<"SHIFTDMAREG", 0x5c,
@@ -1656,8 +1599,7 @@ def TTSHIFTDMAREG : TensixOrdinaryInst<"SHIFTDMAREG", 0x5c,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTSHIFTXAPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$shift_mode, GPR:$log2_amount2)>;
+def PseudoTTSHIFTXAPort : TensixOrdinaryPort;
 def PseudoTTSHIFTXAMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$shift_mode, uimm32:$log2_amount2)>;
 def TTSHIFTXA : TensixOrdinaryInst<"SHIFTXA", 0x17,
@@ -1671,8 +1613,7 @@ def TTSHIFTXA : TensixOrdinaryInst<"SHIFTXA", 0x17,
   let RawWord{23-2} = log2_amount2;
 }
 
-def PseudoTTSHIFTXBPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$shift_row, GPR:$rot_shift, GPR:$addr_mode)>;
+def PseudoTTSHIFTXBPort : TensixOrdinaryPort;
 def PseudoTTSHIFTXBMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$shift_row, uimm32:$rot_shift, uimm32:$addr_mode)>;
 def TTSHIFTXB : TensixOrdinaryInst<"SHIFTXB", 0x18,
@@ -1688,8 +1629,7 @@ def TTSHIFTXB : TensixOrdinaryInst<"SHIFTXB", 0x18,
   let RawWord{23-14} = addr_mode;
 }
 
-def PseudoTTSTALLWAITPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$wait_res, GPR:$stall_res)>;
+def PseudoTTSTALLWAITPort : TensixOrdinaryPort;
 def PseudoTTSTALLWAITMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$wait_res, uimm32:$stall_res)>;
 def TTSTALLWAIT : TensixOrdinaryInst<"STALLWAIT", 0xa2,
@@ -1703,8 +1643,7 @@ def TTSTALLWAIT : TensixOrdinaryInst<"STALLWAIT", 0xa2,
   let RawWord{23-15} = stall_res;
 }
 
-def PseudoTTSTOREINDPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$addrregindex, GPR:$dataregindex, GPR:$autoincspec, GPR:$offsetindex, GPR:$regsizesel, GPR:$sizesel, GPR:$memhiersel)>;
+def PseudoTTSTOREINDPort : TensixOrdinaryPort;
 def PseudoTTSTOREINDMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$addrregindex, uimm32:$dataregindex, uimm32:$autoincspec, uimm32:$offsetindex, uimm32:$regsizesel, uimm32:$sizesel, uimm32:$memhiersel)>;
 def TTSTOREIND : TensixOrdinaryInst<"STOREIND", 0x66,
@@ -1728,8 +1667,7 @@ def TTSTOREIND : TensixOrdinaryInst<"STOREIND", 0x66,
   let RawWord{23} = memhiersel;
 }
 
-def PseudoTTSTOREREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$regaddr, GPR:$tdmadataregindex)>;
+def PseudoTTSTOREREGPort : TensixOrdinaryPort;
 def PseudoTTSTOREREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$regaddr, uimm32:$tdmadataregindex)>;
 def TTSTOREREG : TensixOrdinaryInst<"STOREREG", 0x67,
@@ -1743,8 +1681,7 @@ def TTSTOREREG : TensixOrdinaryInst<"STOREREG", 0x67,
   let RawWord{23-18} = tdmadataregindex;
 }
 
-def PseudoTTSTREAMWAITPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$wait_stream_sel, GPR:$target_sel, GPR:$target_value, GPR:$stall_res)>;
+def PseudoTTSTREAMWAITPort : TensixOrdinaryPort;
 def PseudoTTSTREAMWAITMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$wait_stream_sel, uimm32:$target_sel, uimm32:$target_value, uimm32:$stall_res)>;
 def TTSTREAMWAIT : TensixOrdinaryInst<"STREAMWAIT", 0xa7,
@@ -1762,8 +1699,7 @@ def TTSTREAMWAIT : TensixOrdinaryInst<"STREAMWAIT", 0xa7,
   let RawWord{23-15} = stall_res;
 }
 
-def PseudoTTSTREAMWRCFGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgreg, GPR:$streamregaddr, GPR:$stream_id_sel)>;
+def PseudoTTSTREAMWRCFGPort : TensixOrdinaryPort;
 def PseudoTTSTREAMWRCFGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgreg, uimm32:$streamregaddr, uimm32:$stream_id_sel)>;
 def TTSTREAMWRCFG : TensixOrdinaryInst<"STREAMWRCFG", 0xb7,
@@ -1779,8 +1715,7 @@ def TTSTREAMWRCFG : TensixOrdinaryInst<"STREAMWRCFG", 0xb7,
   let RawWord{23-21} = stream_id_sel;
 }
 
-def PseudoTTSUBDMAREGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$oparegindex, GPR:$opbregindex, GPR:$resultregindex, GPR:$opbisconst)>;
+def PseudoTTSUBDMAREGPort : TensixOrdinaryPort;
 def PseudoTTSUBDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst)>;
 def TTSUBDMAREG : TensixOrdinaryInst<"SUBDMAREG", 0x59,
@@ -1798,8 +1733,7 @@ def TTSUBDMAREG : TensixOrdinaryInst<"SUBDMAREG", 0x59,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTTBUFCMDPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTTBUFCMDPort : TensixOrdinaryPort;
 def PseudoTTTBUFCMDMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTTBUFCMD : TensixOrdinaryInst<"TBUFCMD", 0x4b,
@@ -1809,8 +1743,7 @@ def TTTBUFCMD : TensixOrdinaryInst<"TBUFCMD", 0x4b,
     []> {
 }
 
-def PseudoTTTRNSPSRCAPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTTRNSPSRCAPort : TensixOrdinaryPort;
 def PseudoTTTRNSPSRCAMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTTRNSPSRCA : TensixOrdinaryInst<"TRNSPSRCA", 0x14,
@@ -1820,8 +1753,7 @@ def TTTRNSPSRCA : TensixOrdinaryInst<"TRNSPSRCA", 0x14,
     []> {
 }
 
-def PseudoTTTRNSPSRCBPort : TensixOrdinaryPort<
-    (ins uimm8:$port)>;
+def PseudoTTTRNSPSRCBPort : TensixOrdinaryPort;
 def PseudoTTTRNSPSRCBMop : TensixOrdinaryMop<
     (ins uimm8:$slot)>;
 def TTTRNSPSRCB : TensixOrdinaryInst<"TRNSPSRCB", 0x16,
@@ -1831,8 +1763,7 @@ def TTTRNSPSRCB : TensixOrdinaryInst<"TRNSPSRCB", 0x16,
     []> {
 }
 
-def PseudoTTUNPACRPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$last, GPR:$searchcacheflush, GPR:$rowsearch, GPR:$autoinccontextid, GPR:$zerowrite2, GPR:$srcb_bcast, GPR:$setdatvalid, GPR:$ovrdthreadid, GPR:$addrcntcontextid, GPR:$cfgcontextid, GPR:$cfgcontextcntinc, GPR:$addrmode, GPR:$unpack_block_selection)>;
+def PseudoTTUNPACRPort : TensixOrdinaryPort;
 def PseudoTTUNPACRMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$last, uimm32:$searchcacheflush, uimm32:$rowsearch, uimm32:$autoinccontextid, uimm32:$zerowrite2, uimm32:$srcb_bcast, uimm32:$setdatvalid, uimm32:$ovrdthreadid, uimm32:$addrcntcontextid, uimm32:$cfgcontextid, uimm32:$cfgcontextcntinc, uimm32:$addrmode, uimm32:$unpack_block_selection)>;
 def TTUNPACR : TensixOrdinaryInst<"UNPACR", 0x42,
@@ -1868,8 +1799,7 @@ def TTUNPACR : TensixOrdinaryInst<"UNPACR", 0x42,
   let RawWord{23} = unpack_block_selection;
 }
 
-def PseudoTTUNPACR_NOPPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$unpack_pop, GPR:$src_clrval_ctrl, GPR:$bank_clr_ctrl, GPR:$stall_clr_cntrl, GPR:$clr_to1_fmt_ctrl, GPR:$set_dvalid, GPR:$msg_clr_cnt, GPR:$stream_id, GPR:$unpacker_select)>;
+def PseudoTTUNPACR_NOPPort : TensixOrdinaryPort;
 def PseudoTTUNPACR_NOPMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$unpack_pop, uimm32:$src_clrval_ctrl, uimm32:$bank_clr_ctrl, uimm32:$stall_clr_cntrl, uimm32:$clr_to1_fmt_ctrl, uimm32:$set_dvalid, uimm32:$msg_clr_cnt, uimm32:$stream_id, uimm32:$unpacker_select)>;
 def TTUNPACR_NOP : TensixOrdinaryInst<"UNPACR_NOP", 0x43,
@@ -1897,8 +1827,7 @@ def TTUNPACR_NOP : TensixOrdinaryInst<"UNPACR_NOP", 0x43,
   let RawWord{23} = unpacker_select;
 }
 
-def PseudoTTWRCFGPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$cfgreg, GPR:$wr128b, GPR:$gpraddress)>;
+def PseudoTTWRCFGPort : TensixOrdinaryPort;
 def PseudoTTWRCFGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgreg, uimm32:$wr128b, uimm32:$gpraddress)>;
 def TTWRCFG : TensixOrdinaryInst<"WRCFG", 0xb0,
@@ -1914,8 +1843,7 @@ def TTWRCFG : TensixOrdinaryInst<"WRCFG", 0xb0,
   let RawWord{23-16} = gpraddress;
 }
 
-def PseudoTTXMOVPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$last, GPR:$mov_block_selection)>;
+def PseudoTTXMOVPort : TensixOrdinaryPort;
 def PseudoTTXMOVMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$last, uimm32:$mov_block_selection)>;
 def TTXMOV : TensixOrdinaryInst<"XMOV", 0x40,
@@ -1929,8 +1857,7 @@ def TTXMOV : TensixOrdinaryInst<"XMOV", 0x40,
   let RawWord{23} = mov_block_selection;
 }
 
-def PseudoTTZEROACCPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$where, GPR:$addr_mode, GPR:$clear_zero_flags, GPR:$use_32_bit_mode, GPR:$clear_mode)>;
+def PseudoTTZEROACCPort : TensixOrdinaryPort;
 def PseudoTTZEROACCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$where, uimm32:$addr_mode, uimm32:$clear_zero_flags, uimm32:$use_32_bit_mode, uimm32:$clear_mode)>;
 def TTZEROACC : TensixOrdinaryInst<"ZEROACC", 0x10,
@@ -1950,8 +1877,7 @@ def TTZEROACC : TensixOrdinaryInst<"ZEROACC", 0x10,
   let RawWord{23-19} = clear_mode;
 }
 
-def PseudoTTZEROSRCPort : TensixOrdinaryPort<
-    (ins uimm8:$port, GPR:$src_mask, GPR:$bank_mask, GPR:$write_mode, GPR:$zero_val)>;
+def PseudoTTZEROSRCPort : TensixOrdinaryPort;
 def PseudoTTZEROSRCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$src_mask, uimm32:$bank_mask, uimm32:$write_mode, uimm32:$zero_val)>;
 def TTZEROSRC : TensixOrdinaryInst<"ZEROSRC", 0x11,
@@ -1992,13 +1918,18 @@ def lookupTensixInstructionByMop : SearchIndex {
 def RISCVTensixMachineTable : GenericTable {
   let FilterClass = "TensixOrdinaryInst";
   let CppTypeName = "TensixMachineInfo";
-  let Fields = ["Opcode", "PortOpcode", "MopOpcode", "IntrinsicID", "WritesDst"];
+  let Fields = ["Opcode", "PortOpcode", "MopOpcode", "IntrinsicID", "WritesDst",
+                "RawOpcode"];
   let PrimaryKey = ["Opcode"];
   let PrimaryKeyName = "getTensixMachineInfo";
 }
 def getTensixMachineInfoByPort : SearchIndex {
   let Table = RISCVTensixMachineTable;
   let Key = ["PortOpcode"];
+}
+def getTensixMachineInfoByRawOpcode : SearchIndex {
+  let Table = RISCVTensixMachineTable;
+  let Key = ["RawOpcode"];
 }
 def getTensixMachineInfoByMop : SearchIndex {
   let Table = RISCVTensixMachineTable;
