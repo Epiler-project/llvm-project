@@ -139,7 +139,11 @@ class TensixStochRound<string Name, bit Immediate>
   let Defs = [TT_ISSUE, TT_PRNG];
 }
 def TTSFPSTOCHRNDI : TensixStochRound<"ttsfpstochrnd.i", 1>;
-def TTSFPSTOCHRNDV : TensixStochRound<"ttsfpstochrnd.v", 0>;
+def TTSFPSTOCHRNDV : TensixStochRound<"ttsfpstochrnd.v", 0> {
+  // Only modes 4/5 use a vector descale. Distinguish the forms before the
+  // post-decode operand checks when the immediate descale field is zero.
+  let mode{3-1} = 0b010;
+}
 
 def TTSFPSWAP : TensixPhysicalInst<0x92, (outs SFPR:$dst, SFPR:$other),
     (ins SFPR:$old, SFPR:$oldother, uimm4:$mode),

@@ -30,6 +30,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 #include <functional>
@@ -119,6 +120,47 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
   if (!canCreateUndefOrPoison(Op))
     return true;
 
+  // Plain shifts preserve defined operands when every possible shift count
+  // is below the scalar width. The dependency graph still proves both input
+  // values independently; a bounded poison count is not a defined count.
+  if (I.isShift()) {
+    ConstantRange Counts = SE.getUnsignedRange(SE.getSCEV(I.getOperand(1)));
+    if (Counts.isEmptySet() ||
+        Counts.getUnsignedMax().uge(I.getType()->getIntegerBitWidth()))
+      return false;
+    // Exact right shifts preserve defined inputs only when every discarded
+    // bit is zero. Prove that from the input without using poison-generating
+    // flags as evidence; the dependency graph still checks both operands.
+    if (const auto *Exact = dyn_cast<PossiblyExactOperator>(Op))
+      if (Exact->isExact()) {
+        const DataLayout &DL = I.getModule()->getDataLayout();
+        KnownBits Input = computeKnownBits(I.getOperand(0), DL, nullptr,
+                                          nullptr, nullptr,
+                                          /*UseInstrInfo=*/false);
+        return Input.countMinTrailingZeros() >=
+               Counts.getUnsignedMax().getZExtValue();
+      }
+    if (I.getOpcode() != Instruction::Shl ||
+        (!I.hasNoUnsignedWrap() && !I.hasNoSignedWrap()))
+      return true;
+    // Flagged left shifts retain the overflow obligations below.
+  }
+
+  if (const auto *Disjoint = dyn_cast<PossiblyDisjointInst>(&I);
+      Disjoint && Disjoint->isDisjoint()) {
+    // InstCombine can express bounded field addition as a disjoint OR.
+    // Prove the flag's obligation from its operands, never from the OR's
+    // result or poison-generating flags elsewhere in their dependency graph.
+    // isDefinedOffset still independently proves both operands are defined.
+    const DataLayout &DL = I.getModule()->getDataLayout();
+    auto Bits = [&](const Value *V) {
+      return computeKnownBits(V, DL, nullptr, nullptr, nullptr,
+                              /*UseInstrInfo=*/false);
+    };
+    return KnownBits::haveNoCommonBitsSet(Bits(I.getOperand(0)),
+                                         Bits(I.getOperand(1)));
+  }
+
   // A flag is an obligation, never evidence. Check the actual operand ranges
   // with LLVM's overflow operations before admitting flagged arithmetic.
   if (const auto *BO = dyn_cast<OverflowingBinaryOperator>(Op)) {
@@ -126,6 +168,15 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
     ConstantRange RU = SE.getUnsignedRange(SE.getSCEV(I.getOperand(1)));
     ConstantRange LS = SE.getSignedRange(SE.getSCEV(I.getOperand(0)));
     ConstantRange RS = SE.getSignedRange(SE.getSCEV(I.getOperand(1)));
+    // These are two conservative ranges over the same operand bits. SCEV's
+    // signed range can lose a remainder bound retained by its unsigned range
+    // (and vice versa); use both facts before checking no-wrap obligations.
+    LU = LU.intersectWith(LS, ConstantRange::Unsigned);
+    RU = RU.intersectWith(RS, ConstantRange::Unsigned);
+    LS = LS.intersectWith(LU, ConstantRange::Signed);
+    RS = RS.intersectWith(RU, ConstantRange::Signed);
+    if (LU.isEmptySet() || RU.isEmptySet() || LS.isEmptySet() || RS.isEmptySet())
+      return false;
     using OR = ConstantRange::OverflowResult;
     bool UnsignedSafe = false, SignedSafe = false;
     switch (I.getOpcode()) {
