@@ -3427,6 +3427,7 @@ MachineInstr *RISCVInstrInfo::emitLdStWithAddr(MachineInstr &MemI,
       .addReg(MemI.getOperand(0).getReg(), getDefRegState(MemI.mayLoad()))
       .addReg(AM.BaseReg)
       .addImm(AM.Displacement)
+      .copyImplicitOps(MemI)
       .setMemRefs(MemI.memoperands())
       .setMIFlags(MemI.getFlags());
 }
