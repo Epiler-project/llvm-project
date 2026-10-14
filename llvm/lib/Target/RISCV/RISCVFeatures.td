@@ -68,6 +68,16 @@ class RISCVExperimentalExtension<int major, int minor, string desc,
   let Experimental = true;
 }
 
+// FPGA BOSC AME is a fixed-profile extension.  Its physical tile and
+// accumulator resources are owned by the MLIR receiver, while LLVM emits the
+// scalar-addressed instruction stream.
+def FeatureVendorXBOSCAME
+    : RISCVExtension<1, 0, "BOSC AME matrix extension">;
+def HasVendorXBOSCAME
+    : Predicate<"Subtarget->hasVendorXBOSCAME()">,
+      AssemblerPredicate<(all_of FeatureVendorXBOSCAME),
+                         "'XBOSCAME' (BOSC AME matrix extension)">;
+
 // Integer Extensions
 
 def FeatureStdExtI

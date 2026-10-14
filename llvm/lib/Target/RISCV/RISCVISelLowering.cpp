@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVISelLowering.h"
+#include "RISCVBOSCBound.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCV.h"
 #include "RISCVConstantPoolValue.h"
@@ -440,7 +441,7 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   // Also custom-lower when the feature is absent, to diagnose use of the
   // formal Tensix intrinsics instead of silently emitting an external call.
   setOperationAction(ISD::INTRINSIC_VOID, {MVT::Other, MVT::i16}, Custom);
-  if (Subtarget.hasVendorXTTTensixBH())
+  if (Subtarget.hasVendorXTTTensixBH() || Subtarget.hasVendorXBOSCAME())
     // Intrinsic operation legalization is queried with MVT::Other, even
     // when the intrinsic returns the legal SFPU vector carrier.
     setOperationAction(ISD::INTRINSIC_W_CHAIN, MVT::Other, Custom);
@@ -13745,6 +13746,8 @@ lowerFixedVectorSegLoadIntrinsics(unsigned IntNo, SDValue Op,
 
 SDValue RISCVTargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
                                                     SelectionDAG &DAG) const {
+  if (SDValue Bound = lowerBOSCBoundIntrinsic(Op, DAG, Subtarget))
+    return Bound;
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
   unsigned IntNo = Op.getConstantOperandVal(1);
@@ -13891,6 +13894,8 @@ lowerFixedVectorSegStoreIntrinsics(unsigned IntNo, SDValue Op,
 
 SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
                                                  SelectionDAG &DAG) const {
+  if (SDValue Bound = lowerBOSCBoundIntrinsic(Op, DAG, Subtarget))
+    return Bound;
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
   if (SDValue Tensix = lowerTensixOrdinaryIntrinsic(Op, DAG, Subtarget))
@@ -27286,6 +27291,8 @@ static MachineBasicBlock *emitFROUND(MachineInstr &MI, MachineBasicBlock *MBB,
 MachineBasicBlock *
 RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
                                                  MachineBasicBlock *BB) const {
+  if (auto *Bound = emitBOSCBoundInstruction(MI, BB, Subtarget))
+    return Bound;
   if (auto *Bound = emitTensixBoundSFPUInstruction(MI, BB, Subtarget))
     return Bound;
   switch (MI.getOpcode()) {

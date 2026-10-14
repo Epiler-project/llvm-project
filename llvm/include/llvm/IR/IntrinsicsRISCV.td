@@ -2318,3 +2318,5 @@ include "llvm/IR/IntrinsicsRISCVTensix.td"
 include "llvm/IR/IntrinsicsRISCVTensixSFPUExtra.td"
 include "llvm/IR/IntrinsicsRISCVTensixBound.td"
 include "llvm/IR/IntrinsicsRISCVTensixOrdinary.td"
+
+include "llvm/IR/IntrinsicsRISCVBOSC.td"

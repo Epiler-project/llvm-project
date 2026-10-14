@@ -1,0 +1,18 @@
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %s -o /dev/null 2>&1 | FileCheck %s
+# CHECK: missing BOSC issue-order use/def
+
+# Without the issue dependency, independent accelerator actions can exchange
+# after FinalizeISel, discarding MLIR's selected OFF/ON sequence. This fixture
+# has valid VL and data definitions so only that missing contract rejects it.
+--- |
+  define void @missing_issue() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: missing_issue
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype
+    PseudoRET
+...

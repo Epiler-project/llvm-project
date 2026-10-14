@@ -1,0 +1,23 @@
+# RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %s -o /dev/null
+--- |
+  define void @gather_loop() vscale_range(8,8) "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: gather_loop
+body: |
+  bb.0:
+    successors: %bb.1
+    $x12 = ADDI $x0, 15
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v1 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 1, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    $v2 = VRGATHER_VX $v1, $x12, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v2, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    BNE $x13, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...

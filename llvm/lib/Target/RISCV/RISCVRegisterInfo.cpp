@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RISCVBOSCBound.h"
 #include "RISCVRegisterInfo.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCV.h"
@@ -199,6 +200,28 @@ BitVector RISCVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
       for (MCPhysReg Sub : subregs_inclusive(Reg))
         markSuperRegs(Reserved, Sub);
     }
+  }
+
+  // Like Tensix issue state, this machine-only dependency must never enter
+  // allocation, copy, spill or reload even in a DMA-only scalar function.
+  markSuperRegs(Reserved, RISCV::BOSC_ISSUE);
+
+  // BOSC VRF allocation is complete in MLIR. LLVM may allocate only scalar
+  // registers; reserve every physical vector register and overlapping group.
+  if (isBOSCBoundFunction(MF.getFunction()))
+    for (MCPhysReg Reg : RISCV::VRRegClass)
+      markSuperRegs(Reserved, Reg);
+
+  // AME is physically bound before LLVM and has no allocatable value class in
+  // a bound function. Keep ordinary RISC-V functions free of BOSC-only
+  // reservations so this extension remains opt-in.
+  if (MF.getFunction().hasFnAttribute("trex-bosc-bound-ame")) {
+    for (MCPhysReg Reg : RISCV::BOSCTrRegRegClass)
+      markSuperRegs(Reserved, Reg);
+    for (MCPhysReg Reg : RISCV::BOSCAccRegRegClass)
+      markSuperRegs(Reserved, Reg);
+    for (MCPhysReg Reg : RISCV::BOSCConfigRegRegClass)
+      markSuperRegs(Reserved, Reg);
   }
 
   // Use markSuperRegs to ensure any register aliases are also reserved

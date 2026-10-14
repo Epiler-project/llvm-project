@@ -1,0 +1,147 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/missing-use.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING-USE
+# MISSING-USE: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/missing-def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING-DEF
+# MISSING-DEF: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/duplicate.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DUPLICATE
+# DUPLICATE: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/undef.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNDEF
+# UNDEF: invalid BOSC issue-order operand
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/virtual.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL
+# VIRTUAL: Cannot use non-allocatable class 'BOSCIssueState'
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/scalar.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SCALAR
+# SCALAR: BOSC issue state on ordinary scalar instruction is forbidden
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/memory.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MEMORY
+# MEMORY: BOSC issue state on ordinary scalar instruction is forbidden
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/fence.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FENCE
+# FENCE: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/csr.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CSR
+# CSR: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/volatile.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VOLATILE
+# VOLATILE: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscame -run-pass=riscv-bosc-bound-verify %t/ame.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=AME
+# AME: missing BOSC issue-order use/def
+
+# Receive the issue dependency independently from IR attributes and ingress.
+# Missing, malformed, virtual and unauthorized scalar effects all fail.
+#--- missing-use.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- missing-def.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue
+    PseudoRET
+...
+#--- duplicate.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue, implicit $bosc_issue
+    PseudoRET
+...
+#--- undef.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit undef $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- virtual.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    %0:boscissuestate = IMPLICIT_DEF
+    PseudoRET
+...
+#--- scalar.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x12 = ADDI $x10, 1, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- memory.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x12 = LD $x10, 0, implicit $bosc_issue, implicit-def $bosc_issue :: (load (s64))
+    PseudoRET
+...
+#--- fence.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    FENCE 15, 15
+    PseudoRET
+...
+#--- csr.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x0 = CSRRW 3008, $x10
+    PseudoRET
+...
+#--- volatile.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    SD $x11, $x10, 0 :: (volatile store (s64))
+    PseudoRET
+...
+#--- ame.mir
+--- |
+  define void @bad() "trex-bosc-bound-ame"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = BOSC_AME_SETM $x10, implicit-def $bosc_m
+    PseudoRET
+...

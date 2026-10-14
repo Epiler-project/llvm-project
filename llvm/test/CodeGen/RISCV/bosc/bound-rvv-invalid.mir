@@ -1,0 +1,67 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/virtual.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL
+# RUN: not --crash llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/renamable.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RENAMABLE
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/copy.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=COPY
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/config.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CONFIG
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/no-config.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOCONFIG
+# NOCONFIG: machine vector operation requires an explicit setvl on every incoming path
+# VIRTUAL: virtual vector register is forbidden
+# MIR parsing verifies reserved-register invariants before the target pass.
+# RENAMABLE: isRenamable set on reserved register
+# COPY: unbound vector operation, copy, spill or reserved vector register is forbidden
+# CONFIG: configuration differs from e32,m1,ta,ma
+#--- virtual.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    %0:vr = IMPLICIT_DEF
+    PseudoRET
+...
+#--- renamable.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    renamable $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- copy.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $v4 = COPY $v5
+    PseudoRET
+...
+#--- config.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x10 = VSETVLI $x11, 192, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- no-config.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
