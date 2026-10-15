@@ -53,6 +53,10 @@ def int_riscv_bosc_fcmp_lt : BOSCBoundBinaryIntrinsic;
 def int_riscv_bosc_fcmp_eq : BOSCBoundBinaryIntrinsic;
 def int_riscv_bosc_fcvt_to_i32 : BOSCBoundUnaryIntrinsic;
 def int_riscv_bosc_fcvt_from_i32 : BOSCBoundUnaryIntrinsic;
+// Offline SFU operations consume and overwrite explicitly bound e32 groups.
+// Their approximate numerical mode and launch admission stay target-owned.
+def int_riscv_bosc_sfu_exp2 : BOSCBoundUnaryIntrinsic;
+def int_riscv_bosc_sfu_rcp : BOSCBoundUnaryIntrinsic;
 def int_riscv_bosc_merge : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>,

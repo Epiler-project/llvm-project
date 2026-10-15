@@ -175,15 +175,24 @@ std::optional<unsigned> exactLanes(uint64_t AVL, bool Exact512) {
 }
 
 bool isBOSCFPRVVIntrinsic(Intrinsic::ID ID);
+bool isBOSCSFUIntrinsic(Intrinsic::ID ID) {
+  return ID == Intrinsic::riscv_bosc_sfu_exp2 ||
+         ID == Intrinsic::riscv_bosc_sfu_rcp;
+}
 
 bool isBoundIntrinsic(Intrinsic::ID ID) {
+  // The target cycle CSR is a scalar observation boundary. It does not create
+  // a VRF value or alter AME/DMA ownership, but test-owned timing witnesses
+  // need the same fenced mcycle instruction used by the runtime support.
+  if (ID == Intrinsic::readcyclecounter)
+    return true;
   return ID == Intrinsic::riscv_bosc_setvl ||
          ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_add ||
          ID == Intrinsic::riscv_bosc_store || isBOSCFPRVVIntrinsic(ID) ||
          ID == Intrinsic::riscv_bosc_merge ||
          ID == Intrinsic::riscv_bosc_iadd_scalar ||
          ID == Intrinsic::riscv_bosc_gather_scalar ||
-         ID == Intrinsic::riscv_bosc_shl;
+         ID == Intrinsic::riscv_bosc_shl || isBOSCSFUIntrinsic(ID);
 }
 
 bool isBOSCFPRVVIntrinsic(Intrinsic::ID ID) {
@@ -204,7 +213,7 @@ bool isBoundUnaryIntrinsic(Intrinsic::ID ID) {
   return ID == Intrinsic::riscv_bosc_fcvt_to_i32 ||
          ID == Intrinsic::riscv_bosc_fcvt_from_i32 ||
          ID == Intrinsic::riscv_bosc_iadd_scalar ||
-         ID == Intrinsic::riscv_bosc_shl;
+         ID == Intrinsic::riscv_bosc_shl || isBOSCSFUIntrinsic(ID);
 }
 bool isMaskOperand(Intrinsic::ID ID, unsigned Index) {
   return ((ID == Intrinsic::riscv_bosc_fcmp_lt ||
@@ -287,6 +296,11 @@ LaneState transfer(const BasicBlock &BB, LaneState State, bool Verify,
     if (!II || !isBoundIntrinsic(II->getIntrinsicID()))
       continue;
     auto ID = II->getIntrinsicID();
+    // readcyclecounter is a scalar observation intrinsic used by test-owned
+    // timing witnesses.  It has no vector-register operands and must not
+    // participate in the RVV lane/configuration dataflow below.
+    if (ID == Intrinsic::readcyclecounter)
+      continue;
     if (ID == Intrinsic::riscv_bosc_setvl) {
       auto *AVL = dyn_cast<ConstantInt>(II->getArgOperand(0));
       State.configure(II, AVL ? exactLanes(AVL->getZExtValue(), Exact512)
@@ -317,7 +331,8 @@ LaneState transfer(const BasicBlock &BB, LaneState State, bool Verify,
       unsigned Index = gatherIndex(*II, Exact512);
       if (Verify && Index < 16 && !State.noActiveLanes() &&
           !State.readableLane(physicalArgument(*II, 1), Index))
-        fail(*BB.getParent(), "gather index reads an uninitialized source lane");
+        fail(*BB.getParent(),
+             "gather index reads an uninitialized source lane");
     }
     if (isBoundReduceIntrinsic(ID))
       Read(1);
@@ -353,7 +368,8 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
                  !isBOSCAMEIntrinsic(II->getIntrinsicID()) &&
                  !isDMAIntrinsic(II->getIntrinsicID()))))
       fail(F, "unknown BOSC intrinsic");
-    if (II && isBoundIntrinsic(II->getIntrinsicID()) && !RVV)
+    if (II && isBoundIntrinsic(II->getIntrinsicID()) && !RVV &&
+        !F.hasFnAttribute("trex-bosc-bound-ame"))
       fail(F, "intrinsic requires trex-bosc-bound-rvv=1");
   }
   verifyBOSCAMEIR(F);
@@ -380,11 +396,21 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
     auto *II = dyn_cast<IntrinsicInst>(Call);
     if (II && isa<DbgInfoIntrinsic>(II))
       continue;
-    if (DMA && II && II->getIntrinsicID() == Intrinsic::trap) {
+    // Compiler-authored math and address guards terminate bound execution.
+    // Their validity does not depend on whether the function also issues DMA.
+    if (II && II->getIntrinsicID() == Intrinsic::trap) {
       if (!isa_and_nonnull<UnreachableInst>(I.getNextNode()))
         fail(F, "trap must be immediately followed by unreachable");
       continue;
     }
+    // Explicit scalar memory max-number uses the official f32 intrinsic;
+    // RISCV selects fmax.s directly. No other unbound math or vector form is
+    // admitted, and this cannot create VRF ownership or a host/libm call.
+    if (II && II->getIntrinsicID() == Intrinsic::maximumnum &&
+        II->getType()->isFloatTy() && II->arg_size() == 2 &&
+        II->getArgOperand(0)->getType()->isFloatTy() &&
+        II->getArgOperand(1)->getType()->isFloatTy())
+      continue;
     if (!II || (!isBoundIntrinsic(II->getIntrinsicID()) &&
                 !isBOSCAMEIntrinsic(II->getIntrinsicID()) &&
                 !isDMAIntrinsic(II->getIntrinsicID())))
@@ -392,6 +418,10 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
               "in bound scope");
     if (isBOSCAMEIntrinsic(II->getIntrinsicID()) ||
         isDMAIntrinsic(II->getIntrinsicID()))
+      continue;
+    // The cycle counter is a scalar observation boundary.  It is admitted in
+    // bound scope, but has no physical vector operands or lane effects.
+    if (II->getIntrinsicID() == Intrinsic::readcyclecounter)
       continue;
     if (II->getIntrinsicID() != Intrinsic::riscv_bosc_setvl)
       for (unsigned I = 0; I != boundPhysicalOperands(II->getIntrinsicID());
@@ -467,6 +497,12 @@ public:
       if (F.hasFnAttribute("trex-bosc-bound-ame") &&
           (!ST.is64Bit() || !ST.hasVendorXBOSCAME()))
         fail(F, "requires bound AME scope and RV64 +xboscame");
+      if (!ST.hasVendorXBOSCSFU() &&
+          llvm::any_of(instructions(F), [](const Instruction &I) {
+            const auto *II = dyn_cast<IntrinsicInst>(&I);
+            return II && isBOSCSFUIntrinsic(II->getIntrinsicID());
+          }))
+        fail(F, "SFU offline code generation requires +xboscsfu");
     }
     return false;
   }
@@ -500,9 +536,12 @@ bool isRoundedBinaryOpcode(unsigned Opcode) {
 bool isConversionOpcode(unsigned Opcode) {
   return Opcode == RISCV::VFCVT_X_F_V || Opcode == RISCV::VFCVT_F_X_V;
 }
+bool isSFUOpcode(unsigned Opcode) {
+  return Opcode == RISCV::BOSC_SFU_EXP2 || Opcode == RISCV::BOSC_SFU_RCP;
+}
 bool isUnaryOpcode(unsigned Opcode) {
   return isConversionOpcode(Opcode) || Opcode == RISCV::VADD_VX ||
-         Opcode == RISCV::VSLL_VI;
+         Opcode == RISCV::VSLL_VI || isSFUOpcode(Opcode);
 }
 bool isBinaryOpcode(unsigned Opcode) {
   return Opcode == RISCV::VADD_VV || isRoundedBinaryOpcode(Opcode) ||
@@ -512,8 +551,9 @@ bool isBinaryOpcode(unsigned Opcode) {
 
 // Keep the scalar index independently checkable after ordinary GPR allocation.
 // Only the bounded gather constants are facts: -2 is the initial lattice top,
-// -1 is unknown, and 0..16 are known values. Physical aliases and register masks
-// kill facts, so no LLVM intrinsic annotation is trusted by the MIR verifier.
+// -1 is unknown, and 0..16 are known values. Physical aliases and register
+// masks kill facts, so no LLVM intrinsic annotation is trusted by the MIR
+// verifier.
 struct MachineState : LaneState {
   SmallVector<int8_t, 64> Constants;
   unsigned PhysicalCount;
@@ -525,8 +565,7 @@ struct MachineState : LaneState {
                      Entry ? -1 : -2);
   }
   unsigned index(Register Reg) const {
-    return Reg.isVirtual() ? PhysicalCount + Reg.virtRegIndex()
-                           : Reg.id();
+    return Reg.isVirtual() ? PhysicalCount + Reg.virtRegIndex() : Reg.id();
   }
   std::optional<unsigned> constant(Register Reg) const {
     if (Reg == RISCV::X0)
@@ -576,7 +615,8 @@ struct MachineState : LaneState {
         if (Reg.isVirtual())
           Constants[index(Reg)] = -1;
         else
-          for (MCRegAliasIterator Alias(Reg, &TRI, true); Alias.isValid(); ++Alias)
+          for (MCRegAliasIterator Alias(Reg, &TRI, true); Alias.isValid();
+               ++Alias)
             Constants[*Alias] = -1;
       }
     }
@@ -608,8 +648,8 @@ MachineState transferMachine(const MachineBasicBlock &MBB, MachineState State,
     bool Splat = Opcode == RISCV::VFMV_V_F;
     bool Extract = Opcode == RISCV::VFMV_F_S;
     bool Reduce = Opcode == RISCV::VFREDOSUM_VS || Opcode == RISCV::VFREDMAX_VS;
-    if (!Load && !Binary && !Unary && !Gather && !Accumulate && !Store && !Splat &&
-        !Extract && !Reduce)
+    if (!Load && !Binary && !Unary && !Gather && !Accumulate && !Store &&
+        !Splat && !Extract && !Reduce)
       continue;
     if (Verify && !State.configured())
       fail(MBB.getParent()->getFunction(),
@@ -826,6 +866,7 @@ public:
         bool NativeFloat = isRoundedBinaryOpcode(Opcode) || Accumulate ||
                            isConversionOpcode(Opcode);
         bool Splat = MI.getOpcode() == RISCV::VFMV_V_F;
+        bool SFU = isSFUOpcode(Opcode);
         bool Extract = MI.getOpcode() == RISCV::VFMV_F_S;
         bool Reduce = MI.getOpcode() == RISCV::VFREDOSUM_VS ||
                       MI.getOpcode() == RISCV::VFREDMAX_VS;
@@ -848,15 +889,18 @@ public:
                                     Opcode == RISCV::VADD_VX ||
                                     Opcode == RISCV::VSLL_VI || Gather
                                 ? 4
-                            : Splat || Extract ? 2
-                                               : 3;
+                            : Splat || Extract || SFU ? 2
+                                                      : 3;
         if (Native && MI.getNumExplicitOperands() != Expected)
           fail(MF.getFunction(),
                "bound native operation has invalid operand count");
-        if (Native && !Splat && !Extract && !Merge &&
+        if (Native && !Splat && !Extract && !Merge && !SFU &&
             (!MI.getOperand(Expected - 1).isReg() ||
              MI.getOperand(Expected - 1).getReg()))
           fail(MF.getFunction(), "bound native operation must be unmasked");
+        if (SFU && !ST.hasVendorXBOSCSFU())
+          fail(MF.getFunction(),
+               "SFU offline code generation requires +xboscsfu");
         if ((Compare && MI.getOperand(0).getReg() != RISCV::V0) ||
             (Merge && MI.getOperand(3).getReg() != RISCV::V0))
           fail(MF.getFunction(), "physical mask operand must be v0");
@@ -944,9 +988,19 @@ PreservedAnalyses llvm::RISCVBOSCNewPMGate::run(Function &F,
 
 SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
                                       const RISCVSubtarget &ST) {
-  if (SDValue AME = lowerBOSCAMEIntrinsic(Op, DAG, ST))
-    return AME;
+  // Ordinary scalar intrinsics may reach this shared lowering hook without
+  // the intrinsic-id operand used by RISCV intrinsic nodes.  They must fall
+  // through to the target's normal lowering path.
+  if (Op.getNumOperands() <= 1)
+    return SDValue();
   auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
+  // readcyclecounter is a scalar observation intrinsic.  It shares the
+  // bound ingress but is not a BOSC AME operation; avoid sending it through
+  // the AME helper, whose ABI expects AME slot operands.
+  if (ID != Intrinsic::readcyclecounter) {
+    if (SDValue AME = lowerBOSCAMEIntrinsic(Op, DAG, ST))
+      return AME;
+  }
   if (isDMAIntrinsic(ID)) {
     if (!ST.is64Bit())
       fail(DAG.getMachineFunction().getFunction(), "patch7 DMA requires RV64");
@@ -965,6 +1019,8 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
     fail(F, "requires bound scope and RV64 +v +zvl512b");
   if (isBOSCFPRVVIntrinsic(ID) && !ST.hasVInstructionsF32())
     fail(F, "FP32 vector arithmetic requires vector floating-point F32");
+  if (isBOSCSFUIntrinsic(ID) && !ST.hasVendorXBOSCSFU())
+    fail(F, "SFU offline code generation requires +xboscsfu");
   SDLoc DL(Op);
   SmallVector<SDValue, 4> Args;
   unsigned Opcode;
@@ -1004,8 +1060,10 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
         : ID == Intrinsic::riscv_bosc_iadd_scalar ? RISCV::PseudoBOSCIAddScalar
         : ID == Intrinsic::riscv_bosc_gather_scalar
             ? RISCV::PseudoBOSCGatherScalar
-        : ID == Intrinsic::riscv_bosc_shl         ? RISCV::PseudoBOSCShl
-                                                  : RISCV::PseudoBOSCStore;
+        : ID == Intrinsic::riscv_bosc_shl      ? RISCV::PseudoBOSCShl
+        : ID == Intrinsic::riscv_bosc_sfu_exp2 ? RISCV::PseudoBOSCSFUExp2
+        : ID == Intrinsic::riscv_bosc_sfu_rcp  ? RISCV::PseudoBOSCSFURcp
+                                               : RISCV::PseudoBOSCStore;
     unsigned Count = boundPhysicalOperands(ID);
     for (unsigned I = 0; I != Count; ++I) {
       auto *CI = dyn_cast<ConstantSDNode>(Op.getOperand(I + 2));
@@ -1025,8 +1083,7 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
       // A machine pseudo's constant operand is not selected recursively.
       Args.push_back(SDValue(
           DAG.getMachineNode(
-              RISCV::ADDI, DL, MVT::i64,
-              DAG.getRegister(RISCV::X0, MVT::i64),
+              RISCV::ADDI, DL, MVT::i64, DAG.getRegister(RISCV::X0, MVT::i64),
               DAG.getTargetConstant(Op.getConstantOperandVal(4), DL, MVT::i64)),
           0));
     else if (ID == Intrinsic::riscv_bosc_shl)
@@ -1098,35 +1155,17 @@ MachineBasicBlock *emitDMAInstruction(MachineInstr &MI, MachineBasicBlock *MBB,
     }
     return Source;
   };
-  auto Address = [&](const char *Symbol) {
-    Register Address = GPR();
-    Build(RISCV::PseudoLLA)
-        .addReg(Address, RegState::Define)
-        .addExternalSymbol(Symbol);
-    Register PMPAddress = GPR();
-    Build(RISCV::SRLI)
-        .addReg(PMPAddress, RegState::Define)
-        .addReg(Address)
-        .addImm(2);
-    return PMPAddress;
-  };
   Fence();
   if (Opcode == RISCV::PseudoBOSCDMAWrites) {
-    // Match runtime/bosc/runtime/patch7_dma_support.S exactly: TOR regions
-    // cover SPM, DMA MMIO and linker-owned mutable DDR; other ranges retain
-    // the received platform attributes. This does not provide cache cleanup.
-    WriteCSR(0x3b0, Immediate(0x20000000 >> 2));
-    WriteCSR(0x3b1, Immediate(0x20420000 >> 2));
-    WriteCSR(0x3b2, Immediate(0x60000000 >> 2));
-    WriteCSR(0x3b3, Immediate(0x60020000 >> 2));
-    WriteCSR(0x3b4, Address("__bosc_data_start"));
-    WriteCSR(0x3b5, Address("__bosc_data_end"));
-    WriteCSR(0x3b6, Immediate(0x003fffffffffffff));
-    WriteCSR(0x3a0, Immediate(0x000f0f0f0f0f0f0f));
+    // Support owns TOR bounds and permissions for both execution profiles.
+    // Inline kernel phases change only the received PMA attributes; rebuilding
+    // geometry here would discard the resident stack and caller-arena regions.
     WriteCSR(0xbc0, Immediate(0x0f0f0f0f0f0f0f0f));
     Fence();
   } else if (Opcode == RISCV::PseudoBOSCDMAReads) {
-    WriteCSR(0xbc0, Immediate(0x0f0f000f000f000f));
+    // Entry 6 keeps stacks/fallback cacheable; entry 7 acquires the resident
+    // arena without cache hits. Preload leaves entry 7 disabled in pmpcfg0.
+    WriteCSR(0xbc0, Immediate(0x000f000f000f000f));
     Fence();
   }
   MI.eraseFromParent();
@@ -1214,6 +1253,12 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
   case RISCV::PseudoBOSCShl:
     Native = RISCV::VSLL_VI;
     break;
+  case RISCV::PseudoBOSCSFUExp2:
+    Native = RISCV::BOSC_SFU_EXP2;
+    break;
+  case RISCV::PseudoBOSCSFURcp:
+    Native = RISCV::BOSC_SFU_RCP;
+    break;
   }
   auto Builder =
       BuildMI(*MBB, MI, MI.getDebugLoc(), ST.getInstrInfo()->get(Native));
@@ -1257,6 +1302,9 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
         .addReg(RISCV::V0 + MI.getOperand(1).getImm())
         .add(MI.getOperand(2))
         .addReg(RISCV::NoRegister);
+  } else if (isSFUOpcode(Native)) {
+    Builder.addReg(RISCV::V0 + MI.getOperand(0).getImm(), RegState::Define)
+        .addReg(RISCV::V0 + MI.getOperand(1).getImm());
   } else if (Native == RISCV::VFCVT_X_F_V || Native == RISCV::VFCVT_F_X_V) {
     Builder.addReg(RISCV::V0 + MI.getOperand(0).getImm(), RegState::Define)
         .addReg(RISCV::V0 + MI.getOperand(1).getImm())

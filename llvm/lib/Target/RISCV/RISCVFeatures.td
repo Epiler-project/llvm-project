@@ -78,6 +78,15 @@ def HasVendorXBOSCAME
       AssemblerPredicate<(all_of FeatureVendorXBOSCAME),
                          "'XBOSCAME' (BOSC AME matrix extension)">;
 
+// This feature admits offline encoding only. The deployed patch7 wrapper's
+// SFU execution capability is a separate compiler/runtime target contract.
+def FeatureVendorXBOSCSFU
+    : RISCVExtension<1, 0, "BOSC vector special function extension">;
+def HasVendorXBOSCSFU
+    : Predicate<"Subtarget->hasVendorXBOSCSFU()">,
+      AssemblerPredicate<(all_of FeatureVendorXBOSCSFU),
+                         "'XBOSCSFU' (BOSC vector special function extension)">;
+
 // Integer Extensions
 
 def FeatureStdExtI

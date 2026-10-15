@@ -1,12 +1,12 @@
 ; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -O0 -verify-machineinstrs < %s > %t.o0
 ; RUN: FileCheck %s < %t.o0
-; RUN: FileCheck %s --check-prefix=SYMBOLS < %t.o0
+; RUN: FileCheck %s --check-prefix=GEOMETRY < %t.o0
 ; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -O2 -verify-machineinstrs < %s > %t.o2
 ; RUN: FileCheck %s < %t.o2
-; RUN: FileCheck %s --check-prefix=SYMBOLS < %t.o2
+; RUN: FileCheck %s --check-prefix=GEOMETRY < %t.o2
 ; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -O2 -stress-regalloc=4 -verify-machineinstrs < %s > %t.stress
 ; RUN: FileCheck %s < %t.stress
-; RUN: FileCheck %s --check-prefix=SYMBOLS < %t.stress
+; RUN: FileCheck %s --check-prefix=GEOMETRY < %t.stress
 
 declare void @llvm.riscv.bosc.dma.writes()
 declare void @llvm.riscv.bosc.dma.reads()
@@ -17,26 +17,22 @@ declare void @llvm.riscv.bosc.add(i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.bosc.store(i32 immarg, ptr)
 declare void @llvm.trap()
 
-; PMA writes uses the exact patch7 support ranges and linker-owned mutable DDR.
+; Support owns TOR geometry, including resident arena and cacheable stacks.
+; Kernel phases only change PMA attributes and preserve bounds/permissions.
 ; Its scalar temporaries must never clobber MLIR-owned VRF or call support code.
 ; Address materialization may move across independent scalar instructions;
 ; CSR writes and fences retain their architectural order below.
-; SYMBOLS-LABEL: dma_rvv:
-; SYMBOLS-DAG: __bosc_data_start
-; SYMBOLS-DAG: __bosc_data_end
-; SYMBOLS: ret
+; GEOMETRY-LABEL: dma_rvv:
+; GEOMETRY-NOT: pmpaddr
+; GEOMETRY-NOT: pmpcfg
+; GEOMETRY-NOT: __bosc_
+; GEOMETRY-NOT: call
+; GEOMETRY-NOT: tail
+; GEOMETRY: ret
 ; CHECK-LABEL: dma_rvv:
 ; CHECK: vsetivli {{[a-z0-9]+}}, 16, e32, m1, ta, ma
 ; CHECK: vle32.v v4
 ; CHECK: fence
-; CHECK: csrw pmpaddr0,
-; CHECK: csrw pmpaddr1,
-; CHECK: csrw pmpaddr2,
-; CHECK: csrw pmpaddr3,
-; CHECK: csrw pmpaddr4,
-; CHECK: csrw pmpaddr5,
-; CHECK: csrw pmpaddr6,
-; CHECK: csrw pmpcfg0,
 ; CHECK: csrw 3008,
 ; CHECK: fence
 ; CHECK: sd

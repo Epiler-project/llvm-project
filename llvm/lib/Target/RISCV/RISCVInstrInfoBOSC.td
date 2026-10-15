@@ -39,6 +39,10 @@ def PseudoBOSCFMacc : BOSCBoundPseudo<(outs),
                                     (ins uimm5:$vd, uimm5:$vs1, uimm5:$vs2)>;
 def PseudoBOSCFCvtToI32 : BOSCBoundPseudo<(outs), (ins uimm5:$vd, uimm5:$vs)>;
 def PseudoBOSCFCvtFromI32 : BOSCBoundPseudo<(outs), (ins uimm5:$vd, uimm5:$vs)>;
+let Predicates = [IsRV64, HasVInstructions, HasVendorXBOSCSFU] in {
+def PseudoBOSCSFUExp2 : BOSCBoundPseudo<(outs), (ins uimm5:$vd, uimm5:$vs)>;
+def PseudoBOSCSFURcp : BOSCBoundPseudo<(outs), (ins uimm5:$vd, uimm5:$vs)>;
+}
 }
 let mayRaiseFPException = true in {
 def PseudoBOSCFMax : BOSCBoundPseudo<(outs),
@@ -83,6 +87,29 @@ class BOSCDMAPseudo : Pseudo<(outs), (ins), []> {
 def PseudoBOSCDMAWrites : BOSCDMAPseudo;
 def PseudoBOSCDMAReads : BOSCDMAPseudo;
 def PseudoBOSCDMAFence : BOSCDMAPseudo;
+
+// Offline formal encoding received from the fixed BOSC Custom-1 decoder.
+// Unmasked vm=1, marker=7; e32,m1 active lanes and physical VRF ownership are
+// independently verified by the bound receiver. No virtual vector allocation.
+let Predicates = [IsRV64, HasVInstructions, HasVendorXBOSCSFU],
+    Uses = [VL, VTYPE], hasSideEffects = 1, isNotDuplicable = 1,
+    isConvergent = 1, hasNoSchedulingInfo = 1, mayLoad = 0, mayStore = 0 in {
+class BOSCSFU<bits<3> F3, string Name>
+    : RVInst<(outs VR:$vd), (ins VR:$vs2), Name, "$vd, $vs2", [],
+             InstFormatOther> {
+  bits<5> vd;
+  bits<5> vs2;
+  let Inst{31-26} = 0b010011;
+  let Inst{25} = 1;
+  let Inst{24-20} = vs2;
+  let Inst{19-15} = 0b00111;
+  let Inst{14-12} = F3;
+  let Inst{11-7} = vd;
+  let Inst{6-0} = 0b0101011;
+}
+def BOSC_SFU_EXP2 : BOSCSFU<0b000, "vsfu.exp2.v">;
+def BOSC_SFU_RCP : BOSCSFU<0b010, "vsfu.rcp.v">;
+}
 
 //===----------------------------------------------------------------------===//
 // BOSC AME fixed-profile receiver

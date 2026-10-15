@@ -1,17 +1,29 @@
+# ELF value parsing and object errors are useful to runtime-only consumers.
+# Keep their canonical implementation separate from IR/MC object construction.
+add_llvm_component_library(LLVMObjectSupport
+  PARTIAL_SOURCES_INTENDED
+  BBAddrMap.cpp
+  Decompressor.cpp
+  ELF.cpp
+  Error.cpp
+
+  ADDITIONAL_HEADER_DIRS
+  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Object
+
+  LINK_COMPONENTS
+  Support
+  )
+
 add_llvm_component_library(LLVMObject
   Archive.cpp
   ArchiveWriter.cpp
-  BBAddrMap.cpp
   Binary.cpp
   BuildID.cpp
   COFFImportFile.cpp
   COFFModuleDefinition.cpp
   COFFObjectFile.cpp
-  Decompressor.cpp
   DXContainer.cpp
-  ELF.cpp
   ELFObjectFile.cpp
-  Error.cpp
   GOFFObjectFile.cpp
   FaultMapParser.cpp
   IRObjectFile.cpp
@@ -51,6 +63,7 @@ add_llvm_component_library(LLVMObject
   IRReader
   BinaryFormat
   MCParser
+  ObjectSupport
   Support
   TargetParser
   TextAPI
