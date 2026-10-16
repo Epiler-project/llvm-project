@@ -72,6 +72,32 @@ def PseudoBOSCFReduceSum : BOSCBoundPseudo<(outs), (ins uimm5:$vd, uimm5:$vs)>;
 let Uses = [VTYPE] in
 def PseudoBOSCFExtract : BOSCBoundPseudo<(outs FPR32:$value), (ins uimm5:$vs)>;
 
+def PseudoBOSCReadBits : BOSCBoundPseudo<(outs GPRNoX0:$value),
+    (ins uimm5:$scratch, GPR:$base, GPRNoX0:$restore_vl,
+         i32imm:$width_bits)> {
+  let mayLoad = 1;
+}
+// FinalizeISel receives the physical scratch and allocator-owned scalar
+// operands. Keep this operation closed through scheduling and allocation;
+// MC emission performs the fixed configure/load/extract/restore sequence.
+def PseudoBOSCReadBitsBound : Pseudo<
+    (outs GPRNoX0:$value, VR:$scratch),
+    (ins GPR:$base, GPRNoX0:$restore_vl, i32imm:$width_bits), []> {
+  let Predicates = [IsRV64, HasVInstructions];
+  let Constraints = "@earlyclobber $value";
+  let Uses = [VL, VTYPE];
+  let Defs = [VL, VTYPE];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let isConvergent = 1;
+  let hasNoSchedulingInfo = 1;
+  let mayLoad = 1;
+  let mayStore = 0;
+  // The e32 case emits six instructions; use its maximum size so branch
+  // relaxation never underestimates a closed observation sequence.
+  let Size = 24;
+}
+
 // Patch7 DMA PMA changes use only ordinary scalar registers. The custom
 // inserter emits the received platform sequence before register allocation.
 class BOSCDMAPseudo : Pseudo<(outs), (ins), []> {

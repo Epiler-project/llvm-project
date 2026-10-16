@@ -12,6 +12,19 @@ class BOSCBoundIntrinsic<list<LLVMType> Results, list<LLVMType> Inputs,
     : DefaultAttrsIntrinsic<Results, Inputs,
         !listconcat([IntrHasSideEffects, IntrConvergent, IntrNoDuplicate,
                      IntrNoCallback, IntrNoFree, IntrWillReturn], Properties)>;
+// The patch9 observation timebase is the RV64 machine counter, not the
+// unverified user-mode CYCLE alias selected by llvm.readcyclecounter. This
+// fixed scalar operation preserves memory/issue ordering without introducing
+// accelerator waits, fences, vector configuration, or an arbitrary CSR API.
+def int_riscv_bosc_read_mcycle : BOSCBoundIntrinsic<[llvm_i64_ty], []>;
+// One naturally aligned 8/32/64-bit element through a bound scratch group.
+// The width is immediate; the result contains the zero-extended source bits.
+// The closed operation
+// restores the explicit active setvl result under the fixed e32 configuration,
+// or canonical e32/VL0 without a source configuration. No CSR reads are used.
+def int_riscv_bosc_read_bits : BOSCBoundIntrinsic<[llvm_i64_ty],
+    [llvm_i32_ty, llvm_ptr_ty, llvm_i64_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<3>>]>;
 def int_riscv_bosc_setvl : BOSCBoundIntrinsic<[llvm_i64_ty], [llvm_i64_ty]>;
 def int_riscv_bosc_load : BOSCBoundIntrinsic<[], [llvm_i32_ty, llvm_ptr_ty],
                                            [ImmArg<ArgIndex<0>>]>;

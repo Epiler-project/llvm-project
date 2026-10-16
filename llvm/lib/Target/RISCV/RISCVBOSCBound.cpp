@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "RISCVBOSCBound.h"
+#include "MCTargetDesc/RISCVBaseInfo.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCVBOSCAME.h"
 #include "RISCVInstrInfo.h"
@@ -180,13 +181,19 @@ bool isBOSCSFUIntrinsic(Intrinsic::ID ID) {
          ID == Intrinsic::riscv_bosc_sfu_rcp;
 }
 
+bool isScalarObservationIntrinsic(Intrinsic::ID ID) {
+  return ID == Intrinsic::readcyclecounter ||
+         ID == Intrinsic::riscv_bosc_read_mcycle;
+}
+
 bool isBoundIntrinsic(Intrinsic::ID ID) {
-  // The target cycle CSR is a scalar observation boundary. It does not create
-  // a VRF value or alter AME/DMA ownership, but test-owned timing witnesses
-  // need the same fenced mcycle instruction used by the runtime support.
-  if (ID == Intrinsic::readcyclecounter)
+  // Scalar counter observations neither create VRF values nor change
+  // AME/DMA ownership. The BOSC intrinsic selects its exact target timebase;
+  // the standard LLVM intrinsic retains its ordinary target semantics.
+  if (isScalarObservationIntrinsic(ID))
     return true;
   return ID == Intrinsic::riscv_bosc_setvl ||
+         ID == Intrinsic::riscv_bosc_read_bits ||
          ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_add ||
          ID == Intrinsic::riscv_bosc_store || isBOSCFPRVVIntrinsic(ID) ||
          ID == Intrinsic::riscv_bosc_merge ||
@@ -268,6 +275,13 @@ bool hasDMAIntrinsic(const Function &F) {
   });
 }
 
+bool hasBOSCObservationIntrinsic(const Function &F) {
+  return llvm::any_of(instructions(F), [](const Instruction &I) {
+    const auto *II = dyn_cast<IntrinsicInst>(&I);
+    return II && II->getIntrinsicID() == Intrinsic::riscv_bosc_read_mcycle;
+  });
+}
+
 unsigned physicalArgument(const IntrinsicInst &II, unsigned Index) {
   auto *CI = dyn_cast<ConstantInt>(II.getArgOperand(Index));
   if (isMaskOperand(II.getIntrinsicID(), Index)) {
@@ -296,11 +310,38 @@ LaneState transfer(const BasicBlock &BB, LaneState State, bool Verify,
     if (!II || !isBoundIntrinsic(II->getIntrinsicID()))
       continue;
     auto ID = II->getIntrinsicID();
-    // readcyclecounter is a scalar observation intrinsic used by test-owned
-    // timing witnesses.  It has no vector-register operands and must not
+    // Counter observations have no vector-register operands and do not
     // participate in the RVV lane/configuration dataflow below.
-    if (ID == Intrinsic::readcyclecounter)
+    if (isScalarObservationIntrinsic(ID))
       continue;
+    if (ID == Intrinsic::riscv_bosc_read_bits) {
+      if (Verify) {
+        auto *Width = dyn_cast<ConstantInt>(II->getArgOperand(3));
+        if (!Width ||
+            (Width->getZExtValue() != 8 && Width->getZExtValue() != 32 &&
+             Width->getZExtValue() != 64))
+          fail(*BB.getParent(), "bit observation width must be 8, 32, or 64");
+        if (State.Configurations.size() != 1)
+          fail(*BB.getParent(),
+               "bit observation requires one reaching vector configuration");
+        const void *Config = State.Configurations.begin()->first;
+        Value *Restore = II->getArgOperand(2);
+        if (Config && Config != Restore)
+          fail(*BB.getParent(),
+               "bit observation must restore the active setvl result");
+        if (!Config) {
+          auto *Zero = dyn_cast<ConstantInt>(Restore);
+          if (!Zero || !Zero->isZero())
+            fail(*BB.getParent(), "bit observation without a source "
+                                  "configuration must restore literal zero");
+        }
+      }
+      // The temporary configuration is private to this operation. Do not
+      // expose the scratch as an initialized business e32 vector: only one
+      // element was read, under a potentially different element width.
+      State.Initialized[physicalArgument(*II, 0)] = std::nullopt;
+      continue;
+    }
     if (ID == Intrinsic::riscv_bosc_setvl) {
       auto *AVL = dyn_cast<ConstantInt>(II->getArgOperand(0));
       State.configure(II, AVL ? exactLanes(AVL->getZExtValue(), Exact512)
@@ -357,6 +398,7 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
   bool Bound = isBOSCBoundFunction(F);
   bool RVV = F.hasFnAttribute("trex-bosc-bound-rvv");
   bool DMA = hasDMAIntrinsic(F);
+  bool Observation = hasBOSCObservationIntrinsic(F);
   for (Instruction &I : instructions(F)) {
     auto *Call = dyn_cast<CallBase>(&I);
     if (!Call)
@@ -368,12 +410,15 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
                  !isBOSCAMEIntrinsic(II->getIntrinsicID()) &&
                  !isDMAIntrinsic(II->getIntrinsicID()))))
       fail(F, "unknown BOSC intrinsic");
-    if (II && isBoundIntrinsic(II->getIntrinsicID()) && !RVV &&
+    if (II && II->getIntrinsicID() == Intrinsic::riscv_bosc_read_bits && !RVV)
+      fail(F, "bit observation requires trex-bosc-bound-rvv=1");
+    if (II && isBoundIntrinsic(II->getIntrinsicID()) &&
+        !isScalarObservationIntrinsic(II->getIntrinsicID()) && !RVV &&
         !F.hasFnAttribute("trex-bosc-bound-ame"))
       fail(F, "intrinsic requires trex-bosc-bound-rvv=1");
   }
   verifyBOSCAMEIR(F);
-  if (!Bound && !DMA)
+  if (!Bound && !DMA && !Observation)
     return;
   if (!Supported)
     fail(F, "requires the SelectionDAG legacy codegen pipeline");
@@ -411,6 +456,19 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
         II->getArgOperand(0)->getType()->isFloatTy() &&
         II->getArgOperand(1)->getType()->isFloatTy())
       continue;
+    // Codegen canonicalizes scalar address-guard comparisons/selects to
+    // integer min/max, including loop strength reduction's remaining extent.
+    // These native scalar widths lower to comparisons/branches or min/max
+    // instructions; they require neither a helper call nor VRF ownership.
+    if (II && (II->getIntrinsicID() == Intrinsic::umin ||
+               II->getIntrinsicID() == Intrinsic::umax ||
+               II->getIntrinsicID() == Intrinsic::smin ||
+               II->getIntrinsicID() == Intrinsic::smax) &&
+        (II->getType()->isIntegerTy(32) || II->getType()->isIntegerTy(64)) &&
+        II->arg_size() == 2 &&
+        II->getArgOperand(0)->getType() == II->getType() &&
+        II->getArgOperand(1)->getType() == II->getType())
+      continue;
     if (!II || (!isBoundIntrinsic(II->getIntrinsicID()) &&
                 !isBOSCAMEIntrinsic(II->getIntrinsicID()) &&
                 !isDMAIntrinsic(II->getIntrinsicID())))
@@ -421,7 +479,7 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
       continue;
     // The cycle counter is a scalar observation boundary.  It is admitted in
     // bound scope, but has no physical vector operands or lane effects.
-    if (II->getIntrinsicID() == Intrinsic::readcyclecounter)
+    if (isScalarObservationIntrinsic(II->getIntrinsicID()))
       continue;
     if (II->getIntrinsicID() != Intrinsic::riscv_bosc_setvl)
       for (unsigned I = 0; I != boundPhysicalOperands(II->getIntrinsicID());
@@ -480,7 +538,10 @@ public:
     auto &TM = getAnalysis<TargetPassConfig>().getTM<RISCVTargetMachine>();
     const auto &ST = TM.getSubtarget<RISCVSubtarget>(F);
     verifyIR(F, Supported, ST.hasVInstructions() && ST.getRealVLen() == 512);
-    if (isBOSCBoundFunction(F) || hasDMAIntrinsic(F)) {
+    if (isBOSCBoundFunction(F) || hasDMAIntrinsic(F) ||
+        hasBOSCObservationIntrinsic(F)) {
+      if (hasBOSCObservationIntrinsic(F) && !ST.is64Bit())
+        fail(F, "BOSC observation counter requires RV64");
       if (hasDMAIntrinsic(F) && !ST.is64Bit())
         fail(F, "patch7 DMA requires RV64");
       if (F.hasFnAttribute("trex-bosc-bound-rvv") &&
@@ -633,6 +694,10 @@ MachineState transferMachine(const MachineBasicBlock &MBB, MachineState State,
                            ? State.constant(MI.getOperand(2).getReg())
                            : std::nullopt;
     State.updateConstants(MI);
+    if (Opcode == RISCV::PseudoBOSCReadBitsBound) {
+      State.Initialized[MI.getOperand(1).getReg() - RISCV::V0] = std::nullopt;
+      continue;
+    }
     if (Opcode == RISCV::VSETVLI || Opcode == RISCV::VSETIVLI) {
       State.configure(&MI, Opcode == RISCV::VSETIVLI
                                ? exactLanes(MI.getOperand(1).getImm(), Exact512)
@@ -748,7 +813,7 @@ bool requiresIssueOrder(const MachineInstr &MI) {
       Opcode == RISCV::VSE32_V || Opcode == RISCV::VFMACC_VV ||
       Opcode == RISCV::VFMV_V_F || Opcode == RISCV::VFMV_F_S ||
       Opcode == RISCV::VFREDOSUM_VS || Opcode == RISCV::VFREDMAX_VS ||
-      Opcode == RISCV::VRGATHER_VX)
+      Opcode == RISCV::VRGATHER_VX || Opcode == RISCV::PseudoBOSCReadBitsBound)
     return true;
   switch (Opcode) {
   case RISCV::FENCE:
@@ -794,6 +859,80 @@ void verifyIssueOrder(const MachineInstr &MI) {
     fail(MF.getFunction(),
          "BOSC issue state on ordinary scalar instruction is forbidden");
   }
+}
+
+void verifyReadBits(const MachineInstr &MI) {
+  const auto &MF = *MI.getMF();
+  const auto &F = MF.getFunction();
+  const auto &MRI = MF.getRegInfo();
+  const auto &TRI = *MF.getSubtarget().getRegisterInfo();
+  if (!F.hasFnAttribute("trex-bosc-bound-rvv"))
+    fail(F, "bit observation requires bound RVV scope");
+  if (MI.getNumExplicitOperands() != 5)
+    fail(F, "bit observation has invalid operand count");
+  const MachineOperand &WidthOperand = MI.getOperand(4);
+  if (!WidthOperand.isImm() ||
+      (WidthOperand.getImm() != 8 && WidthOperand.getImm() != 32 &&
+       WidthOperand.getImm() != 64))
+    fail(F, "bit observation width must be 8, 32, or 64");
+  unsigned WidthBytes = WidthOperand.getImm() / 8;
+  for (unsigned I = 0; I != 4; ++I) {
+    const MachineOperand &MO = MI.getOperand(I);
+    if (!MO.isReg() || !MO.getReg() || MO.getSubReg() || MO.isImplicit() ||
+        MO.isUndef() || MO.isDef() != (I < 2))
+      fail(F, "bit observation has invalid register operand");
+    Register Reg = MO.getReg();
+    if (I == 1) {
+      if (Reg.isVirtual() || !RISCV::VRRegClass.contains(Reg) ||
+          Reg == RISCV::V0 || MO.isRenamable())
+        fail(F, "bit observation requires a bound physical scratch v1..v31");
+      continue;
+    }
+    if (Reg.isVirtual()
+            ? !RISCV::GPRRegClass.hasSubClassEq(MRI.getRegClass(Reg))
+            : !RISCV::GPRRegClass.contains(Reg))
+      fail(F, "bit observation scalar operand requires a GPR");
+    if (I == 0 && !MO.isEarlyClobber())
+      fail(F, "bit observation requires nonzero early-clobber scalar outputs");
+    if ((I == 0 || I == 3) && Reg.isPhysical() && Reg == RISCV::X0)
+      fail(F, "bit observation result and restore VL require nonzero GPRs");
+    if ((I == 0 || I == 3) && Reg.isVirtual() &&
+        !RISCV::GPRNoX0RegClass.hasSubClassEq(MRI.getRegClass(Reg)))
+      fail(F, "bit observation result and restore VL require nonzero GPRs");
+    if (I != 0)
+      continue;
+    for (unsigned J = 2; J != 4; ++J) {
+      if (!MI.getOperand(J).isReg())
+        continue;
+      Register Other = MI.getOperand(J).getReg();
+      if (Reg == Other || (Reg.isPhysical() && Other.isPhysical() &&
+                           TRI.regsOverlap(Reg, Other)))
+        fail(F, "bit observation scalar temporaries overlap");
+    }
+  }
+  unsigned UsesVL = 0, DefsVL = 0, UsesVType = 0, DefsVType = 0;
+  for (const MachineOperand &MO : MI.implicit_operands()) {
+    if (!MO.isReg() || !MO.getReg() || MO.getSubReg() || MO.isRenamable() ||
+        MO.isUndef() || MO.isEarlyClobber() || MO.isInternalRead())
+      fail(F, "bit observation has invalid implicit operand");
+    if (MO.getReg() == RISCV::VL)
+      (MO.isDef() ? DefsVL : UsesVL)++;
+    else if (MO.getReg() == RISCV::VTYPE)
+      (MO.isDef() ? DefsVType : UsesVType)++;
+    else if (MO.getReg() != RISCV::BOSC_ISSUE)
+      fail(F, "bit observation has unexpected implicit register");
+  }
+  if (UsesVL != 1 || DefsVL != 1 || UsesVType != 1 || DefsVType != 1)
+    fail(F, "bit observation requires VL/VTYPE use/def");
+  if (MI.memoperands().size() != 1)
+    fail(F, "bit observation requires one exact naturally aligned volatile "
+            "load matching its width");
+  const MachineMemOperand &MMO = **MI.memoperands_begin();
+  if (!MMO.isLoad() || MMO.isStore() || !MMO.isVolatile() || MMO.isAtomic() ||
+      MMO.getSize() != LocationSize::precise(WidthBytes) ||
+      MMO.getAlign() != Align(WidthBytes))
+    fail(F, "bit observation requires one exact naturally aligned volatile "
+            "load matching its width");
 }
 
 class RISCVBOSCIssueIngress final : public MachineFunctionPass {
@@ -859,6 +998,10 @@ public:
           fail(MF.getFunction(), "machine call or inline assembly escapes "
                                  "bound scope");
         unsigned Opcode = MI.getOpcode();
+        if (Opcode == RISCV::PseudoBOSCReadBitsBound) {
+          verifyReadBits(MI);
+          continue;
+        }
         bool Accumulate = Opcode == RISCV::VFMACC_VV;
         bool Compare = isCompareOpcode(Opcode);
         bool Merge = Opcode == RISCV::VMERGE_VVM;
@@ -994,13 +1137,27 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
   if (Op.getNumOperands() <= 1)
     return SDValue();
   auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
-  // readcyclecounter is a scalar observation intrinsic.  It shares the
-  // bound ingress but is not a BOSC AME operation; avoid sending it through
-  // the AME helper, whose ABI expects AME slot operands.
-  if (ID != Intrinsic::readcyclecounter) {
-    if (SDValue AME = lowerBOSCAMEIntrinsic(Op, DAG, ST))
-      return AME;
+  if (ID == Intrinsic::riscv_bosc_read_mcycle) {
+    if (!ST.is64Bit())
+      fail(DAG.getMachineFunction().getFunction(),
+           "BOSC observation counter requires RV64");
+    // Preserve the intrinsic's chain through the side-effecting CSR read.
+    // Bound machine ingress already orders CSRRS with accelerator issues;
+    // no helper, physical vector operand, or hardware fence is introduced.
+    SDLoc DL(Op);
+    SDValue Operands[] = {
+        DAG.getTargetConstant(RISCVSysReg::mcycle, DL, MVT::i64),
+        DAG.getRegister(RISCV::X0, MVT::i64), Op.getOperand(0)};
+    return SDValue(DAG.getMachineNode(RISCV::CSRRS, DL,
+                                      DAG.getVTList(MVT::i64, MVT::Other),
+                                      Operands),
+                   0);
   }
+  // The generic intrinsic keeps the standard RISC-V CYCLE lowering.
+  if (ID == Intrinsic::readcyclecounter)
+    return SDValue();
+  if (SDValue AME = lowerBOSCAMEIntrinsic(Op, DAG, ST))
+    return AME;
   if (isDMAIntrinsic(ID)) {
     if (!ST.is64Bit())
       fail(DAG.getMachineFunction().getFunction(), "patch7 DMA requires RV64");
@@ -1039,7 +1196,8 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
     Args.push_back(AVL);
   } else {
     Opcode =
-        ID == Intrinsic::riscv_bosc_load          ? RISCV::PseudoBOSCLoad
+        ID == Intrinsic::riscv_bosc_read_bits     ? RISCV::PseudoBOSCReadBits
+        : ID == Intrinsic::riscv_bosc_load        ? RISCV::PseudoBOSCLoad
         : ID == Intrinsic::riscv_bosc_add         ? RISCV::PseudoBOSCAdd
         : ID == Intrinsic::riscv_bosc_fadd        ? RISCV::PseudoBOSCFAdd
         : ID == Intrinsic::riscv_bosc_fsub        ? RISCV::PseudoBOSCFSub
@@ -1073,7 +1231,8 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
         fail(F, "physical operand lost its binding");
       Args.push_back(DAG.getTargetConstant(CI->getZExtValue(), DL, MVT::i32));
     }
-    if (ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_store ||
+    if (ID == Intrinsic::riscv_bosc_read_bits ||
+        ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_store ||
         ID == Intrinsic::riscv_bosc_fsplat)
       Args.push_back(Op.getOperand(3));
     else if (ID == Intrinsic::riscv_bosc_iadd_scalar)
@@ -1089,20 +1248,45 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
     else if (ID == Intrinsic::riscv_bosc_shl)
       Args.push_back(
           DAG.getTargetConstant(Op.getConstantOperandVal(4), DL, MVT::i32));
+    if (ID == Intrinsic::riscv_bosc_read_bits) {
+      SDValue Restore = Op.getOperand(4);
+      // Even a zero VL must occupy a nonzero register: rs1=x0 would request
+      // VSETVLI's special AVL semantics instead of restoring the value zero.
+      if (auto *CI = dyn_cast<ConstantSDNode>(Restore))
+        Restore = SDValue(
+            DAG.getMachineNode(
+                RISCV::ADDI, DL, MVT::i64, DAG.getRegister(RISCV::X0, MVT::i64),
+                DAG.getTargetConstant(CI->getZExtValue(), DL, MVT::i64)),
+            0);
+      Args.push_back(Restore);
+      auto *Width = dyn_cast<ConstantSDNode>(Op.getOperand(5));
+      if (!Width ||
+          (Width->getZExtValue() != 8 && Width->getZExtValue() != 32 &&
+           Width->getZExtValue() != 64))
+        fail(F, "bit observation width must be 8, 32, or 64");
+      Args.push_back(
+          DAG.getTargetConstant(Width->getZExtValue(), DL, MVT::i32));
+    }
   }
   Args.push_back(Op.getOperand(0));
-  auto VTs = ID == Intrinsic::riscv_bosc_setvl
-                 ? DAG.getVTList(MVT::i64, MVT::Other)
-             : ID == Intrinsic::riscv_bosc_fextract
-                 ? DAG.getVTList(MVT::f32, MVT::Other)
-                 : DAG.getVTList(MVT::Other);
+  auto VTs =
+      ID == Intrinsic::riscv_bosc_setvl || ID == Intrinsic::riscv_bosc_read_bits
+          ? DAG.getVTList(MVT::i64, MVT::Other)
+      : ID == Intrinsic::riscv_bosc_fextract
+          ? DAG.getVTList(MVT::f32, MVT::Other)
+          : DAG.getVTList(MVT::Other);
   auto *Node = DAG.getMachineNode(Opcode, DL, VTs, Args);
-  if (ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_store) {
-    auto Flags = ID == Intrinsic::riscv_bosc_load ? MachineMemOperand::MOLoad
-                                                  : MachineMemOperand::MOStore;
+  if (ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_store ||
+      ID == Intrinsic::riscv_bosc_read_bits) {
+    bool Observation = ID == Intrinsic::riscv_bosc_read_bits;
+    unsigned WidthBytes = Observation ? Op.getConstantOperandVal(5) / 8 : 4;
+    auto Flags = ID == Intrinsic::riscv_bosc_store ? MachineMemOperand::MOStore
+                                                   : MachineMemOperand::MOLoad;
     auto *MMO = DAG.getMachineFunction().getMachineMemOperand(
         MachinePointerInfo(), Flags | MachineMemOperand::MOVolatile,
-        LocationSize::beforeOrAfterPointer(), Align(4));
+        Observation ? LocationSize::precise(WidthBytes)
+                    : LocationSize::beforeOrAfterPointer(),
+        Align(WidthBytes));
     DAG.setNodeMemRefs(Node, {MMO});
   }
   return SDValue(Node, 0);
@@ -1180,6 +1364,19 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
     return AME;
   if (auto *DMA = emitDMAInstruction(MI, MBB, ST))
     return DMA;
+  if (MI.getOpcode() == RISCV::PseudoBOSCReadBits) {
+    BuildMI(*MBB, MI, MI.getDebugLoc(),
+            ST.getInstrInfo()->get(RISCV::PseudoBOSCReadBitsBound))
+        .addReg(MI.getOperand(0).getReg(),
+                RegState::Define | RegState::EarlyClobber)
+        .addReg(RISCV::V0 + MI.getOperand(1).getImm(), RegState::Define)
+        .add(MI.getOperand(2))
+        .add(MI.getOperand(3))
+        .add(MI.getOperand(4))
+        .cloneMemRefs(MI);
+    MI.eraseFromParent();
+    return MBB;
+  }
   unsigned Native;
   switch (MI.getOpcode()) {
   default:
