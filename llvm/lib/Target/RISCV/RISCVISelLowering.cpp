@@ -440,7 +440,8 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
 
   // Also custom-lower when the feature is absent, to diagnose use of the
   // formal Tensix intrinsics instead of silently emitting an external call.
-  setOperationAction(ISD::INTRINSIC_VOID, {MVT::Other, MVT::i16}, Custom);
+  setOperationAction(ISD::INTRINSIC_VOID, {MVT::Other, MVT::i1, MVT::i16},
+                     Custom);
   if (Subtarget.hasVendorXTTTensixBH() || Subtarget.hasVendorXBOSCAME())
     // Intrinsic operation legalization is queried with MVT::Other, even
     // when the intrinsic returns the legal SFPU vector carrier.

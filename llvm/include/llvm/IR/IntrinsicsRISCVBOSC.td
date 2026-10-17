@@ -110,4 +110,14 @@ def int_riscv_bosc_ame_store_c : BOSCBoundIntrinsic<[],
 def int_riscv_bosc_ame_mma : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+// A boolean chooses one of two explicitly bound B registers. Keep the choice
+// typed through IR and machine verification; MC emission expands one selected
+// operation to two legal immediate-register alternatives, never a source loop.
+def int_riscv_bosc_ame_load_b_select : BOSCBoundIntrinsic<[],
+    [llvm_i1_ty, llvm_i32_ty, llvm_i32_ty, llvm_ptr_ty, llvm_i64_ty],
+    [ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+def int_riscv_bosc_ame_mma_b_select : BOSCBoundIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty, llvm_i1_ty, llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<3>>,
+     ImmArg<ArgIndex<4>>]>;
 }

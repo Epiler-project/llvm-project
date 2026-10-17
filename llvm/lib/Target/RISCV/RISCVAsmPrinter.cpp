@@ -415,6 +415,44 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
 
   emitNTLHint(MI);
 
+  if (MI->getOpcode() == RISCV::PseudoBOSCAMELoadBSelectBound ||
+      MI->getOpcode() == RISCV::PseudoBOSCAMEMMABSelectBound) {
+    bool Load = MI->getOpcode() == RISCV::PseudoBOSCAMELoadBSelectBound;
+    auto *FalseLabel = OutContext.createTempSymbol("bosc_stage0");
+    auto *DoneLabel = OutContext.createTempSymbol("bosc_stage_done");
+    auto Emit = [&](const MCInst &Inst) { EmitToStreamer(*OutStreamer, Inst); };
+    auto Label = [&](MCSymbol *Symbol) {
+      return MCSymbolRefExpr::create(Symbol, OutContext);
+    };
+    Emit(MCInstBuilder(RISCV::BEQ)
+             .addReg(MI->getOperand(Load ? 0 : 2).getReg())
+             .addReg(RISCV::X0)
+             .addExpr(Label(FalseLabel)));
+    auto Alternative = [&](bool True) {
+      unsigned B = RISCV::BOSC_TR0 +
+                   MI->getOperand((Load ? 1 : 3) + unsigned(True)).getImm();
+      if (Load)
+        Emit(MCInstBuilder(RISCV::BOSC_AME_LOADB)
+                 .addReg(B)
+                 .addReg(MI->getOperand(3).getReg())
+                 .addReg(MI->getOperand(4).getReg()));
+      else {
+        unsigned Acc = RISCV::BOSC_ACC0 + MI->getOperand(0).getImm();
+        Emit(MCInstBuilder(RISCV::BOSC_AME_MMA)
+                 .addReg(Acc)
+                 .addReg(Acc)
+                 .addReg(RISCV::BOSC_TR0 + MI->getOperand(1).getImm())
+                 .addReg(B));
+      }
+    };
+    Alternative(true);
+    Emit(MCInstBuilder(RISCV::JAL).addReg(RISCV::X0).addExpr(Label(DoneLabel)));
+    OutStreamer->emitLabel(FalseLabel);
+    Alternative(false);
+    OutStreamer->emitLabel(DoneLabel);
+    return;
+  }
+
   // Do any auto-generated pseudo lowerings.
   if (MCInst OutInst; lowerPseudoInstExpansion(MI, OutInst)) {
     EmitToStreamer(*OutStreamer, OutInst);

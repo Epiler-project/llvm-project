@@ -1,0 +1,21 @@
+# RUN: not llc -mtriple=riscv64 -mattr=+xboscame -run-pass=riscv-bosc-bound-verify %s -o /dev/null 2>&1 | FileCheck %s
+# CHECK: machine selected MMA requires initialized C/A and the same live B selector
+# A matrix load does not authorize a later use with a different scalar value
+# merely because register allocation happened to reuse the same GPR number.
+--- |
+  define void @clobber() "trex-bosc-bound-ame"="1" { ret void }
+...
+---
+name: clobber
+body: |
+  bb.0:
+    $x5 = BOSC_AME_SETM $x10, implicit-def $bosc_m
+    $x5 = BOSC_AME_SETN $x10, implicit-def $bosc_n
+    $x5 = BOSC_AME_SETK $x10, implicit-def $bosc_k
+    $bosc_acc0 = BOSC_AME_LOADC $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k
+    $bosc_tr0 = BOSC_AME_LOADA $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k
+    PseudoBOSCAMELoadBSelectBound $x12, 1, 2, $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit-def $bosc_tr1, implicit-def $bosc_tr2
+    $x12 = XORI $x12, 1
+    PseudoBOSCAMEMMABSelectBound 0, 0, $x12, 1, 2, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_tr1, implicit $bosc_tr2, implicit $bosc_acc0, implicit-def $bosc_acc0, implicit $bosc_tr0
+    PseudoRET
+...

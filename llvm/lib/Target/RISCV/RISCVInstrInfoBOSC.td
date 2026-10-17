@@ -166,6 +166,26 @@ def PseudoBOSCAMEStoreC : BOSCAMEPseudo<(outs),
 def PseudoBOSCAMEMMA : BOSCAMEPseudo<(outs),
     (ins uimm3:$acc, uimm5:$lhs, uimm5:$rhs)>;
 
+// These two selection pseudos survive to MC emission. Explicit physical
+// alternatives are conservative dependencies; only the selected register is
+// changed/read at execution. No virtual matrix register or spill is created.
+let Uses = [BOSC_M, BOSC_N, BOSC_K], Size = 16 in {
+def PseudoBOSCAMELoadBSelect : BOSCAMEPseudo<(outs),
+    (ins GPR:$selector, uimm5:$b0, uimm5:$b1, GPR:$base, GPR:$stride)> {
+  let mayLoad = 1;
+}
+def PseudoBOSCAMEMMABSelect : BOSCAMEPseudo<(outs),
+    (ins uimm3:$acc, uimm5:$lhs, GPR:$selector, uimm5:$b0, uimm5:$b1)>;
+let usesCustomInserter = 0 in {
+def PseudoBOSCAMELoadBSelectBound : BOSCAMEPseudo<(outs),
+    (ins GPR:$selector, uimm5:$b0, uimm5:$b1, GPR:$base, GPR:$stride)> {
+  let mayLoad = 1;
+}
+def PseudoBOSCAMEMMABSelectBound : BOSCAMEPseudo<(outs),
+    (ins uimm3:$acc, uimm5:$lhs, GPR:$selector, uimm5:$b0, uimm5:$b1)>;
+}
+}
+
 let Predicates = [HasVendorXBOSCAME], isNotDuplicable = 1,
     isConvergent = 1, hasNoSchedulingInfo = 1 in {
 class BOSCAMEConfig<bits<3> F3, string Name>
