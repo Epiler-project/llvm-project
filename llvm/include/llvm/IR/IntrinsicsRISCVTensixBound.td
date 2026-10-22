@@ -62,8 +62,16 @@ def int_riscv_tt_bound_sfplut : TensixBoundIntrinsic<7>;
 def int_riscv_tt_bound_sfpswap : TensixBoundIntrinsic<5>;
 def int_riscv_tt_bound_sfptransp : TensixBoundIntrinsic<12>;
 def int_riscv_tt_bound_sfpsetcc : TensixBoundIntrinsic<3>;
+// Blackhole sign-magnitude total-order comparisons. Both register arguments
+// are read-only; the received SET_CC-only form never writes VD or the stack.
+def int_riscv_tt_bound_sfpgt : TensixBoundIntrinsic<3>;
+def int_riscv_tt_bound_sfple : TensixBoundIntrinsic<3>;
 def int_riscv_tt_bound_sfpencc : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfppushc : TensixBoundIntrinsic<2>;
+// SFPPOPC mode 0 pops, mode 1 peeks, and Blackhole modes 3/4 combine the
+// current predicate with the saved top while preserving stack depth. The bound
+// ingress keeps the mode as a typed immediate; native selection chooses the
+// corresponding fixed descriptor.
 def int_riscv_tt_bound_sfppopc : TensixBoundIntrinsic<2>;
 def int_riscv_tt_bound_sfpconfig_creg : TensixBoundIntrinsic<4>;
 // Authored LReg0 data, even-bit column mask, and mode 8. VD is fixed to 15;

@@ -11,6 +11,65 @@ using namespace llvm;
 using namespace llvm::RISCV;
 
 namespace {
+TEST(RISCVTensixTransfer, TransposeHasReceivedRegisterPermutation) {
+  for (auto Kind : {TensixBoundValueKind::Constant,
+                    TensixBoundValueKind::UnboundRegister}) {
+    SCOPED_TRACE(static_cast<unsigned>(Kind));
+    SmallVector<TensixBoundValue, 12> Args;
+    for (unsigned I = 0; I != 12; ++I)
+      Args.push_back({Kind, I < 8 ? I : I - 8});
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfptransp, Args);
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    auto Transfers = Contract->getTransferFacts();
+    ASSERT_EQ(Transfers.size(), 4u);
+    for (unsigned Destination = 0; Destination != Transfers.size();
+         ++Destination) {
+      SCOPED_TRACE(Destination);
+      const auto &Facts = Transfers[Destination];
+      EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::RegisterPermutation);
+      EXPECT_EQ(Facts.DestinationArgument, Destination);
+      EXPECT_FALSE(Facts.SourceArgument);
+      EXPECT_EQ(Facts.OldArgument, 8 + Destination);
+      EXPECT_EQ(Facts.DemandedOldBits, 0u);
+      EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
+      EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
+      EXPECT_TRUE(Facts.RequiresLaneEnable);
+      EXPECT_TRUE(Facts.PreservesInactiveLanes);
+      EXPECT_TRUE(Facts.RequiresConditionState);
+      EXPECT_TRUE(Facts.RequiresRowMaskState);
+      EXPECT_TRUE(Facts.SourceLanes.empty());
+      ASSERT_EQ(Facts.Inputs.size(), 4u);
+      for (unsigned Source = 0; Source != 4; ++Source) {
+        EXPECT_EQ(Facts.Inputs[Source].Argument, 8 + Source);
+        EXPECT_EQ(Facts.Inputs[Source].DemandedBits, 0xffffffffu);
+      }
+      ASSERT_EQ(Facts.LaneSources.size(), 32u);
+      for (unsigned Lane = 0; Lane != 32; ++Lane) {
+        SCOPED_TRACE(Lane);
+        EXPECT_EQ(Facts.LaneSources[Lane].Argument, 8 + Lane / 8);
+        EXPECT_EQ(Facts.LaneSources[Lane].Lane, Destination * 8 + Lane % 8);
+      }
+    }
+  }
+}
+
+TEST(RISCVTensixTransfer, TransposeRejectsEveryWrongFixedGroupArgument) {
+  SmallVector<TensixBoundValue, 12> Args;
+  for (unsigned I = 0; I != 12; ++I)
+    Args.push_back({TensixBoundValueKind::Constant, I < 8 ? I : I - 8});
+  for (unsigned I = 0; I != Args.size(); ++I) {
+    SCOPED_TRACE(I);
+    auto Wrong = Args;
+    Wrong[I].Constant = (Wrong[I].Constant + 1) % 8;
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfptransp, Wrong);
+    ASSERT_FALSE(bool(Contract));
+    EXPECT_NE(toString(Contract.takeError()).find("fixed register group"),
+              std::string::npos);
+  }
+}
+
 TEST(RISCVTensixTransfer, RotateKeepsMaskedBitPreservingTransfer) {
   auto Contract =
       getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfpshft2,
@@ -20,8 +79,13 @@ TEST(RISCVTensixTransfer, RotateKeepsMaskedBitPreservingTransfer) {
                                   {TensixBoundValueKind::Constant, 0},
                                   {TensixBoundValueKind::Constant, 3}});
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  const auto &Facts = Contract->getTransferFacts();
+  ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+  const auto &Facts = Contract->getTransferFacts().front();
   EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LanePermutation);
+  EXPECT_EQ(Facts.DestinationArgument, 0u);
+  EXPECT_EQ(Facts.SourceArgument, 2u);
+  EXPECT_EQ(Facts.OldArgument, 1u);
+  EXPECT_TRUE(Facts.LaneSources.empty());
   EXPECT_EQ(Facts.SourceLanes, (SmallVector<uint32_t, 0>{
                                    7,  0,  1,  2,  3,  4,  5,  6,  15, 8,  9,
                                    10, 11, 12, 13, 14, 23, 16, 17, 18, 19, 20,
@@ -45,9 +109,7 @@ TEST(RISCVTensixTransfer, ShiftModeRemainsLegalWithoutPermutationSummary) {
                                   {TensixBoundValueKind::Constant, 0},
                                   {TensixBoundValueKind::Constant, 4}});
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  EXPECT_EQ(Contract->getTransferFacts().Kind,
-            TensixSFPUTransferKind::Unsupported);
-  EXPECT_TRUE(Contract->getTransferFacts().SourceLanes.empty());
+  EXPECT_TRUE(Contract->getTransferFacts().empty());
 }
 
 class RISCVTensixFloatBinaryTransferTest
@@ -70,8 +132,13 @@ TEST_P(RISCVTensixFloatBinaryTransferTest,
        ActiveLanesDemandBothArithmeticInputsAndPreserveInactiveOld) {
   auto Contract = contract();
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  const auto &Facts = Contract->getTransferFacts();
+  ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+  const auto &Facts = Contract->getTransferFacts().front();
   EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LaneWise);
+  EXPECT_EQ(Facts.DestinationArgument, 0u);
+  EXPECT_EQ(Facts.OldArgument, 1u);
+  EXPECT_FALSE(Facts.SourceArgument);
+  EXPECT_TRUE(Facts.LaneSources.empty());
   EXPECT_EQ(Facts.DemandedOldBits, 0u);
   EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
   EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
@@ -122,8 +189,12 @@ TEST(RISCVTensixTransfer,
                                          {TensixBoundValueKind::Constant, 1},
                                          {TensixBoundValueKind::Constant, 1}});
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  const auto &Facts = Contract->getTransferFacts();
+  ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+  const auto &Facts = Contract->getTransferFacts().front();
   EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LaneWise);
+  EXPECT_EQ(Facts.DestinationArgument, 0u);
+  EXPECT_EQ(Facts.OldArgument, 1u);
+  EXPECT_FALSE(Facts.SourceArgument);
   ASSERT_EQ(Facts.Inputs.size(), 1u);
   EXPECT_EQ(Facts.Inputs[0].Argument, 2u);
   EXPECT_EQ(Facts.Inputs[0].DemandedBits, 0xffffffffu);
@@ -156,8 +227,12 @@ protected:
 TEST_P(RISCVTensixBitwiseTransferTest, DemandsEachActualNumericalInput) {
   auto Contract = getTensixBoundSFPUContract(GetParam(), arguments());
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  const auto &Facts = Contract->getTransferFacts();
+  ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+  const auto &Facts = Contract->getTransferFacts().front();
   EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LaneWise);
+  EXPECT_EQ(Facts.DestinationArgument, 0u);
+  EXPECT_EQ(Facts.OldArgument, 1u);
+  EXPECT_FALSE(Facts.SourceArgument);
   EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
   EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
   // Active-lane old bits are consumed numerically, not copied to the result.
@@ -260,8 +335,12 @@ TEST_P(RISCVTensixApproxRecipTransferTest,
     auto Contract = getTensixBoundSFPUContract(
         Intrinsic::riscv_tt_bound_sfparecip, arguments(Unbound));
     ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-    const auto &Facts = Contract->getTransferFacts();
+    ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+  const auto &Facts = Contract->getTransferFacts().front();
     EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LaneWise);
+    EXPECT_EQ(Facts.DestinationArgument, 0u);
+    EXPECT_EQ(Facts.OldArgument, 1u);
+    EXPECT_FALSE(Facts.SourceArgument);
     EXPECT_EQ(Facts.DemandedOldBits, 0u);
     EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
     EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
@@ -270,14 +349,12 @@ TEST_P(RISCVTensixApproxRecipTransferTest,
     EXPECT_TRUE(Facts.RequiresConditionState);
     EXPECT_TRUE(Facts.RequiresRowMaskState);
     ASSERT_EQ(Facts.Inputs.size(), GetParam() == 1 ? 2u : 1u);
-    const auto Input = find_if(Facts.Inputs, [](const auto &I) {
-      return I.Argument == 2;
-    });
+    const auto Input =
+        find_if(Facts.Inputs, [](const auto &I) { return I.Argument == 2; });
     ASSERT_NE(Input, Facts.Inputs.end());
     EXPECT_EQ(Input->DemandedBits, 0xffffffffu);
-    const auto Old = find_if(Facts.Inputs, [](const auto &I) {
-      return I.Argument == 1;
-    });
+    const auto Old =
+        find_if(Facts.Inputs, [](const auto &I) { return I.Argument == 1; });
     if (GetParam() == 1) {
       ASSERT_NE(Old, Facts.Inputs.end());
       EXPECT_EQ(Old->DemandedBits, 0x80000000u);
@@ -292,11 +369,13 @@ TEST_P(RISCVTensixApproxRecipTransferTest,
   auto Contract = getTensixBoundSFPUContract(
       Intrinsic::riscv_tt_bound_sfparecip, arguments());
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  EXPECT_TRUE(std::holds_alternative<std::monostate>(Contract->getLaneControl()));
+  EXPECT_TRUE(
+      std::holds_alternative<std::monostate>(Contract->getLaneControl()));
   unsigned Conditions = 0, Configurations = 0, Issues = 0;
   unsigned Registers = 0;
   for (const auto &Effect : Contract->getArchitecturalEffects()) {
-    EXPECT_FALSE(std::holds_alternative<TensixFixedRegisterRef>(Effect.Resource));
+    EXPECT_FALSE(
+        std::holds_alternative<TensixFixedRegisterRef>(Effect.Resource));
     if (const auto *Register =
             std::get_if<TensixBoundArgumentRef>(&Effect.Resource)) {
       ++Registers;

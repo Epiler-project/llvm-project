@@ -1,0 +1,91 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-selection,riscv-tensix-bound-verify %t/automatic.mir -o - | FileCheck %s --check-prefix=AUTOMATIC
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-explicit-replay %t/gt-record.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXPLICIT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-explicit-replay %t/le-record.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXPLICIT
+#
+# Condition updates are not neutral arithmetic. Repeated compares must remain
+# actual issues, and explicit recording stays rejected until its state receiver
+# is extended; recognizing a native encoding must not silently enable replay.
+# AUTOMATIC-LABEL: name: compare_no_automatic_replay
+# AUTOMATIC-NOT: PseudoTTSFPUReplay
+# AUTOMATIC-COUNT-12: TTSFPGT
+# AUTOMATIC-NOT: PseudoTTSFPUReplay
+# AUTOMATIC-COUNT-12: TTSFPLE
+# AUTOMATIC-NOT: PseudoTTSFPUReplay
+# AUTOMATIC: PseudoRET
+# EXPLICIT: explicit SFPU replay word is not a supported direct native issue
+
+#--- automatic.mir
+--- |
+  define void @compare_no_automatic_replay() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: compare_no_automatic_replay
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPGT $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l2, $tt_l3, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l6, $tt_l7, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l1, $tt_l2, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l3, $tt_l4, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l2, $tt_l3, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l6, $tt_l7, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l1, $tt_l2, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPGT $tt_l3, $tt_l4, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l2, $tt_l3, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l6, $tt_l7, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l1, $tt_l2, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l3, $tt_l4, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l2, $tt_l3, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l6, $tt_l7, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l1, $tt_l2, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPLE $tt_l3, $tt_l4, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- gt-record.mir
+--- |
+  define void @gt_record() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: gt_record
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPGT $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- le-record.mir
+--- |
+  define void @le_record() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: le_record
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 0, 1, 4, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPLE $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

@@ -133,6 +133,10 @@ def PseudoTTBoundSFPTRANSP : TensixBoundPseudo<
          uimm3:$in0, uimm3:$in1, uimm3:$in2, uimm3:$in3)>;
 def PseudoTTBoundSFPSETCC : TensixBoundPseudo<
     (ins uimm4:$src, uimm16:$immediate, uimm4:$mode)>;
+class TensixBoundCompare : TensixBoundPseudo<
+    (ins uimm3:$lhs, uimm4:$rhs, uimm4:$mode)>;
+def PseudoTTBoundSFPGT : TensixBoundCompare;
+def PseudoTTBoundSFPLE : TensixBoundCompare;
 class TensixBoundCondition : TensixBoundPseudo<
     (ins uimm16:$immediate, uimm4:$mode)>;
 def PseudoTTBoundSFPENCC : TensixBoundCondition;

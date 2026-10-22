@@ -195,6 +195,8 @@ bool isBoundIntrinsic(Intrinsic::ID ID) {
   return ID == Intrinsic::riscv_bosc_setvl ||
          ID == Intrinsic::riscv_bosc_read_bits ||
          ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_add ||
+         ID == Intrinsic::riscv_bosc_maximum ||
+         ID == Intrinsic::riscv_bosc_isplat ||
          ID == Intrinsic::riscv_bosc_store || isBOSCFPRVVIntrinsic(ID) ||
          ID == Intrinsic::riscv_bosc_merge ||
          ID == Intrinsic::riscv_bosc_iadd_scalar ||
@@ -231,6 +233,7 @@ bool isMaskOperand(Intrinsic::ID ID, unsigned Index) {
 
 bool isBoundBinaryIntrinsic(Intrinsic::ID ID) {
   return ID == Intrinsic::riscv_bosc_add || ID == Intrinsic::riscv_bosc_fadd ||
+         ID == Intrinsic::riscv_bosc_maximum ||
          ID == Intrinsic::riscv_bosc_fsub || ID == Intrinsic::riscv_bosc_fmul ||
          ID == Intrinsic::riscv_bosc_fdiv || ID == Intrinsic::riscv_bosc_fmax ||
          ID == Intrinsic::riscv_bosc_fmacc ||
@@ -460,10 +463,11 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
     // integer min/max, including loop strength reduction's remaining extent.
     // These native scalar widths lower to comparisons/branches or min/max
     // instructions; they require neither a helper call nor VRF ownership.
-    if (II && (II->getIntrinsicID() == Intrinsic::umin ||
-               II->getIntrinsicID() == Intrinsic::umax ||
-               II->getIntrinsicID() == Intrinsic::smin ||
-               II->getIntrinsicID() == Intrinsic::smax) &&
+    if (II &&
+        (II->getIntrinsicID() == Intrinsic::umin ||
+         II->getIntrinsicID() == Intrinsic::umax ||
+         II->getIntrinsicID() == Intrinsic::smin ||
+         II->getIntrinsicID() == Intrinsic::smax) &&
         (II->getType()->isIntegerTy(32) || II->getType()->isIntegerTy(64)) &&
         II->arg_size() == 2 &&
         II->getArgOperand(0)->getType() == II->getType() &&
@@ -605,9 +609,9 @@ bool isUnaryOpcode(unsigned Opcode) {
          Opcode == RISCV::VSLL_VI || isSFUOpcode(Opcode);
 }
 bool isBinaryOpcode(unsigned Opcode) {
-  return Opcode == RISCV::VADD_VV || isRoundedBinaryOpcode(Opcode) ||
-         Opcode == RISCV::VFMAX_VV || isCompareOpcode(Opcode) ||
-         Opcode == RISCV::VMERGE_VVM;
+  return Opcode == RISCV::VADD_VV || Opcode == RISCV::VMAX_VV ||
+         isRoundedBinaryOpcode(Opcode) || Opcode == RISCV::VFMAX_VV ||
+         isCompareOpcode(Opcode) || Opcode == RISCV::VMERGE_VVM;
 }
 
 // Keep the scalar index independently checkable after ordinary GPR allocation.
@@ -710,7 +714,7 @@ MachineState transferMachine(const MachineBasicBlock &MBB, MachineState State,
     bool Gather = Opcode == RISCV::VRGATHER_VX;
     bool Accumulate = Opcode == RISCV::VFMACC_VV;
     bool Store = Opcode == RISCV::VSE32_V;
-    bool Splat = Opcode == RISCV::VFMV_V_F;
+    bool Splat = Opcode == RISCV::VFMV_V_F || Opcode == RISCV::VMV_V_X;
     bool Extract = Opcode == RISCV::VFMV_F_S;
     bool Reduce = Opcode == RISCV::VFREDOSUM_VS || Opcode == RISCV::VFREDMAX_VS;
     if (!Load && !Binary && !Unary && !Gather && !Accumulate && !Store &&
@@ -811,9 +815,10 @@ bool requiresIssueOrder(const MachineInstr &MI) {
       isUnaryOpcode(Opcode) || Opcode == RISCV::VSETVLI ||
       Opcode == RISCV::VSETIVLI || Opcode == RISCV::VLE32_V ||
       Opcode == RISCV::VSE32_V || Opcode == RISCV::VFMACC_VV ||
-      Opcode == RISCV::VFMV_V_F || Opcode == RISCV::VFMV_F_S ||
-      Opcode == RISCV::VFREDOSUM_VS || Opcode == RISCV::VFREDMAX_VS ||
-      Opcode == RISCV::VRGATHER_VX || Opcode == RISCV::PseudoBOSCReadBitsBound)
+      Opcode == RISCV::VFMV_V_F || Opcode == RISCV::VMV_V_X ||
+      Opcode == RISCV::VFMV_F_S || Opcode == RISCV::VFREDOSUM_VS ||
+      Opcode == RISCV::VFREDMAX_VS || Opcode == RISCV::VRGATHER_VX ||
+      Opcode == RISCV::PseudoBOSCReadBitsBound)
     return true;
   switch (Opcode) {
   case RISCV::FENCE:
@@ -1008,13 +1013,13 @@ public:
         bool Gather = Opcode == RISCV::VRGATHER_VX;
         bool NativeFloat = isRoundedBinaryOpcode(Opcode) || Accumulate ||
                            isConversionOpcode(Opcode);
-        bool Splat = MI.getOpcode() == RISCV::VFMV_V_F;
+        bool Splat = Opcode == RISCV::VFMV_V_F || Opcode == RISCV::VMV_V_X;
         bool SFU = isSFUOpcode(Opcode);
         bool Extract = MI.getOpcode() == RISCV::VFMV_F_S;
         bool Reduce = MI.getOpcode() == RISCV::VFREDOSUM_VS ||
                       MI.getOpcode() == RISCV::VFREDMAX_VS;
         bool FPVector = NativeFloat || Compare || Opcode == RISCV::VFMAX_VV ||
-                        Splat || Extract || Reduce;
+                        Opcode == RISCV::VFMV_V_F || Extract || Reduce;
         bool Native = MI.getOpcode() == RISCV::VLE32_V ||
                       MI.getOpcode() == RISCV::VSE32_V ||
                       isBinaryOpcode(Opcode) || isUnaryOpcode(Opcode) ||
@@ -1199,11 +1204,13 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
         ID == Intrinsic::riscv_bosc_read_bits     ? RISCV::PseudoBOSCReadBits
         : ID == Intrinsic::riscv_bosc_load        ? RISCV::PseudoBOSCLoad
         : ID == Intrinsic::riscv_bosc_add         ? RISCV::PseudoBOSCAdd
+        : ID == Intrinsic::riscv_bosc_maximum     ? RISCV::PseudoBOSCMaximum
         : ID == Intrinsic::riscv_bosc_fadd        ? RISCV::PseudoBOSCFAdd
         : ID == Intrinsic::riscv_bosc_fsub        ? RISCV::PseudoBOSCFSub
         : ID == Intrinsic::riscv_bosc_fmul        ? RISCV::PseudoBOSCFMul
         : ID == Intrinsic::riscv_bosc_fdiv        ? RISCV::PseudoBOSCFDiv
         : ID == Intrinsic::riscv_bosc_fsplat      ? RISCV::PseudoBOSCFSplat
+        : ID == Intrinsic::riscv_bosc_isplat      ? RISCV::PseudoBOSCISplat
         : ID == Intrinsic::riscv_bosc_fextract    ? RISCV::PseudoBOSCFExtract
         : ID == Intrinsic::riscv_bosc_freduce_sum ? RISCV::PseudoBOSCFReduceSum
         : ID == Intrinsic::riscv_bosc_freduce_max ? RISCV::PseudoBOSCFReduceMax
@@ -1233,7 +1240,8 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
     }
     if (ID == Intrinsic::riscv_bosc_read_bits ||
         ID == Intrinsic::riscv_bosc_load || ID == Intrinsic::riscv_bosc_store ||
-        ID == Intrinsic::riscv_bosc_fsplat)
+        ID == Intrinsic::riscv_bosc_fsplat ||
+        ID == Intrinsic::riscv_bosc_isplat)
       Args.push_back(Op.getOperand(3));
     else if (ID == Intrinsic::riscv_bosc_iadd_scalar)
       Args.push_back(Op.getOperand(4));
@@ -1393,6 +1401,9 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
   case RISCV::PseudoBOSCAdd:
     Native = RISCV::VADD_VV;
     break;
+  case RISCV::PseudoBOSCMaximum:
+    Native = RISCV::VMAX_VV;
+    break;
   case RISCV::PseudoBOSCFAdd:
     Native = RISCV::VFADD_VV;
     break;
@@ -1410,6 +1421,9 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
     break;
   case RISCV::PseudoBOSCFSplat:
     Native = RISCV::VFMV_V_F;
+    break;
+  case RISCV::PseudoBOSCISplat:
+    Native = RISCV::VMV_V_X;
     break;
   case RISCV::PseudoBOSCFExtract:
     Native = RISCV::VFMV_F_S;
@@ -1461,7 +1475,7 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
       BuildMI(*MBB, MI, MI.getDebugLoc(), ST.getInstrInfo()->get(Native));
   if (Native == RISCV::VSETVLI || Native == RISCV::VSETIVLI) {
     Builder.add(MI.getOperand(0)).add(MI.getOperand(1)).addImm(E32M1TaMa);
-  } else if (Native == RISCV::VFMV_V_F) {
+  } else if (Native == RISCV::VFMV_V_F || Native == RISCV::VMV_V_X) {
     Builder.addReg(RISCV::V0 + MI.getOperand(0).getImm(), RegState::Define)
         .add(MI.getOperand(1));
   } else if (Native == RISCV::VFMV_F_S) {
@@ -1506,7 +1520,7 @@ MachineBasicBlock *llvm::emitBOSCBoundInstruction(MachineInstr &MI,
     Builder.addReg(RISCV::V0 + MI.getOperand(0).getImm(), RegState::Define)
         .addReg(RISCV::V0 + MI.getOperand(1).getImm())
         .addReg(RISCV::NoRegister);
-  } else if (Native == RISCV::VFMAX_VV) {
+  } else if (Native == RISCV::VFMAX_VV || Native == RISCV::VMAX_VV) {
     Builder.addReg(RISCV::V0 + MI.getOperand(0).getImm(), RegState::Define)
         .addReg(RISCV::V0 + MI.getOperand(1).getImm())
         .addReg(RISCV::V0 + MI.getOperand(2).getImm())

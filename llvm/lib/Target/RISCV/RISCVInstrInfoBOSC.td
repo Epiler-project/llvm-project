@@ -26,6 +26,8 @@ def PseudoBOSCLoad : BOSCBoundPseudo<(outs), (ins uimm5:$vd, GPR:$base)> {
 }
 def PseudoBOSCAdd : BOSCBoundPseudo<(outs),
                                    (ins uimm5:$vd, uimm5:$vs2, uimm5:$vs1)>;
+def PseudoBOSCMaximum : BOSCBoundPseudo<(outs),
+                                      (ins uimm5:$vd, uimm5:$vs2, uimm5:$vs1)>;
 let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in {
 def PseudoBOSCFAdd : BOSCBoundPseudo<(outs),
                                     (ins uimm5:$vd, uimm5:$vs2, uimm5:$vs1)>;
@@ -64,6 +66,7 @@ def PseudoBOSCStore : BOSCBoundPseudo<(outs), (ins uimm5:$vs, GPR:$base)> {
   let mayStore = 1;
 }
 def PseudoBOSCFSplat : BOSCBoundPseudo<(outs), (ins uimm5:$vd, FPR32:$value)>;
+def PseudoBOSCISplat : BOSCBoundPseudo<(outs), (ins uimm5:$vd, GPR:$value)>;
 let mayRaiseFPException = true in
 def PseudoBOSCFReduceMax : BOSCBoundPseudo<(outs), (ins uimm5:$vd, uimm5:$vs)>;
 let Uses = [FRM, VL, VTYPE], mayRaiseFPException = true in
@@ -155,6 +158,7 @@ class BOSCAMEPseudo<dag outs, dag ins> : Pseudo<outs, ins, []> {
 def PseudoBOSCAMESetM : BOSCAMEPseudo<(outs GPR:$rd), (ins GPR:$value)>;
 def PseudoBOSCAMESetN : BOSCAMEPseudo<(outs GPR:$rd), (ins GPR:$value)>;
 def PseudoBOSCAMESetK : BOSCAMEPseudo<(outs GPR:$rd), (ins GPR:$value)>;
+def PseudoBOSCAMESetFP8E4M3 : BOSCAMEPseudo<(outs), (ins)>;
 def PseudoBOSCAMELoadA : BOSCAMEPseudo<(outs),
     (ins uimm5:$tr, GPR:$base, GPR:$stride)> { let mayLoad = 1; let mayStore = 0; }
 def PseudoBOSCAMELoadB : BOSCAMEPseudo<(outs),
@@ -164,6 +168,8 @@ def PseudoBOSCAMELoadC : BOSCAMEPseudo<(outs),
 def PseudoBOSCAMEStoreC : BOSCAMEPseudo<(outs),
     (ins uimm3:$acc, GPR:$base, GPR:$stride)> { let mayLoad = 0; let mayStore = 1; }
 def PseudoBOSCAMEMMA : BOSCAMEPseudo<(outs),
+    (ins uimm3:$acc, uimm5:$lhs, uimm5:$rhs)>;
+def PseudoBOSCAMEFPMMA : BOSCAMEPseudo<(outs),
     (ins uimm3:$acc, uimm5:$lhs, uimm5:$rhs)>;
 
 // These two selection pseudos survive to MC emission. Explicit physical
@@ -211,6 +217,21 @@ def BOSC_AME_SETN : BOSCAMEConfig<0b100, "msettilen">;
 let Defs = [BOSC_K] in
 def BOSC_AME_SETK : BOSCAMEConfig<0b110, "msettilek">;
 
+// AME v0.5 selects its explicit E4M3 byte interpretation with this word.
+// The exact exceptional-value/numerical profile is an execution contract;
+// code generation must not silently substitute another builtin FP8 format.
+let Defs = [BOSC_MTYPE] in
+def BOSC_AME_SETFP8_E4M3
+    : RVInst<(outs GPR:$rd), (ins), "msetfp8.e4m3", "$rd", [],
+             InstFormatOther> {
+  bits<5> rd;
+  let Inst = 0x020b6077;
+  let Inst{11-7} = rd;
+  let hasSideEffects = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+}
+
 let Uses = [BOSC_M, BOSC_N, BOSC_K] in {
 class BOSCAMELoad<bits<6> F6, bits<3> EEW, bit Transpose,
                   RegisterClass RC, string Name>
@@ -245,13 +266,13 @@ def BOSC_AME_LOADC : BOSCAMELoad<0b000000, 0b010, 0, BOSCAccReg,
 def BOSC_AME_STOREC : BOSCAMEStore<0b000000, 0b010, 0, BOSCAccReg,
                                     "msce32.m">;
 
-class BOSCAMEMMA<bits<6> F6, bits<3> EEW, string Name>
+class BOSCAMEMMA<bits<6> F6, bits<3> EEW, string Name, bit Floating = 0>
     : RVInst<(outs BOSCAccReg:$md),
              (ins BOSCAccReg:$md_in, BOSCTrReg:$ms1, BOSCTrReg:$ms2), Name,
              "$md, $ms1, $ms2", [], InstFormatOther> {
   bits<4> md; bits<4> md_in; bits<4> ms1; bits<4> ms2;
   let Constraints = "$md = $md_in";
-  let Inst{31-26} = F6; let Inst{25} = 0b0;
+  let Inst{31-26} = F6; let Inst{25} = Floating;
   let Inst{24} = 0b0; let Inst{23-20} = ms2; let Inst{19} = 0b1;
   let Inst{18-15} = ms1; let Inst{14-12} = EEW; let Inst{11} = 0b1;
   let Inst{10-7} = md; let Inst{6-0} = 0b1110111;
@@ -259,5 +280,7 @@ class BOSCAMEMMA<bits<6> F6, bits<3> EEW, string Name>
   let mayLoad = 0; let mayStore = 0;
 }
 def BOSC_AME_MMA : BOSCAMEMMA<0b001010, 0b000, "mqma.b.mm">;
+let Uses = [BOSC_M, BOSC_N, BOSC_K, BOSC_MTYPE] in
+def BOSC_AME_FPMMA : BOSCAMEMMA<0b001010, 0b000, "mfqma.cf.mm", 1>;
 }
 }

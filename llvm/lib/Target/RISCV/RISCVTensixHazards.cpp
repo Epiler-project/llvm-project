@@ -327,9 +327,15 @@ Error verifyCC(const MachineFunction &MF) {
         if (Depth == 0)
           return createStringError("Tensix SFPU machine CC stack underflow");
         --Depth;
+      } else if (MI.getOpcode() == RISCV::TTSFPPUSHCReplaceTop && Depth == 0) {
+        return createStringError(
+            "Tensix SFPU machine CC replace-top requires a nonempty stack");
       }
+      // Nonzero POPC modes only peek. Blackhole defines an empty-stack top
+      // and permits peeking at all eight frames, without changing depth.
       if (MI.isReturn() && Depth)
-        return createStringError("Tensix SFPU machine CC stack is not empty at return");
+        return createStringError(
+            "Tensix SFPU machine CC stack is not empty at return");
     }
     for (const MachineBasicBlock *Succ : BB->successors()) {
       auto [It, Inserted] = Depths.try_emplace(Succ, Depth);

@@ -8,7 +8,7 @@
 ; CONFIG: operation requires M/N/K configuration
 ; UNDEFINED: read of undefined A tile register
 ; ROLE: read of undefined B tile register
-; STRIDE: byte stride must be a constant covering the row
+; STRIDE: byte stride must be provably bounded covering the row
 
 ;--- no-scope.ll
 declare i64 @llvm.riscv.bosc.ame.setm(i64)

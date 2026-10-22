@@ -9,16 +9,20 @@
 #include "RISCVSubtarget.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/IR/CFG.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/KnownBits.h"
 #include <array>
 #include <optional>
 #include <tuple>
@@ -30,7 +34,8 @@ constexpr uint64_t TileA = 0xffff;
 constexpr uint64_t TileB = TileA << 16;
 constexpr uint64_t Acc = uint64_t(0xff) << 32;
 constexpr uint64_t Config = uint64_t(7) << 40;
-constexpr uint64_t Top = TileA | TileB | Acc | Config;
+constexpr uint64_t FP8Mode = uint64_t(1) << 43;
+constexpr uint64_t Top = TileA | TileB | Acc | Config | FP8Mode;
 
 [[noreturn]] void fail(const Function &F, const Twine &Message) {
   reportFatalUsageError("BOSC bound AME function '" + F.getName() +
@@ -63,12 +68,105 @@ unsigned slot(const IntrinsicInst &II, unsigned Index, bool IsAcc) {
   return Value->getZExtValue();
 }
 
+ConstantRange scalarRange(const Value *V, unsigned Depth = 0) {
+  unsigned Width = V->getType()->getIntegerBitWidth();
+  if (auto *C = dyn_cast<ConstantInt>(V))
+    return ConstantRange(C->getValue());
+  if (Depth >= 16)
+    return ConstantRange::getFull(Width);
+  // Receive constructive scalar expressions only. An argument range attribute
+  // or nearby assume is not an independent proof of hardware resource safety.
+  if (auto *B = dyn_cast<BinaryOperator>(V))
+    return scalarRange(B->getOperand(0), Depth + 1)
+        .binaryOp(B->getOpcode(), scalarRange(B->getOperand(1), Depth + 1));
+  if (auto *S = dyn_cast<SelectInst>(V))
+    return scalarRange(S->getTrueValue(), Depth + 1)
+        .unionWith(scalarRange(S->getFalseValue(), Depth + 1));
+  if (auto *C = dyn_cast<CastInst>(V)) {
+    if (C->getSrcTy()->isIntegerTy())
+      return scalarRange(C->getOperand(0), Depth + 1)
+          .castOp(C->getOpcode(), Width);
+  }
+  if (auto *I = dyn_cast<IntrinsicInst>(V)) {
+    auto ID = I->getIntrinsicID();
+    if (configIndex(ID) != 3) {
+      auto Requested = scalarRange(I->getArgOperand(0), Depth + 1);
+      if (!Requested.getUnsignedMin().isZero() &&
+          !Requested.getUnsignedMax().isNegative()) {
+        APInt Limit(Width, 64);
+        return ConstantRange(APIntOps::umin(Requested.getUnsignedMin(), Limit),
+                             APIntOps::umin(Requested.getUnsignedMax(), Limit) +
+                                 1);
+      }
+    }
+    if (ID == Intrinsic::umin || ID == Intrinsic::umax ||
+        ID == Intrinsic::smin || ID == Intrinsic::smax) {
+      auto L = scalarRange(I->getArgOperand(0), Depth + 1);
+      auto R = scalarRange(I->getArgOperand(1), Depth + 1);
+      switch (ID) {
+      case Intrinsic::umin:
+        return L.umin(R);
+      case Intrinsic::umax:
+        return L.umax(R);
+      case Intrinsic::smin:
+        return L.smin(R);
+      case Intrinsic::smax:
+        return L.smax(R);
+      default:
+        llvm_unreachable("checked min/max intrinsic");
+      }
+    }
+  }
+  return ConstantRange::getFull(Width);
+}
+
 unsigned request(const IntrinsicInst &II) {
-  const auto *Value = dyn_cast<ConstantInt>(II.getArgOperand(0));
-  if (!Value || Value->getValue().getActiveBits() > 7 ||
-      !Value->getZExtValue() || Value->getZExtValue() > 64)
-    fail(*II.getFunction(), "dimension request must be a constant in 1..64");
-  return Value->getZExtValue();
+  auto Range = scalarRange(II.getArgOperand(0));
+  if (Range.getUnsignedMin().isZero() || Range.getUnsignedMax().isNegative())
+    fail(*II.getFunction(),
+         "dimension request must be provably positive and nonwrapping");
+  return std::min(uint64_t(64), Range.getUnsignedMax().getZExtValue());
+}
+
+bool isDimension(const Value *V, const Value *Requested, uint64_t Scale) {
+  bool Same = V == Requested;
+  if (auto *I = dyn_cast<IntrinsicInst>(V))
+    Same |= configIndex(I->getIntrinsicID()) != 3 &&
+            I->getArgOperand(0) == Requested;
+  return Same && scalarRange(V).getUnsignedMax().ule(UINT64_MAX / Scale);
+}
+
+bool coversActualRow(const Value *Stride, const Value *Requested,
+                     uint64_t ElementBytes) {
+  if (ElementBytes == 1)
+    return isDimension(Stride, Requested, 1);
+  auto *B = dyn_cast<BinaryOperator>(Stride);
+  if (!B)
+    return false;
+  auto Matches = [&](const Value *Dimension, const Value *Factor,
+                     uint64_t Expected) {
+    auto *C = dyn_cast<ConstantInt>(Factor);
+    return C && C->equalsInt(Expected) &&
+           isDimension(Dimension, Requested, ElementBytes);
+  };
+  if (B->getOpcode() == Instruction::Mul)
+    return Matches(B->getOperand(0), B->getOperand(1), ElementBytes) ||
+           Matches(B->getOperand(1), B->getOperand(0), ElementBytes);
+  return B->getOpcode() == Instruction::Shl && ElementBytes == 4 &&
+         Matches(B->getOperand(0), B->getOperand(1), 2);
+}
+
+bool validStride(const Value *Stride, const Value *Requested, uint64_t RowBytes,
+                 bool Accumulator, const IntrinsicInst &II) {
+  auto Range = scalarRange(Stride);
+  if ((Range.getUnsignedMin().ult(RowBytes) &&
+       !coversActualRow(Stride, Requested, Accumulator ? 4 : 1)) ||
+      Range.getUnsignedMax().isNegative())
+    return false;
+  if (!Accumulator)
+    return true;
+  auto Known = computeKnownBits(Stride, II.getModule()->getDataLayout());
+  return Known.Zero.countTrailingOnes() >= 2;
 }
 
 // Three exact dimension facts accompany A/B/Acc must-definitions. A tile load
@@ -95,6 +193,7 @@ bool predicateDependsOn(const Value *Predicate, const Instruction &I) {
 struct State {
   uint64_t Bits = Top;
   std::array<unsigned, 3> Dimensions{~0u, ~0u, ~0u};
+  std::array<const Value *, 3> Requests{};
   struct Selection {
     const Value *Predicate;
     unsigned FalseReg, TrueReg;
@@ -104,10 +203,10 @@ struct State {
     }
   };
   SmallVector<Selection> SelectedB;
-  static State entry() { return {0, {0, 0, 0}, {}}; }
+  static State entry() { return {0, {0, 0, 0}, {}, {}}; }
   bool operator==(const State &Other) const {
     return Bits == Other.Bits && Dimensions == Other.Dimensions &&
-           SelectedB == Other.SelectedB;
+           Requests == Other.Requests && SelectedB == Other.SelectedB;
   }
   bool operator!=(const State &Other) const { return !(*this == Other); }
   void meet(const State &Other) {
@@ -116,11 +215,15 @@ struct State {
       return !llvm::is_contained(Other.SelectedB, S);
     });
     for (unsigned I = 0; I < 3; ++I) {
-      if (Dimensions[I] == ~0u)
+      if (Dimensions[I] == ~0u) {
         Dimensions[I] = Other.Dimensions[I];
-      else if (Other.Dimensions[I] != ~0u &&
-               Dimensions[I] != Other.Dimensions[I])
+        Requests[I] = Other.Requests[I];
+      } else if (Other.Dimensions[I] != ~0u &&
+                 (Dimensions[I] != Other.Dimensions[I] ||
+                  Requests[I] != Other.Requests[I])) {
         Dimensions[I] = 0;
+        Requests[I] = nullptr;
+      }
     }
   }
 };
@@ -134,10 +237,15 @@ State transferIR(const BasicBlock &BB, State S, bool Verify) {
     if (!II || !isBOSCAMEIntrinsic(II->getIntrinsicID()))
       continue;
     auto ID = II->getIntrinsicID();
+    if (ID == Intrinsic::riscv_bosc_ame_setfp8_e4m3) {
+      S.Bits |= FP8Mode;
+      continue;
+    }
     unsigned Index = configIndex(ID);
     if (Index != 3) {
       S.Bits = configure(S.Bits, Index);
       S.Dimensions[Index] = request(*II);
+      S.Requests[Index] = II->getArgOperand(0);
       S.SelectedB.clear();
       continue;
     }
@@ -157,9 +265,8 @@ State transferIR(const BasicBlock &BB, State S, bool Verify) {
       if (Selected.FalseReg == Selected.TrueReg)
         fail(*BB.getParent(), "selected B stages must bind distinct registers");
       if (SelectLoad) {
-        auto *Stride = dyn_cast<ConstantInt>(II->getArgOperand(4));
-        if (!Stride || Stride->getValue().isNegative() ||
-            Stride->getZExtValue() < S.Dimensions[2])
+        if (!validStride(II->getArgOperand(4), S.Requests[2], S.Dimensions[2],
+                         false, *II))
           fail(*BB.getParent(), "selected B load stride must cover the row");
         S.Bits &= ~((uint64_t(1) << Selected.FalseReg) |
                     (uint64_t(1) << Selected.TrueReg));
@@ -176,17 +283,20 @@ State transferIR(const BasicBlock &BB, State S, bool Verify) {
     }
     bool IsA = ID == Intrinsic::riscv_bosc_ame_load_a;
     bool IsB = ID == Intrinsic::riscv_bosc_ame_load_b;
-    bool IsMMA = ID == Intrinsic::riscv_bosc_ame_mma;
+    bool IsFPMMA = ID == Intrinsic::riscv_bosc_ame_fp_mma;
+    bool IsMMA = ID == Intrinsic::riscv_bosc_ame_mma || IsFPMMA;
+    if (Verify && IsFPMMA && !(S.Bits & FP8Mode))
+      fail(*BB.getParent(), "floating MMA requires E4M3 configuration on "
+                            "every incoming path");
     bool IsStore = ID == Intrinsic::riscv_bosc_ame_store_c;
     unsigned Dst = slot(*II, 0, !IsA && !IsB);
     if (Verify && !IsMMA) {
-      auto *Stride = dyn_cast<ConstantInt>(II->getArgOperand(2));
       uint64_t RowBytes = IsA || IsB ? S.Dimensions[2] : 4 * S.Dimensions[1];
-      if (!Stride || Stride->getValue().isNegative() ||
-          Stride->getZExtValue() < RowBytes ||
-          ((!IsA && !IsB) && Stride->getZExtValue() % 4))
-        fail(*BB.getParent(), "byte stride must be a constant covering the "
-                              "row; accumulator stride must be 4-byte aligned");
+      if (!validStride(II->getArgOperand(2), S.Requests[IsA || IsB ? 2 : 1],
+                       RowBytes, !IsA && !IsB, *II))
+        fail(*BB.getParent(),
+             "byte stride must be provably bounded covering the "
+             "row; accumulator stride must be 4-byte aligned");
     }
     auto Read = [&](unsigned Offset, unsigned Register, StringRef Role) {
       if (Verify && !(S.Bits & (uint64_t(1) << (Offset + Register))))
@@ -229,7 +339,7 @@ unsigned machineConfig(unsigned Opcode) {
 bool isAction(unsigned Opcode) {
   return Opcode == RISCV::BOSC_AME_LOADA || Opcode == RISCV::BOSC_AME_LOADB ||
          Opcode == RISCV::BOSC_AME_LOADC || Opcode == RISCV::BOSC_AME_STOREC ||
-         Opcode == RISCV::BOSC_AME_MMA;
+         Opcode == RISCV::BOSC_AME_MMA || Opcode == RISCV::BOSC_AME_FPMMA;
 }
 
 bool isSelectedLoad(unsigned Opcode) {
@@ -447,6 +557,10 @@ MachineState transferMachine(
       return Selected.Predicate.Definition == &MI;
     });
     unsigned Op = MI.getOpcode();
+    if (Op == RISCV::BOSC_AME_SETFP8_E4M3) {
+      S.Bits |= FP8Mode;
+      continue;
+    }
     unsigned Index = machineConfig(Op);
     if (Index != 3) {
       S.Bits = configure(S.Bits, Index);
@@ -490,7 +604,9 @@ MachineState transferMachine(
       if (Verify && !(S.Bits & (uint64_t(1) << (Offset + Reg))))
         fail(F, "machine read of undefined physical AME register");
     };
-    if (Op == RISCV::BOSC_AME_MMA) {
+    if (Op == RISCV::BOSC_AME_MMA || Op == RISCV::BOSC_AME_FPMMA) {
+      if (Verify && Op == RISCV::BOSC_AME_FPMMA && !(S.Bits & FP8Mode))
+        fail(F, "machine floating MMA requires E4M3 on every incoming path");
       Read(32, Dst);
       Read(0, MI.getOperand(2).getReg() - RISCV::BOSC_TR0);
       Read(16, MI.getOperand(3).getReg() - RISCV::BOSC_TR0);
@@ -534,11 +650,13 @@ bool llvm::isBOSCAMEIntrinsic(Intrinsic::ID ID) {
   case Intrinsic::riscv_bosc_ame_setm:
   case Intrinsic::riscv_bosc_ame_setn:
   case Intrinsic::riscv_bosc_ame_setk:
+  case Intrinsic::riscv_bosc_ame_setfp8_e4m3:
   case Intrinsic::riscv_bosc_ame_load_a:
   case Intrinsic::riscv_bosc_ame_load_b:
   case Intrinsic::riscv_bosc_ame_load_c:
   case Intrinsic::riscv_bosc_ame_store_c:
   case Intrinsic::riscv_bosc_ame_mma:
+  case Intrinsic::riscv_bosc_ame_fp_mma:
     return true;
   case Intrinsic::riscv_bosc_ame_load_b_select:
   case Intrinsic::riscv_bosc_ame_mma_b_select:
@@ -550,14 +668,17 @@ bool llvm::isBOSCAMEIntrinsic(Intrinsic::ID ID) {
 
 bool llvm::isBOSCAMEOpcode(unsigned Opcode) {
   return machineConfig(Opcode) != 3 || isAction(Opcode) ||
+         Opcode == RISCV::BOSC_AME_SETFP8_E4M3 ||
          Opcode == RISCV::PseudoBOSCAMESetM ||
          Opcode == RISCV::PseudoBOSCAMESetN ||
          Opcode == RISCV::PseudoBOSCAMESetK ||
+         Opcode == RISCV::PseudoBOSCAMESetFP8E4M3 ||
          Opcode == RISCV::PseudoBOSCAMELoadA ||
          Opcode == RISCV::PseudoBOSCAMELoadB ||
          Opcode == RISCV::PseudoBOSCAMELoadC ||
          Opcode == RISCV::PseudoBOSCAMEStoreC ||
          Opcode == RISCV::PseudoBOSCAMEMMA ||
+         Opcode == RISCV::PseudoBOSCAMEFPMMA ||
          Opcode == RISCV::PseudoBOSCAMELoadBSelect ||
          Opcode == RISCV::PseudoBOSCAMEMMABSelect ||
          Opcode == RISCV::PseudoBOSCAMELoadBSelectBound ||
@@ -625,13 +746,20 @@ void llvm::verifyBOSCAMEMachine(const MachineFunction &MF) {
                     isSelectedLoad(MI.getOpcode()) ||
                     isSelectedMMA(MI.getOpcode());
       unsigned Configuration = machineConfig(MI.getOpcode());
-      bool Native = Action || Configuration != 3;
+      bool Format = MI.getOpcode() == RISCV::BOSC_AME_SETFP8_E4M3;
+      bool Native = Action || Configuration != 3 || Format;
       if (Native && !Bound)
         fail(F, "machine operation requires bound AME scope");
       if (Action)
-        for (MCPhysReg Reg : RISCV::BOSCConfigRegRegClass)
+        for (MCPhysReg Reg : {RISCV::BOSC_M, RISCV::BOSC_N, RISCV::BOSC_K})
           if (!MI.readsRegister(Reg, ST.getRegisterInfo()))
             fail(F, "missing AME dimension dependency");
+      if (MI.getOpcode() == RISCV::BOSC_AME_FPMMA &&
+          !MI.readsRegister(RISCV::BOSC_MTYPE, ST.getRegisterInfo()))
+        fail(F, "missing AME floating format dependency");
+      if (Format &&
+          !MI.modifiesRegister(RISCV::BOSC_MTYPE, ST.getRegisterInfo()))
+        fail(F, "missing AME floating format definition");
       if (isSelectedLoad(MI.getOpcode()) || isSelectedMMA(MI.getOpcode())) {
         bool Load = isSelectedLoad(MI.getOpcode());
         auto Selected = selection(MI, Selectors);
@@ -726,6 +854,9 @@ SDValue llvm::lowerBOSCAMEIntrinsic(SDValue Op, SelectionDAG &DAG,
   case Intrinsic::riscv_bosc_ame_setk:
     Opcode = RISCV::PseudoBOSCAMESetK;
     break;
+  case Intrinsic::riscv_bosc_ame_setfp8_e4m3:
+    Opcode = RISCV::PseudoBOSCAMESetFP8E4M3;
+    break;
   case Intrinsic::riscv_bosc_ame_load_a:
     Opcode = RISCV::PseudoBOSCAMELoadA;
     break;
@@ -741,6 +872,9 @@ SDValue llvm::lowerBOSCAMEIntrinsic(SDValue Op, SelectionDAG &DAG,
   case Intrinsic::riscv_bosc_ame_mma:
     Opcode = RISCV::PseudoBOSCAMEMMA;
     break;
+  case Intrinsic::riscv_bosc_ame_fp_mma:
+    Opcode = RISCV::PseudoBOSCAMEFPMMA;
+    break;
   case Intrinsic::riscv_bosc_ame_load_b_select:
     Opcode = RISCV::PseudoBOSCAMELoadBSelect;
     break;
@@ -752,9 +886,11 @@ SDValue llvm::lowerBOSCAMEIntrinsic(SDValue Op, SelectionDAG &DAG,
   }
   SDLoc DL(Op);
   bool Configuration = configIndex(ID) != 3;
+  bool Format = ID == Intrinsic::riscv_bosc_ame_setfp8_e4m3;
   bool SelectLoad = ID == Intrinsic::riscv_bosc_ame_load_b_select;
   bool SelectMMA = ID == Intrinsic::riscv_bosc_ame_mma_b_select;
-  bool MMA = ID == Intrinsic::riscv_bosc_ame_mma || SelectMMA;
+  bool MMA = ID == Intrinsic::riscv_bosc_ame_mma ||
+             ID == Intrinsic::riscv_bosc_ame_fp_mma || SelectMMA;
   SmallVector<SDValue, 4> Args;
   for (unsigned I = 2; I != Op.getNumOperands(); ++I) {
     SDValue Value = Op.getOperand(I);
@@ -783,7 +919,7 @@ SDValue llvm::lowerBOSCAMEIntrinsic(SDValue Op, SelectionDAG &DAG,
   auto VTs = Configuration ? DAG.getVTList(MVT::i64, MVT::Other)
                            : DAG.getVTList(MVT::Other);
   auto *Node = DAG.getMachineNode(Opcode, DL, VTs, Args);
-  if (!Configuration && !MMA) {
+  if (!Configuration && !Format && !MMA) {
     auto Flags = ID == Intrinsic::riscv_bosc_ame_store_c
                      ? MachineMemOperand::MOStore
                      : MachineMemOperand::MOLoad;
@@ -832,6 +968,9 @@ MachineBasicBlock *llvm::emitBOSCAMEInstruction(MachineInstr &MI,
   case RISCV::PseudoBOSCAMESetK:
     Native = RISCV::BOSC_AME_SETK;
     break;
+  case RISCV::PseudoBOSCAMESetFP8E4M3:
+    Native = RISCV::BOSC_AME_SETFP8_E4M3;
+    break;
   case RISCV::PseudoBOSCAMELoadA:
     Native = RISCV::BOSC_AME_LOADA;
     break;
@@ -847,14 +986,19 @@ MachineBasicBlock *llvm::emitBOSCAMEInstruction(MachineInstr &MI,
   case RISCV::PseudoBOSCAMEMMA:
     Native = RISCV::BOSC_AME_MMA;
     break;
+  case RISCV::PseudoBOSCAMEFPMMA:
+    Native = RISCV::BOSC_AME_FPMMA;
+    break;
   default:
     return nullptr;
   }
   auto MIB =
       BuildMI(*MBB, MI, MI.getDebugLoc(), ST.getInstrInfo()->get(Native));
-  if (machineConfig(Native) != 3) {
+  if (Native == RISCV::BOSC_AME_SETFP8_E4M3) {
+    MIB.addReg(RISCV::X0, RegState::Define);
+  } else if (machineConfig(Native) != 3) {
     MIB.add(MI.getOperand(0)).add(MI.getOperand(1));
-  } else if (Native == RISCV::BOSC_AME_MMA) {
+  } else if (Native == RISCV::BOSC_AME_MMA || Native == RISCV::BOSC_AME_FPMMA) {
     unsigned Dst = RISCV::BOSC_ACC0 + MI.getOperand(0).getImm();
     MIB.addReg(Dst, RegState::Define)
         .addReg(Dst)

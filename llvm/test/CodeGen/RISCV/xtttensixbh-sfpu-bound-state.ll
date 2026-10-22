@@ -10,7 +10,7 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %t/branch.ll -o - | FileCheck %s --check-prefix=CC-BRANCH
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/branch.ll -o - | FileCheck %s --check-prefix=CC-BRANCH
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/invalid-push.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CC-FIELD
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/invalid-pop.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CC-FIELD
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/invalid-pop.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CC-MODE
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %t/loop.ll -o - | FileCheck %s --check-prefix=LOOP
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %t/loop.ll -o /dev/null
 ; RUN: opt -S -mtriple=riscv32 -mattr=+xtttensixbh -passes='default<O3>' %t/loop.ll | FileCheck %s --check-prefix=LOOP-IR
@@ -177,7 +177,9 @@ define void @invalid_push() "tensix-executor"="trisc1" {
 }
 ;--- invalid-pop.ll
 declare void @llvm.riscv.tt.bound.sfppopc(i32 immarg, i32 immarg)
+; Mode one is the separate peek form; Boolean-combine mode two stays rejected.
+; CC-MODE: unsupported mode at operand 1
 define void @invalid_pop() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 1)
+  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 2)
   ret void
 }

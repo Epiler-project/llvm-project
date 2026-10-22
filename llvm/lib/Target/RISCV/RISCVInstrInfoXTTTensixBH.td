@@ -190,15 +190,39 @@ def TTSFPISUB : TensixIAdd<6, ".sub">;
 def TTSFPIADDCCGE : TensixIAdd<8, ".ge0">;
 def TTSFPISUBCCGE : TensixIAdd<10, ".sub.ge0">;
 
-// Plain stack operations only. Encodings with peek/mutate behavior are distinct
-// future contracts and cannot enter these nodes with hidden mode integers.
+// Stack actions have distinct descriptors so depth-preserving modes cannot
+// enter the plain push/pop nodes with hidden mode integers.
 def TTSFPPUSHC : TensixPhysicalInst<0x87, (outs), (ins), "ttsfppushc", ""> {
+  let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_CCSTACK, TT_ISSUE];
+}
+def TTSFPPUSHCReplaceTop : TensixPhysicalInst<0x87, (outs), (ins),
+    "ttsfppushc.replace_top", ""> {
+  let RawWord{3-0} = 1;
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CCSTACK, TT_ISSUE];
 }
 def TTSFPPOPC : TensixPhysicalInst<0x88, (outs), (ins), "ttsfppopc", ""> {
   let Uses = [TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_CCSTACK, TT_ISSUE];
+}
+def TTSFPPOPCPeek : TensixPhysicalInst<0x88, (outs), (ins),
+    "ttsfppopc.peek", ""> {
+  let RawWord{3-0} = 1;
+  let Uses = [TT_CCSTACK, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_CC, TT_ISSUE];
+}
+def TTSFPPOPCAndTop : TensixPhysicalInst<0x88, (outs), (ins),
+    "ttsfppopc.and_top", ""> {
+  let RawWord{3-0} = 3;
+  let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_CC, TT_ISSUE];
+}
+def TTSFPPOPCOrTop : TensixPhysicalInst<0x88, (outs), (ins),
+    "ttsfppopc.or_top", ""> {
+  let RawWord{3-0} = 4;
+  let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_CC, TT_ISSUE];
 }
 def TTSFPNOP : TensixPhysicalInst<0x8f, (outs), (ins), "ttsfpnop", ""> {
   let Uses = [TT_ISSUE];
@@ -276,6 +300,26 @@ def TTSFPSETCCLT : TensixSetCC<0, "lt0">;
 def TTSFPSETCCNE : TensixSetCC<2, "ne0">;
 def TTSFPSETCCGE : TensixSetCC<4, "ge0">;
 def TTSFPSETCCEQ : TensixSetCC<6, "eq0">;
+
+// Receive only SET_CC. VD is a read, not a destructive result, and both
+// sources may alias. Restrict VD to L0..L7 to avoid the configurable backdoor
+// access at VD >= 12 without inventing a lane-configuration precondition.
+class TensixCompare<bits<8> RawOpcodeValue, string Mnemonic>
+    : TensixPhysicalInst<RawOpcodeValue, (outs),
+                        (ins SFPR:$lhs, SFPRRead:$rhs, uimm4:$mode),
+                        Mnemonic, "$lhs, $rhs, $mode"> {
+  bits<4> lhs;
+  bits<4> rhs;
+  bits<4> mode;
+  let RawWord{11-8} = rhs;
+  let RawWord{7-4} = lhs;
+  let RawWord{3-0} = mode;
+  let ModeOperandIndex = 2;
+  let AllowedModes = 0x0002;
+  let Defs = [TT_CC, TT_ISSUE];
+}
+def TTSFPGT : TensixCompare<0x97, "ttsfpgt">;
+def TTSFPLE : TensixCompare<0x96, "ttsfple">;
 
 // Dst uses a logical 10-bit offset in this compiler contract. The ISA field
 // reserves 13 bits; high fields are never invented by masking a scalar value.

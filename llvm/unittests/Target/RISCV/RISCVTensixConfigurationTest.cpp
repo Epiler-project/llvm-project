@@ -21,6 +21,27 @@ struct ConfigurationCase {
   SmallVector<TensixBoundValue, 6> Arguments;
 };
 
+TEST(RISCVTensixConfiguration, TransposeHasProvedErratumExemptionAndLaneReads) {
+  SmallVector<TensixBoundValue, 12> Args;
+  for (unsigned I = 0; I != 12; ++I)
+    Args.push_back(constant(I < 8 ? I : I - 8));
+  auto Contract =
+      getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfptransp, Args);
+  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  // SFPTRANSP is explicitly exempt from TEN-2932. Its actual VD field is
+  // zero, so the backdoor-load conditional also needs no configuration guard.
+  // This does not make its CC and ROW_MASK lane predicates unconditional.
+  const auto &Facts = Contract->getConfigurationFacts();
+  ASSERT_TRUE(Facts);
+  EXPECT_TRUE(Facts->Requirements.empty());
+  for (auto State : {TensixSFPUState::CC, TensixSFPUState::Configuration})
+    EXPECT_TRUE(any_of(Contract->getArchitecturalEffects(), [&](const auto &E) {
+      const auto *Resource = std::get_if<TensixSFPUState>(&E.Resource);
+      return Resource && *Resource == State &&
+             E.Access == TensixSFPUAccess::Read;
+    }));
+}
+
 class RISCVTensixDestinationConfigurationTest
     : public testing::TestWithParam<ConfigurationCase> {};
 
@@ -176,6 +197,257 @@ TEST(RISCVTensixConfiguration, ConditionControlHasProvedEmptyRequirements) {
   const auto &Facts = Contract->getConfigurationFacts();
   ASSERT_TRUE(Facts);
   EXPECT_TRUE(Facts->Requirements.empty());
+}
+
+class RISCVTensixConditionStackConfigurationTest
+    : public testing::TestWithParam<Intrinsic::ID> {};
+
+TEST_P(RISCVTensixConditionStackConfigurationTest,
+       PlainStackHasProvedEmptyRequirementsAndExactStateEffects) {
+  SmallVector<TensixBoundValue, 2> Args;
+  if (GetParam() != Intrinsic::riscv_tt_bound_sfpcompc)
+    Args = {constant(0), constant(0)};
+  auto Contract = getTensixBoundSFPUContract(GetParam(), Args);
+  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  // All three native words encode VD=0. Their behavior therefore cannot be
+  // disabled by the configurable VD>=12 backdoor-load path, and no numerical
+  // destination introduces an EnableDestIndex requirement.
+  const auto &Facts = Contract->getConfigurationFacts();
+  EXPECT_TRUE(Facts);
+  if (Facts)
+    EXPECT_TRUE(Facts->Requirements.empty());
+  EXPECT_TRUE(Contract->getRegisterArguments().empty());
+  EXPECT_TRUE(Contract->getRegisterConstraints().empty());
+  EXPECT_TRUE(Contract->getTransferFacts().empty());
+
+  using State = TensixSFPUState;
+  using Access = TensixSFPUAccess;
+  SmallVector<std::pair<State, Access>, 4> Expected{
+      {State::Configuration, Access::Read}, {State::Issue, Access::ReadWrite}};
+  switch (GetParam()) {
+  case Intrinsic::riscv_tt_bound_sfppushc:
+    Expected.append(
+        {{State::CC, Access::Read}, {State::CCStack, Access::ReadWrite}});
+    break;
+  case Intrinsic::riscv_tt_bound_sfppopc:
+    Expected.append(
+        {{State::CC, Access::Write}, {State::CCStack, Access::ReadWrite}});
+    break;
+  case Intrinsic::riscv_tt_bound_sfpcompc:
+    Expected.append(
+        {{State::CC, Access::ReadWrite}, {State::CCStack, Access::Read}});
+    break;
+  default:
+    FAIL() << "unexpected stack fixture";
+  }
+  EXPECT_EQ(Contract->getArchitecturalEffects().size(), Expected.size());
+  for (auto [Resource, Permission] : Expected) {
+    unsigned Matches = 0;
+    for (const auto &Effect : Contract->getArchitecturalEffects()) {
+      const auto *Actual = std::get_if<State>(&Effect.Resource);
+      if (Actual && *Actual == Resource) {
+        EXPECT_EQ(Effect.Access, Permission);
+        ++Matches;
+      }
+    }
+    EXPECT_EQ(Matches, 1u);
+  }
+}
+
+TEST_P(RISCVTensixConditionStackConfigurationTest,
+       SelectedNativeOpcodePublishesTypedStackAction) {
+  SmallVector<TensixBoundValue, 2> Args;
+  if (GetParam() != Intrinsic::riscv_tt_bound_sfpcompc)
+    Args = {constant(0), constant(0)};
+  auto Contract = getTensixBoundSFPUContract(GetParam(), Args);
+  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+  const auto *Update =
+      std::get_if<TensixSFPUConditionStackUpdate>(&Contract->getLaneControl());
+  ASSERT_NE(Update, nullptr);
+  using Action = TensixSFPUConditionStackAction;
+  switch (GetParam()) {
+  case Intrinsic::riscv_tt_bound_sfppushc:
+    EXPECT_EQ(Update->Action, Action::Push);
+    break;
+  case Intrinsic::riscv_tt_bound_sfppopc:
+    EXPECT_EQ(Update->Action, Action::Pop);
+    break;
+  case Intrinsic::riscv_tt_bound_sfpcompc:
+    EXPECT_EQ(Update->Action, Action::Complement);
+    break;
+  default:
+    FAIL() << "unexpected stack fixture";
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(PlainConditionStack,
+                         RISCVTensixConditionStackConfigurationTest,
+                         testing::Values(Intrinsic::riscv_tt_bound_sfppushc,
+                                         Intrinsic::riscv_tt_bound_sfppopc,
+                                         Intrinsic::riscv_tt_bound_sfpcompc));
+
+TEST(RISCVTensixConfiguration,
+     ModeOneStackHasDistinctTypedActionsAndExactStateEffects) {
+  for (Intrinsic::ID ID : {Intrinsic::riscv_tt_bound_sfppushc,
+                           Intrinsic::riscv_tt_bound_sfppopc}) {
+    SCOPED_TRACE(ID);
+    auto Plain = getTensixBoundSFPUContract(ID, {constant(0), constant(0)});
+    ASSERT_TRUE(bool(Plain)) << toString(Plain.takeError());
+    auto ModeOne = getTensixBoundSFPUContract(ID, {constant(0), constant(1)});
+    ASSERT_TRUE(bool(ModeOne)) << toString(ModeOne.takeError());
+    const auto *PlainUpdate =
+        std::get_if<TensixSFPUConditionStackUpdate>(&Plain->getLaneControl());
+    const auto *Update =
+        std::get_if<TensixSFPUConditionStackUpdate>(&ModeOne->getLaneControl());
+    ASSERT_NE(PlainUpdate, nullptr);
+    ASSERT_NE(Update, nullptr);
+    // Mode one cannot borrow the plain push/pop transition: replacement
+    // preserves depth and peek does not consume the saved frame.
+    using Action = TensixSFPUConditionStackAction;
+    EXPECT_NE(Update->Action, PlainUpdate->Action);
+    EXPECT_EQ(Update->Action, ID == Intrinsic::riscv_tt_bound_sfppushc
+                                  ? Action::ReplaceTop
+                                  : Action::Peek);
+    ASSERT_TRUE(ModeOne->getConfigurationFacts());
+    EXPECT_TRUE(ModeOne->getConfigurationFacts()->Requirements.empty());
+    EXPECT_TRUE(ModeOne->getRegisterArguments().empty());
+    EXPECT_TRUE(ModeOne->getRegisterConstraints().empty());
+    EXPECT_TRUE(ModeOne->getTransferFacts().empty());
+
+    using State = TensixSFPUState;
+    using Access = TensixSFPUAccess;
+    const bool Replace = ID == Intrinsic::riscv_tt_bound_sfppushc;
+    const SmallVector<std::pair<State, Access>, 4> Expected{
+        {State::CC, Replace ? Access::Read : Access::Write},
+        {State::CCStack, Replace ? Access::ReadWrite : Access::Read},
+        {State::Configuration, Access::Read},
+        {State::Issue, Access::ReadWrite}};
+    EXPECT_EQ(ModeOne->getArchitecturalEffects().size(), Expected.size());
+    for (auto [Resource, Permission] : Expected) {
+      unsigned Matches = 0;
+      for (const auto &Effect : ModeOne->getArchitecturalEffects()) {
+        const auto *Actual = std::get_if<State>(&Effect.Resource);
+        if (Actual && *Actual == Resource) {
+          EXPECT_EQ(Effect.Access, Permission);
+          ++Matches;
+        }
+      }
+      EXPECT_EQ(Matches, 1u);
+    }
+  }
+}
+
+TEST(RISCVTensixConfiguration,
+     SFPPOPCCombineModesPeekTopAndPublishTypedActions) {
+  using Action = TensixSFPUConditionStackAction;
+  using State = TensixSFPUState;
+  using Access = TensixSFPUAccess;
+  for (auto [Mode, ExpectedAction] :
+       {std::pair<int64_t, Action>{3, Action::AndTop},
+        std::pair<int64_t, Action>{4, Action::OrTop}}) {
+    SCOPED_TRACE(Mode);
+    auto Contract = getTensixBoundSFPUContract(
+        Intrinsic::riscv_tt_bound_sfppopc, {constant(0), constant(Mode)});
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    const auto *Update = std::get_if<TensixSFPUConditionStackUpdate>(
+        &Contract->getLaneControl());
+    ASSERT_NE(Update, nullptr);
+    EXPECT_EQ(Update->Action, ExpectedAction);
+    ASSERT_TRUE(Contract->getConfigurationFacts());
+    EXPECT_TRUE(Contract->getConfigurationFacts()->Requirements.empty());
+
+    const SmallVector<std::pair<State, Access>, 4> Expected{
+        {State::Configuration, Access::Read},
+        {State::Issue, Access::ReadWrite},
+        // Boolean-combine modes consume the current LaneFlags as well as
+        // the saved top. Only plain pop/peek replace CC without reading it.
+        {State::CC, Access::ReadWrite},
+        {State::CCStack, Access::Read}};
+    EXPECT_EQ(Contract->getArchitecturalEffects().size(), Expected.size());
+    for (auto [Resource, Permission] : Expected) {
+      unsigned Matches = 0;
+      for (const auto &Effect : Contract->getArchitecturalEffects()) {
+        const auto *Actual = std::get_if<State>(&Effect.Resource);
+        if (Actual && *Actual == Resource) {
+          EXPECT_EQ(Effect.Access, Permission);
+          ++Matches;
+        }
+      }
+      EXPECT_EQ(Matches, 1u);
+    }
+  }
+}
+
+TEST(RISCVTensixConfiguration, SFPPOPCRejectsUnspecifiedCombineMode) {
+  auto Contract = getTensixBoundSFPUContract(
+      Intrinsic::riscv_tt_bound_sfppopc,
+      {constant(0), constant(2)});
+  ASSERT_FALSE(bool(Contract));
+  EXPECT_EQ(toString(Contract.takeError()),
+            "bound SFPU unsupported mode at operand 1");
+}
+
+TEST(RISCVTensixConfiguration, ConditionStackRejectsUnsupportedFields) {
+  // VD stays zero. Push receives only modes zero and one; pop additionally
+  // receives Blackhole's mode-three/four Boolean-combine forms. Other
+  // mutation and flag-setting modes remain unavailable.
+  for (Intrinsic::ID ID : {Intrinsic::riscv_tt_bound_sfppushc,
+                           Intrinsic::riscv_tt_bound_sfppopc}) {
+    SCOPED_TRACE(ID);
+    for (unsigned Field : {0u, 1u}) {
+      SCOPED_TRACE(Field);
+      for (int64_t Value = -1; Value != 17; ++Value) {
+        const bool ValidMode =
+            Field == 1 && (Value == 0 || Value == 1 ||
+                           (ID == Intrinsic::riscv_tt_bound_sfppopc &&
+                            (Value == 3 || Value == 4)));
+        if (Field == 0 && Value == 0)
+          continue;
+        if (ValidMode)
+          continue;
+        SCOPED_TRACE(Value);
+        SmallVector<TensixBoundValue, 2> Args{constant(0), constant(0)};
+        Args[Field] = constant(Value);
+        auto Rejected = getTensixBoundSFPUContract(ID, Args);
+        ASSERT_FALSE(bool(Rejected));
+        EXPECT_EQ(toString(Rejected.takeError()),
+                  Field == 0
+                      ? "bound SFPU logical field operand 0 must be in [0, 0]"
+                      : "bound SFPU unsupported mode at operand 1");
+      }
+      for (TensixBoundValueKind Kind :
+           {TensixBoundValueKind::DynamicScalar,
+            TensixBoundValueKind::UnboundRegister}) {
+        SCOPED_TRACE(unsigned(Kind));
+        SmallVector<TensixBoundValue, 2> Args{constant(0), constant(0)};
+        Args[Field] = {Kind};
+        auto Rejected = getTensixBoundSFPUContract(ID, Args);
+        ASSERT_FALSE(bool(Rejected));
+        EXPECT_EQ(toString(Rejected.takeError()),
+                  Field == 0
+                      ? "bound SFPU logical field operand 0 must be in [0, 0]"
+                      : "bound SFPU unsupported mode at operand 1");
+      }
+    }
+  }
+}
+
+TEST(RISCVTensixConfiguration, PlainConditionStackRequiresExactArgumentTuple) {
+  for (Intrinsic::ID ID :
+       {Intrinsic::riscv_tt_bound_sfppushc, Intrinsic::riscv_tt_bound_sfppopc,
+        Intrinsic::riscv_tt_bound_sfpcompc}) {
+    SCOPED_TRACE(ID);
+    for (unsigned Count : {0u, 1u, 2u, 3u}) {
+      if (Count == (ID == Intrinsic::riscv_tt_bound_sfpcompc ? 0u : 2u))
+        continue;
+      SCOPED_TRACE(Count);
+      SmallVector<TensixBoundValue, 3> Args(Count, constant(0));
+      auto Rejected = getTensixBoundSFPUContract(ID, Args);
+      ASSERT_FALSE(bool(Rejected));
+      EXPECT_EQ(toString(Rejected.takeError()),
+                "bound SFPU argument tuple has the wrong size");
+    }
+  }
 }
 
 TEST(RISCVTensixConfiguration, ConfigurationResetHasProvedEmptyRequirements) {

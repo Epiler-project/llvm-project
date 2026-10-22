@@ -146,10 +146,15 @@ enum class TensixSFPUTransferKind : uint8_t {
   ImmediateLowerHalf,
   LaneWise,
   LanePermutation,
+  RegisterPermutation,
 };
 struct TensixSFPUTransferInput {
   unsigned Argument;
   uint32_t DemandedBits;
+};
+struct TensixSFPULaneSource {
+  unsigned Argument;
+  uint32_t Lane;
 };
 struct TensixSFPUTransferFacts {
   TensixSFPUTransferKind Kind = TensixSFPUTransferKind::Unsupported;
@@ -173,6 +178,16 @@ struct TensixSFPUTransferFacts {
   // permutation is owned by the native instruction semantics. Inactive
   // destinations preserve their own old lane, not the mapped source lane.
   SmallVector<uint32_t, 0> SourceLanes;
+  // Explicit bound ABI identities; consumers never infer these from the
+  // descriptor's register order. SourceArgument applies only to transfers
+  // with one bit-preserving source; numerical dependencies remain in Inputs.
+  unsigned DestinationArgument = 0;
+  std::optional<unsigned> SourceArgument;
+  std::optional<unsigned> OldArgument;
+  // For RegisterPermutation only: destination lane -> actual source ABI
+  // argument and lane in the pre-instruction snapshot. Predication selects
+  // destinations, so inactive source lanes remain available to the mapping.
+  SmallVector<TensixSFPULaneSource, 0> LaneSources;
 };
 
 enum class TensixSFPUConditionEnableUpdate : uint8_t {
@@ -184,6 +199,20 @@ enum class TensixSFPUConditionEnableUpdate : uint8_t {
 struct TensixSFPUConditionUpdate {
   TensixSFPUConditionEnableUpdate Enable;
   bool Flags;
+};
+enum class TensixSFPUConditionStackAction : uint8_t {
+  Push,
+  Pop,
+  Complement,
+  ReplaceTop,
+  Peek,
+  // Raw SFPPOPC Boolean modes combine LaneFlags with the saved top and
+  // restore its enable flag. They peek, including at an empty stack.
+  AndTop,
+  OrTop,
+};
+struct TensixSFPUConditionStackUpdate {
+  TensixSFPUConditionStackAction Action;
 };
 struct TensixSFPULaneConfigReset {
   // Fields are projected by the native owner; no client decodes bit positions.
@@ -200,7 +229,7 @@ struct TensixSFPULaneConfigReset {
 };
 using TensixSFPULaneControl =
     std::variant<std::monostate, TensixSFPUConditionUpdate,
-                 TensixSFPULaneConfigReset>;
+                 TensixSFPULaneConfigReset, TensixSFPUConditionStackUpdate>;
 
 enum class TensixSFPUConfigurationField : uint8_t { EnableDestIndex };
 struct TensixSFPUConfigurationRequirement {
@@ -228,8 +257,10 @@ public:
   ArrayRef<TensixSFPUArchitecturalEffect> getArchitecturalEffects() const {
     return Effects;
   }
-  const TensixSFPUTransferFacts &getTransferFacts() const {
-    return Transfer;
+  // One fact per received numerical result. Empty means numerical transfer
+  // semantics are unreceived, not that the instruction has no effects.
+  ArrayRef<TensixSFPUTransferFacts> getTransferFacts() const {
+    return Transfers;
   }
   // Exact transitions of supported state-control forms, not entry-state or
   // execution proofs. An empty projection does not mean no state effects.
@@ -237,7 +268,9 @@ public:
   // Absent means this native form's configuration legality is unreceived.
   // Present with no requirements is a proved empty set, never the default.
   const std::optional<TensixSFPUConfigurationFacts> &
-  getConfigurationFacts() const { return Configuration; }
+  getConfigurationFacts() const {
+    return Configuration;
+  }
 
 private:
   friend Expected<TensixBoundSFPUContract>
@@ -248,7 +281,7 @@ private:
   SmallVector<TensixBoundRegisterArgument, 12> Registers;
   SmallVector<TensixBoundRegisterConstraint, 8> Constraints;
   SmallVector<TensixSFPUArchitecturalEffect, 16> Effects;
-  TensixSFPUTransferFacts Transfer;
+  SmallVector<TensixSFPUTransferFacts, 4> Transfers;
   TensixSFPULaneControl LaneControl;
   std::optional<TensixSFPUConfigurationFacts> Configuration;
 };

@@ -80,6 +80,8 @@ constexpr TensixBoundInstruction Instructions[] = {
     {Intrinsic::riscv_tt_bound_sfpswap, RISCV::PseudoTTBoundSFPSWAP, 5},
     {Intrinsic::riscv_tt_bound_sfptransp, RISCV::PseudoTTBoundSFPTRANSP, 12},
     {Intrinsic::riscv_tt_bound_sfpsetcc, RISCV::PseudoTTBoundSFPSETCC, 3},
+    {Intrinsic::riscv_tt_bound_sfpgt, RISCV::PseudoTTBoundSFPGT, 3},
+    {Intrinsic::riscv_tt_bound_sfple, RISCV::PseudoTTBoundSFPLE, 3},
     {Intrinsic::riscv_tt_bound_sfpencc, RISCV::PseudoTTBoundSFPENCC, 2},
     {Intrinsic::riscv_tt_bound_sfppushc, RISCV::PseudoTTBoundSFPPUSHC, 2},
     {Intrinsic::riscv_tt_bound_sfppopc, RISCV::PseudoTTBoundSFPPOPC, 2},
@@ -437,16 +439,35 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
   case RISCV::PseudoTTBoundSFPENCC:
     Select(RISCV::TTSFPENCC, {0, 1});
     break;
+  case RISCV::PseudoTTBoundSFPGT:
+  case RISCV::PseudoTTBoundSFPLE:
+    Select(Info.Pseudo == RISCV::PseudoTTBoundSFPGT ? RISCV::TTSFPGT
+                                                   : RISCV::TTSFPLE,
+           {0, 1, 2});
+    break;
   case RISCV::PseudoTTBoundSFPPUSHC:
-  case RISCV::PseudoTTBoundSFPPOPC:
+  case RISCV::PseudoTTBoundSFPPOPC: {
     if (Error E = Zero(0))
       return std::move(E);
-    if (Error E = Zero(1))
+    const bool Push = Info.Pseudo == RISCV::PseudoTTBoundSFPPUSHC;
+    if (Push) {
+      if (Error E = Mode(1, {0, 1}))
+        return std::move(E);
+    } else if (Error E = Mode(1, {0, 1, 3, 4})) {
       return std::move(E);
-    Select(Info.Pseudo == RISCV::PseudoTTBoundSFPPUSHC ? RISCV::TTSFPPUSHC
-                                                       : RISCV::TTSFPPOPC,
-           {});
+    }
+    const int64_t ModeValue = Args[1].Constant;
+    const unsigned Opcode =
+        Push ? (ModeValue == 1 ? RISCV::TTSFPPUSHCReplaceTop
+                               : RISCV::TTSFPPUSHC)
+             : (ModeValue == 1 ? RISCV::TTSFPPOPCPeek
+                                : ModeValue == 3 ? RISCV::TTSFPPOPCAndTop
+                                                 : ModeValue == 4
+                                                       ? RISCV::TTSFPPOPCOrTop
+                                                       : RISCV::TTSFPPOPC);
+    Select(Opcode, {});
     break;
+  }
   case RISCV::PseudoTTBoundSFPCONFIGCReg: {
     if (Args[1].Kind != ValueKind::Constant)
       return invalid("configuration native selection requires a bound CReg");
@@ -657,15 +678,16 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
   TensixBoundSFPUContract Contract;
   Contract.ID = ID;
   Contract.Roles.assign(Args.size(), Role::LogicalImmediate);
+  TensixSFPUTransferFacts Transfer;
   if (Native.Opcode == RISCV::TTSFPMOVAll) {
-    Contract.Transfer = {TensixSFPUTransferKind::Identity,
-                         0,
-                         0xffffffffu,
-                         0xffffffffu,
-                         false,
-                         false,
-                         false,
-                         false};
+    Transfer = {TensixSFPUTransferKind::Identity,
+                0,
+                0xffffffffu,
+                0xffffffffu,
+                false,
+                false,
+                false,
+                false};
   } else if (Native.Opcode == RISCV::TTSFPLOADI) {
     if (Args.size() != 4 || Args[3].Kind != ValueKind::Constant)
       return invalid("SFPLOADI transfer requires a constant mode");
@@ -674,34 +696,34 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     case 1:
     case 2:
     case 4:
-      Contract.Transfer = {TensixSFPUTransferKind::ImmediateFull,
-                           0,
-                           0xffffffffu,
-                           0xffffffffu,
-                           true,
-                           true,
-                           true,
-                           true};
+      Transfer = {TensixSFPUTransferKind::ImmediateFull,
+                  0,
+                  0xffffffffu,
+                  0xffffffffu,
+                  true,
+                  true,
+                  true,
+                  true};
       break;
     case 8:
-      Contract.Transfer = {TensixSFPUTransferKind::ImmediateUpperHalf,
-                           0x0000ffffu,
-                           0xffff0000u,
-                           0xffff0000u,
-                           true,
-                           true,
-                           true,
-                           true};
+      Transfer = {TensixSFPUTransferKind::ImmediateUpperHalf,
+                  0x0000ffffu,
+                  0xffff0000u,
+                  0xffff0000u,
+                  true,
+                  true,
+                  true,
+                  true};
       break;
     case 10:
-      Contract.Transfer = {TensixSFPUTransferKind::ImmediateLowerHalf,
-                           0xffff0000u,
-                           0x0000ffffu,
-                           0x0000ffffu,
-                           true,
-                           true,
-                           true,
-                           true};
+      Transfer = {TensixSFPUTransferKind::ImmediateLowerHalf,
+                  0xffff0000u,
+                  0x0000ffffu,
+                  0x0000ffffu,
+                  true,
+                  true,
+                  true,
+                  true};
       break;
     default:
       return invalid("SFPLOADI transfer has an unsupported mode");
@@ -711,17 +733,17 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     // Masked SFPMOV preserves the old destination in inactive lanes. A copy
     // propagates source bit-knownness; negation consumes the source
     // numerically, so its active lanes require all source bits initialized.
-    Contract.Transfer = {TensixSFPUTransferKind::Identity,
-                         0u,
-                         0xffffffffu,
-                         0xffffffffu,
-                         true,
-                         true,
-                         true,
-                         true};
+    Transfer = {TensixSFPUTransferKind::Identity,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true};
     if (Native.Opcode == RISCV::TTSFPMOVNeg) {
-      Contract.Transfer.Kind = TensixSFPUTransferKind::LaneWise;
-      Contract.Transfer.Inputs.push_back({2, 0xffffffffu});
+      Transfer.Kind = TensixSFPUTransferKind::LaneWise;
+      Transfer.Inputs.push_back({2, 0xffffffffu});
     }
   } else if (Native.Opcode == RISCV::TTSFPSHFT2 &&
              Args[4].Kind == ValueKind::Constant && Args[4].Constant == 3) {
@@ -729,16 +751,16 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     // within each group of eight lanes. LaneEnabled selects destinations;
     // a disabled source lane can still supply another active destination.
     // Mode 4 remains a legal native instruction without this transfer summary.
-    Contract.Transfer = {TensixSFPUTransferKind::LanePermutation,
-                         0u,
-                         0xffffffffu,
-                         0xffffffffu,
-                         true,
-                         true,
-                         true,
-                         true};
+    Transfer = {TensixSFPUTransferKind::LanePermutation,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true};
     for (unsigned Lane = 0; Lane != 32; ++Lane)
-      Contract.Transfer.SourceLanes.push_back((Lane & 7) ? Lane - 1 : Lane + 7);
+      Transfer.SourceLanes.push_back((Lane & 7) ? Lane - 1 : Lane + 7);
   } else if (Native.Opcode == RISCV::TTSFPADD ||
              Native.Opcode == RISCV::TTSFPMUL) {
     // Direct MAD-unit forms read both arithmetic inputs in active lanes.
@@ -747,15 +769,15 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     // The descriptors receive only direct mode bits 0..1, never indirect
     // source/destination selection. This proves initialized bits, not a
     // different floating-point algorithm or rounding contract.
-    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
-                         0u,
-                         0xffffffffu,
-                         0xffffffffu,
-                         true,
-                         true,
-                         true,
-                         true,
-                         {{2, 0xffffffffu}, {3, 0xffffffffu}}};
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}, {3, 0xffffffffu}}};
   } else if (Native.Opcode == RISCV::TTSFPARECIP) {
     if (Args[3].Kind != ValueKind::Constant)
       return invalid("SFPARECIP transfer requires a constant mode");
@@ -765,17 +787,17 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     // so that mode demands its sign bit, not an active-lane passthrough.
     // Inactive lanes still preserve the complete old destination under CC
     // and ROW_MASK. These are bit masks, not register widths or counts.
-    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
-                         0u,
-                         0xffffffffu,
-                         0xffffffffu,
-                         true,
-                         true,
-                         true,
-                         true,
-                         {{2, 0xffffffffu}}};
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}}};
     if (Args[3].Constant == 1)
-      Contract.Transfer.Inputs.push_back({1, 0x80000000u});
+      Transfer.Inputs.push_back({1, 0x80000000u});
   } else if (Native.Opcode == RISCV::TTSFPIADD ||
              Native.Opcode == RISCV::TTSFPISUB ||
              Native.Opcode == RISCV::TTSFPAND ||
@@ -784,28 +806,66 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     // These vector forms leave CC unchanged. Active lanes consume both the
     // tied old destination and C numerically, then overwrite all result bits;
     // inactive lanes preserve the old destination under CC and ROW_MASK.
-    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
-                         0u,
-                         0xffffffffu,
-                         0xffffffffu,
-                         true,
-                         true,
-                         true,
-                         true,
-                         {{1, 0xffffffffu}, {2, 0xffffffffu}}};
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{1, 0xffffffffu}, {2, 0xffffffffu}}};
   } else if (Native.Opcode == RISCV::TTSFPNOT) {
     // This bound form aliases native old and C to the same ABI argument.
     // It is one numerical input in active lanes and passthrough in inactive
     // lanes; knowing the old bits must not bypass the numerical dependency.
-    Contract.Transfer = {TensixSFPUTransferKind::LaneWise,
-                         0u,
-                         0xffffffffu,
-                         0xffffffffu,
-                         true,
-                         true,
-                         true,
-                         true,
-                         {{1, 0xffffffffu}}};
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{1, 0xffffffffu}}};
+  }
+  if (Native.Opcode == RISCV::TTSFPTRANSP) {
+    // Each LReg is viewed as four rows of eight lanes. Transpose exchanges
+    // the register and row axes within L0..L3, using one pre-instruction
+    // snapshot for all four results. L4..L7 remain declared clobbers, not
+    // numerical results of this bound form.
+    for (unsigned Destination = 0; Destination != 4; ++Destination) {
+      TensixSFPUTransferFacts Result{
+          TensixSFPUTransferKind::RegisterPermutation,
+          0u,
+          0xffffffffu,
+          0xffffffffu,
+          true,
+          true,
+          true,
+          true,
+          {{8, 0xffffffffu},
+           {9, 0xffffffffu},
+           {10, 0xffffffffu},
+           {11, 0xffffffffu}}};
+      Result.DestinationArgument = Destination;
+      Result.OldArgument = 8 + Destination;
+      for (unsigned Lane = 0; Lane != 32; ++Lane)
+        Result.LaneSources.push_back(
+            {8 + Lane / 8, Destination * 8 + Lane % 8});
+      Contract.Transfers.push_back(std::move(Result));
+    }
+  } else if (Transfer.Kind != TensixSFPUTransferKind::Unsupported) {
+    Transfer.DestinationArgument = 0;
+    if (Native.Opcode == RISCV::TTSFPMOVAll) {
+      Transfer.SourceArgument = 1;
+    } else {
+      Transfer.OldArgument = 1;
+      if (Transfer.Kind == TensixSFPUTransferKind::Identity ||
+          Transfer.Kind == TensixSFPUTransferKind::LanePermutation)
+        Transfer.SourceArgument = 2;
+    }
+    Contract.Transfers.push_back(std::move(Transfer));
   }
   // SFPMOV mode 2 copies all u32 lane contents independently of LaneEnabled.
   // Other selected forms still require their live CC/configuration and bit
@@ -1063,6 +1123,27 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     // predicates, independently of the current Configuration ROW_MASK field.
     Contract.LaneControl =
         TensixSFPULaneConfigReset{8, true, true, true, true, true, true, true};
+  } else if (Native.Opcode == RISCV::TTSFPPUSHC) {
+    Contract.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Push};
+  } else if (Native.Opcode == RISCV::TTSFPPUSHCReplaceTop) {
+    Contract.LaneControl = TensixSFPUConditionStackUpdate{
+        TensixSFPUConditionStackAction::ReplaceTop};
+  } else if (Native.Opcode == RISCV::TTSFPPOPC) {
+    Contract.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Pop};
+  } else if (Native.Opcode == RISCV::TTSFPPOPCPeek) {
+    Contract.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Peek};
+  } else if (Native.Opcode == RISCV::TTSFPPOPCAndTop) {
+    Contract.LaneControl = TensixSFPUConditionStackUpdate{
+        TensixSFPUConditionStackAction::AndTop};
+  } else if (Native.Opcode == RISCV::TTSFPPOPCOrTop) {
+    Contract.LaneControl = TensixSFPUConditionStackUpdate{
+        TensixSFPUConditionStackAction::OrTop};
+  } else if (Native.Opcode == RISCV::TTSFPCOMPC) {
+    Contract.LaneControl = TensixSFPUConditionStackUpdate{
+        TensixSFPUConditionStackAction::Complement};
   }
 
   // This is an explicit configuration receiver, independent of numerical
@@ -1109,6 +1190,12 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
       break;
     }
     break;
+  case RISCV::TTSFPTRANSP:
+    // SFPTRANSP is exempt from TEN-2932. This native form has VD=0, so it
+    // also bypasses the configurable backdoor-load condition. Its actual CC
+    // and configuration reads remain architectural effects and lane inputs.
+    Contract.Configuration.emplace();
+    break;
   case RISCV::TTSFPLOAD:
   case RISCV::TTSFPSTORE:
     // SFPLOAD is exempt from TEN-2932; SFPSTORE reads its LReg operand and
@@ -1116,9 +1203,23 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
     Contract.Configuration.emplace();
     break;
   case RISCV::TTSFPENCC:
+  case RISCV::TTSFPGT:
+  case RISCV::TTSFPLE:
   case RISCV::TTSFPCONFIGReset:
   case RISCV::TTSFPCONFIGLane:
   case RISCV::TTSFPNOP:
+    Contract.Configuration.emplace();
+    break;
+  case RISCV::TTSFPPUSHC:
+  case RISCV::TTSFPPUSHCReplaceTop:
+  case RISCV::TTSFPPOPC:
+  case RISCV::TTSFPPOPCPeek:
+  case RISCV::TTSFPPOPCAndTop:
+  case RISCV::TTSFPPOPCOrTop:
+  case RISCV::TTSFPCOMPC:
+    // These selected forms encode VD=0, outside the configurable
+    // backdoor-load path. They have no numerical destination or lane-config
+    // prerequisite; stack depth and reaching CC remain independent facts.
     Contract.Configuration.emplace();
     break;
   default:

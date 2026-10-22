@@ -213,11 +213,11 @@ TEST(RISCVTensix, BoundPRNGAdvanceHasOnlyDestinationAndOldWithStateEffects) {
   EXPECT_EQ(Config, 1u);
   EXPECT_EQ(Issue, 1u);
   EXPECT_EQ(PRNG, 1u);
-  EXPECT_TRUE(std::holds_alternative<std::monostate>(Contract->getLaneControl()));
+  EXPECT_TRUE(
+      std::holds_alternative<std::monostate>(Contract->getLaneControl()));
   // The bounded initializedness helper has no PRNG-content input. It must
   // not claim a copy or an immediately initialized numerical value.
-  EXPECT_EQ(Contract->getTransferFacts().Kind,
-            TensixSFPUTransferKind::Unsupported);
+  EXPECT_TRUE(Contract->getTransferFacts().empty());
 }
 
 TEST(RISCVTensix, BoundPRNGAdvanceRejectsUnauthoredSourceOrBrokenBinding) {
@@ -289,8 +289,12 @@ TEST(RISCVTensix, BoundTransferFactsDistinguishImmediateHalfWrites) {
         Intrinsic::riscv_tt_bound_sfploadi,
         {Constant(0), Constant(0), Constant(0), Constant(Mode)});
     ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-    const auto &Facts = Contract->getTransferFacts();
+    ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+    const auto &Facts = Contract->getTransferFacts().front();
     EXPECT_EQ(Facts.Kind, Kind);
+    EXPECT_EQ(Facts.DestinationArgument, 0u);
+    EXPECT_EQ(Facts.OldArgument, 1u);
+    EXPECT_FALSE(Facts.SourceArgument);
     EXPECT_EQ(Facts.GeneratedBits, Generated);
     EXPECT_EQ(Facts.GuaranteedWriteBits, Generated);
     EXPECT_EQ(Facts.DemandedOldBits, Demanded);
@@ -302,11 +306,16 @@ TEST(RISCVTensix, BoundTransferFactsDistinguishImmediateHalfWrites) {
   auto Move = getTensixBoundSFPUContract(Intrinsic::riscv_tt_bound_sfpmov_all,
                                          {Constant(0), Constant(1)});
   ASSERT_TRUE(bool(Move)) << toString(Move.takeError());
-  EXPECT_EQ(Move->getTransferFacts().Kind, TensixSFPUTransferKind::Identity);
-  EXPECT_EQ(Move->getTransferFacts().GeneratedBits, 0xffffffffu);
-  EXPECT_FALSE(Move->getTransferFacts().RequiresLaneEnable);
-  EXPECT_FALSE(Move->getTransferFacts().RequiresConditionState);
-  EXPECT_FALSE(Move->getTransferFacts().RequiresRowMaskState);
+  ASSERT_EQ(Move->getTransferFacts().size(), 1u);
+  const auto &MoveFacts = Move->getTransferFacts().front();
+  EXPECT_EQ(MoveFacts.Kind, TensixSFPUTransferKind::Identity);
+  EXPECT_EQ(MoveFacts.GeneratedBits, 0xffffffffu);
+  EXPECT_FALSE(MoveFacts.RequiresLaneEnable);
+  EXPECT_FALSE(MoveFacts.RequiresConditionState);
+  EXPECT_FALSE(MoveFacts.RequiresRowMaskState);
+  EXPECT_EQ(MoveFacts.DestinationArgument, 0u);
+  EXPECT_EQ(MoveFacts.SourceArgument, 1u);
+  EXPECT_FALSE(MoveFacts.OldArgument);
 }
 
 TEST(RISCVTensix, BoundMaskedMoveDeclaresSourceOldAndLaneFacts) {
@@ -331,16 +340,21 @@ TEST(RISCVTensix, BoundMaskedMoveDeclaresSourceOldAndLaneFacts) {
     EXPECT_EQ(Contract->getRegisterArguments()[2].Role,
               TensixBoundArgumentRole::ReadRegister);
 
-    const auto &Facts = Contract->getTransferFacts();
+    ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+    const auto &Facts = Contract->getTransferFacts().front();
     EXPECT_EQ(Facts.Kind, Mode == 0 ? TensixSFPUTransferKind::Identity
-                                   : TensixSFPUTransferKind::LaneWise);
+                                    : TensixSFPUTransferKind::LaneWise);
     if (Mode == 0) {
       EXPECT_TRUE(Facts.Inputs.empty());
+      EXPECT_EQ(Facts.SourceArgument, 2u);
     } else {
+      EXPECT_FALSE(Facts.SourceArgument);
       ASSERT_EQ(Facts.Inputs.size(), 1u);
       EXPECT_EQ(Facts.Inputs[0].Argument, 2u);
       EXPECT_EQ(Facts.Inputs[0].DemandedBits, 0xffffffffu);
     }
+    EXPECT_EQ(Facts.DestinationArgument, 0u);
+    EXPECT_EQ(Facts.OldArgument, 1u);
     EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
     EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
     EXPECT_EQ(Facts.DemandedOldBits, 0u);
@@ -362,7 +376,8 @@ TEST(RISCVTensix, BoundIAddWithoutConditionUpdateDeclaresLaneWiseInputs) {
         Intrinsic::riscv_tt_bound_sfpiadd,
         {Constant(1), Constant(1), Constant(2), Constant(Mode)});
     ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-    const auto &Facts = Contract->getTransferFacts();
+    ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+    const auto &Facts = Contract->getTransferFacts().front();
     EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LaneWise);
     EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
     EXPECT_EQ(Facts.GuaranteedWriteBits, 0xffffffffu);
@@ -392,11 +407,7 @@ TEST(RISCVTensix, BoundIAddConditionUpdatesRemainUnsupportedTransfers) {
         Intrinsic::riscv_tt_bound_sfpiadd,
         {Constant(1), Constant(1), Constant(2), Constant(Mode)});
     ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-    const auto &Facts = Contract->getTransferFacts();
-    EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::Unsupported);
-    EXPECT_TRUE(Facts.Inputs.empty());
-    EXPECT_EQ(Facts.GeneratedBits, 0u);
-    EXPECT_EQ(Facts.GuaranteedWriteBits, 0u);
+    EXPECT_TRUE(Contract->getTransferFacts().empty());
   }
 }
 

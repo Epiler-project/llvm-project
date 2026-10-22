@@ -49,6 +49,8 @@ def int_riscv_bosc_fdiv : BOSCBoundIntrinsic<[],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
 def int_riscv_bosc_fsplat : BOSCBoundIntrinsic<[], [llvm_i32_ty, llvm_float_ty],
                                               [ImmArg<ArgIndex<0>>]>;
+def int_riscv_bosc_isplat : BOSCBoundIntrinsic<[], [llvm_i32_ty, llvm_i64_ty],
+                                              [ImmArg<ArgIndex<0>>]>;
 def int_riscv_bosc_fextract : BOSCBoundIntrinsic<[llvm_float_ty], [llvm_i32_ty],
                                                 [ImmArg<ArgIndex<0>>]>;
 def int_riscv_bosc_freduce_sum : BOSCBoundIntrinsic<[],
@@ -60,6 +62,8 @@ class BOSCBoundBinaryIntrinsic : BOSCBoundIntrinsic<[],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
 class BOSCBoundUnaryIntrinsic : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_i32_ty], [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
+// Signed e32 maximum, preserving the MLIR-selected physical VRF operands.
+def int_riscv_bosc_maximum : BOSCBoundBinaryIntrinsic;
 def int_riscv_bosc_fmax : BOSCBoundBinaryIntrinsic;
 def int_riscv_bosc_fmacc : BOSCBoundBinaryIntrinsic;
 def int_riscv_bosc_fcmp_lt : BOSCBoundBinaryIntrinsic;
@@ -99,6 +103,7 @@ def int_riscv_bosc_dma_fence : BOSCBoundIntrinsic<[], []>;
 def int_riscv_bosc_ame_setm : BOSCBoundIntrinsic<[llvm_i64_ty], [llvm_i64_ty]>;
 def int_riscv_bosc_ame_setn : BOSCBoundIntrinsic<[llvm_i64_ty], [llvm_i64_ty]>;
 def int_riscv_bosc_ame_setk : BOSCBoundIntrinsic<[llvm_i64_ty], [llvm_i64_ty]>;
+def int_riscv_bosc_ame_setfp8_e4m3 : BOSCBoundIntrinsic<[], []>;
 def int_riscv_bosc_ame_load_a : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_ptr_ty, llvm_i64_ty], [ImmArg<ArgIndex<0>>]>;
 def int_riscv_bosc_ame_load_b : BOSCBoundIntrinsic<[],
@@ -108,6 +113,9 @@ def int_riscv_bosc_ame_load_c : BOSCBoundIntrinsic<[],
 def int_riscv_bosc_ame_store_c : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_ptr_ty, llvm_i64_ty], [ImmArg<ArgIndex<0>>]>;
 def int_riscv_bosc_ame_mma : BOSCBoundIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+def int_riscv_bosc_ame_fp_mma : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
 // A boolean chooses one of two explicitly bound B registers. Keep the choice
