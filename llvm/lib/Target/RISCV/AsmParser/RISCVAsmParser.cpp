@@ -4428,12 +4428,16 @@ bool RISCVAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
   // .option directives can enable incompatible extensions after STI
   // construction. Check the Tensix contract without changing the ordinary
   // assembler's .attribute arch handling of the base architecture.
-  if (getSTI().getFeatureBits()[RISCV::FeatureVendorXTTTensixBH])
+  if (getSTI().getFeatureBits()[RISCV::FeatureVendorXTTTensixBH] ||
+      getSTI().getFeatureBits()[RISCV::FeatureVendorXTTTensixWH])
     RISCVFeatures::validate(getSTI().getTargetTriple(), getSTI().getFeatureBits());
   Inst.setLoc(IDLoc);
   if (llvm::Error E = RISCV::verifyTensixMCInstruction(
           Inst, MII, *getContext().getRegisterInfo()))
     return Error(IDLoc, toString(std::move(E)));
+  if (getSTI().hasFeature(RISCV::FeatureVendorXTTTensixWH))
+    if (llvm::Error E = RISCV::verifyTensixWormholeInstruction(Inst, MII))
+      return Error(IDLoc, toString(std::move(E)));
 
   switch (Inst.getOpcode()) {
   default:

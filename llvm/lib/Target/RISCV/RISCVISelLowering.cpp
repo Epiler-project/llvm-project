@@ -13906,8 +13906,10 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
   default:
     break;
   case Intrinsic::riscv_tt_dependent_use: {
-    if (!Subtarget.hasVendorXTTTensixBH())
-      reportFatalUsageError("Tensix intrinsic requires +xtttensixbh");
+    if (!Subtarget.hasVendorXTTTensixBH() &&
+        !Subtarget.hasVendorXTTTensixWH())
+      reportFatalUsageError(
+          "Tensix intrinsic requires +xtttensixbh or +xtttensixwh");
     return SDValue(DAG.getMachineNode(RISCV::PseudoTTDependentUse, SDLoc(Op),
                                       MVT::Other, Op.getOperand(2),
                                       Op.getOperand(0)), 0);

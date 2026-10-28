@@ -3056,7 +3056,7 @@ void RISCVTTIImpl::getUnrollingPreferences(
   // policy per function so ordinary RISC-V functions in a mixed module retain
   // their usual unrolling preferences. NCRISC has an executor identity but
   // cannot issue Tensix instructions, so it does not carry +xtttensixbh.
-  if (ST->hasVendorXTTTensixBH() ||
+  if (ST->hasVendorXTTTensixBH() || ST->hasVendorXTTTensixWH() ||
       L->getHeader()->getParent()->hasFnAttribute("tensix-executor")) {
     UP.PreserveIterations = true;
     return;
@@ -3138,7 +3138,7 @@ void RISCVTTIImpl::getUnrollingPreferences(
 
 void RISCVTTIImpl::getPeelingPreferences(Loop *L, ScalarEvolution &SE,
                                        TTI::PeelingPreferences &PP) const {
-  if (ST->hasVendorXTTTensixBH() ||
+  if (ST->hasVendorXTTTensixBH() || ST->hasVendorXTTTensixWH() ||
       L->getHeader()->getParent()->hasFnAttribute("tensix-executor")) {
     PP.PeelCount = 0;
     PP.AllowPeeling = false;

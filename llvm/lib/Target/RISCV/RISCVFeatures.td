@@ -1361,6 +1361,22 @@ def FeatureVendorXTTTensixBH
 def HasVendorXTTTensixBH : Predicate<"Subtarget->hasVendorXTTTensixBH()">,
     AssemblerPredicate<(all_of FeatureVendorXTTTensixBH), "'XTTTensixBH'">;
 
+// Sharing a proved encoding does not enable Blackhole's remaining ISA.
+def FeatureVendorXTTTensixWH
+    : RISCVExtension<1, 0, "Tenstorrent Wormhole Tensix instructions">;
+def HasVendorXTTTensixWH : Predicate<"Subtarget->hasVendorXTTTensixWH()">,
+    AssemblerPredicate<(all_of FeatureVendorXTTTensixWH), "'XTTTensixWH'">;
+def HasVendorXTTTensix
+    : Predicate<"Subtarget->hasVendorXTTTensixBH() || "
+                "Subtarget->hasVendorXTTTensixWH()">,
+      AssemblerPredicate<(any_of FeatureVendorXTTTensixBH,
+                                FeatureVendorXTTTensixWH),
+                         "'XTTTensixBH' or 'XTTTensixWH'">;
+
+// This mode selects only independently defined instruction encodings. It does
+// not imply the Blackhole extension or change scalar register value types.
+def TensixWormholeEncoding : HwMode<[HasVendorXTTTensixWH]>;
+
 // T-Head Extensions
 
 def FeatureVendorXTHeadBa

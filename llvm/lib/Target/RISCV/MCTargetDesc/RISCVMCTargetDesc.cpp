@@ -48,7 +48,7 @@
 
 using namespace llvm;
 
-Expected<bool> llvm::RISCV::verifyTensixTargetFeatures(const Triple &TT,
+Expected<FeatureBitset> llvm::RISCV::getTensixTargetFeatureBits(const Triple &TT,
                                                      StringRef CPU,
                                                      StringRef Features) {
   if (CPU.empty() || CPU == "generic")
@@ -63,7 +63,17 @@ Expected<bool> llvm::RISCV::verifyTensixTargetFeatures(const Triple &TT,
     return createStringError("RISC-V feature width conflicts with target triple");
   if (Error E = RISCV::verifyTensixFeatureBits(TT, STI->getFeatureBits()))
     return std::move(E);
-  return STI->getFeatureBits()[RISCV::FeatureVendorXTTTensixBH];
+  return STI->getFeatureBits();
+}
+
+Expected<bool> llvm::RISCV::verifyTensixTargetFeatures(const Triple &TT,
+                                                     StringRef CPU,
+                                                     StringRef Features) {
+  auto Bits = getTensixTargetFeatureBits(TT, CPU, Features);
+  if (!Bits)
+    return Bits.takeError();
+  return (*Bits)[RISCV::FeatureVendorXTTTensixBH] ||
+         (*Bits)[RISCV::FeatureVendorXTTTensixWH];
 }
 
 static MCInstrInfo *createRISCVMCInstrInfo() {
@@ -204,7 +214,8 @@ createRISCVMCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
   // Tensix must reject incompatible feature combinations. Preserve ordinary
   // MC consumers that intentionally override a file's base architecture via
   // its attributes (for example, llvm-objdump with an explicit RV32 triple).
-  if (X->hasFeature(RISCV::FeatureVendorXTTTensixBH))
+  if (X->hasFeature(RISCV::FeatureVendorXTTTensixBH) ||
+      X->hasFeature(RISCV::FeatureVendorXTTTensixWH))
     RISCVFeatures::validate(TT, X->getFeatureBits());
 
   return X;

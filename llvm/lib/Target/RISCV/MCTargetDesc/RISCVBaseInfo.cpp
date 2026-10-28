@@ -57,6 +57,8 @@ namespace RISCV {
 #define GET_RISCVTensixInstructionTable_IMPL
 #define GET_RISCVTensixMachineTable_IMPL
 #define GET_RISCVTensixFieldTable_IMPL
+#define GET_RISCVTensixWormholeFieldTable_IMPL
+#define GET_RISCVTensixWormholeFormFieldTable_IMPL
 #include "RISCVGenSearchableTables.inc"
 
 uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port) {
@@ -129,9 +131,14 @@ Expected<TensixPortLayout> getTensixPortLayout(unsigned MachineOpcode,
 }
 
 Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits) {
-  if (FeatureBits[RISCV::FeatureVendorXTTTensixBH]) {
+  bool Blackhole = FeatureBits[RISCV::FeatureVendorXTTTensixBH];
+  bool Wormhole = FeatureBits[RISCV::FeatureVendorXTTTensixWH];
+  if (Blackhole && Wormhole)
+    return createStringError("XTTTensixBH and XTTTensixWH are mutually exclusive");
+  if (Blackhole || Wormhole) {
+    StringRef Feature = Wormhole ? "XTTTensixWH" : "XTTTensixBH";
     if (TT.getArch() != Triple::riscv32 || !TT.isLittleEndian())
-      return createStringError("XTTTensixBH requires RV32 little-endian");
+      return createStringError(Feature + " requires RV32 little-endian");
     if (FeatureBits[RISCV::FeatureStdExtC] ||
         FeatureBits[RISCV::FeatureStdExtZca] ||
         FeatureBits[RISCV::FeatureStdExtZcb] ||
@@ -142,7 +149,7 @@ Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits
         FeatureBits[RISCV::FeatureStdExtZcmop] ||
         FeatureBits[RISCV::FeatureStdExtZcmp] ||
         FeatureBits[RISCV::FeatureStdExtZcmt])
-      return createStringError("XTTTensixBH is incompatible with C/Zc extensions");
+      return createStringError(Feature + " is incompatible with C/Zc extensions");
     if (FeatureBits[RISCV::FeatureStdExtV] ||
         FeatureBits[RISCV::FeatureStdExtZve32x] ||
         FeatureBits[RISCV::FeatureStdExtZve32f] ||
@@ -150,7 +157,7 @@ Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits
         FeatureBits[RISCV::FeatureStdExtZve64f] ||
         FeatureBits[RISCV::FeatureStdExtZve64d])
       return createStringError(
-          "XTTTensixBH is incompatible with V/Zve extensions");
+          Feature + " is incompatible with V/Zve extensions");
   }
   return Error::success();
 }
@@ -181,6 +188,70 @@ getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index) {
   if (Index >= Info.NumFields)
     return nullptr;
   return lookupTensixInstructionField(Info.IntrinsicID, Index);
+}
+
+bool isTensixWormholeIntrinsic(Intrinsic::ID ID) {
+  const auto *Info = getTensixInstructionByIntrinsic(ID);
+  if (!Info || ID != Info->IntrinsicID)
+    return false;
+  const auto *Machine = getTensixMachineInfoByIntrinsic(ID);
+  const auto *Encoding = getTensixEncoding(Machine->Opcode);
+  return Encoding && Encoding->WormholeSupported;
+}
+
+Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
+                                            ArrayRef<uint32_t> Fields) {
+  if (!isTensixWormholeIntrinsic(ID))
+    return createStringError("Tensix instruction is not supported on Wormhole");
+  const auto *Machine = getTensixMachineInfoByIntrinsic(ID);
+  const auto *Info = getTensixInstructionByIntrinsic(ID);
+  if (Fields.size() != Info->NumFields)
+    return createStringError("incorrect number of Tensix instruction operands");
+  for (unsigned I = 0; I != Info->NumFields; ++I) {
+    const auto *Field = getTensixWormholeField(Machine->Opcode, I);
+    if (Fields[I] < Field->MinValue || Fields[I] > Field->MaxValue)
+      return createStringError(
+          "Wormhole " + Info->getName() + " field " +
+          getTensixInstructionField(*Info, I)->getName() + " must be in [" +
+          Twine(Field->MinValue) + ", " + Twine(Field->MaxValue) + "]");
+  }
+  if (!getTensixWormholeFormField(Machine->Opcode, 0, 0))
+    return Error::success();
+  for (unsigned F = 0;
+       getTensixWormholeFormField(Machine->Opcode, F, 0); ++F) {
+    bool Matches = true;
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      const auto *Field = getTensixWormholeFormField(Machine->Opcode, F, I);
+      assert(Field && "incomplete TableGen logical-form relation");
+      Matches &= !Field->Fixed || Fields[I] == Field->Value;
+    }
+    if (Matches)
+      return Error::success();
+  }
+  return createStringError("Wormhole " + Info->getName() +
+                           " does not match an admitted logical form");
+}
+
+Error verifyTensixWormholeInstruction(const MCInst &MI,
+                                      const MCInstrInfo &MCII) {
+  const auto *Encoding = getTensixEncoding(MI.getOpcode());
+  if (!Encoding)
+    return Error::success();
+  if (!Encoding->WormholeSupported)
+    return createStringError("Tensix instruction is not supported on Wormhole");
+  const auto *Machine = getTensixMachineInfo(MI.getOpcode());
+  if (!Machine || MI.getNumOperands() !=
+                      MCII.get(MI.getOpcode()).getNumOperands())
+    return createStringError("incorrect number of Tensix instruction operands");
+  SmallVector<uint32_t, 16> Fields;
+  for (const auto &Operand : MI) {
+    if (!Operand.isImm() || Operand.getImm() < 0 ||
+        uint64_t(Operand.getImm()) > UINT32_MAX)
+      return createStringError("Wormhole requires static unsigned i32 fields");
+    Fields.push_back(static_cast<uint32_t>(Operand.getImm()));
+  }
+  return verifyTensixWormholeInstructionFields(
+      static_cast<Intrinsic::ID>(Machine->IntrinsicID), Fields);
 }
 
 Error verifyTensixMCInstructionFields(const MCInst &MI,

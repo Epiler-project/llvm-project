@@ -474,7 +474,7 @@ Error verifyReplayTemplates(Function &F, DominatorTree &DT) {
   return Error::success();
 }
 
-Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
+Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &SE,
                   AssumptionCache &AC, DominatorTree &DT) {
   if (Error E = verifyReplayTemplates(F, DT))
     return E;
@@ -495,6 +495,12 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
       continue;
     if (!HasFeature)
       return invalid(F, "Tensix intrinsic requires +xtttensixbh");
+    // The scalar readback dependency uses ordinary RISC-V instructions rather
+    // than a model-specific Tensix instruction encoding.
+    if (Wormhole &&
+        II->getIntrinsicID() != Intrinsic::riscv_tt_dependent_use &&
+        !RISCV::isTensixWormholeIntrinsic(II->getIntrinsicID()))
+      return invalid(F, "Tensix intrinsic is not supported on Wormhole");
     if (Executor.empty())
       return invalid(F, "Tensix intrinsic requires a tensix-executor function attribute");
     if (Executor != "ncrisc" && Executor != "brisc" && Executor != "trisc0" &&
@@ -566,6 +572,17 @@ Error verifyIssue(Function &F, bool HasFeature, ScalarEvolution &SE,
     bool Replay = Info->IntrinsicID == Intrinsic::riscv_tt_replay;
     bool Port = ID == Info->PortIntrinsicID;
     unsigned First = Port || Mop ? 1 : 0;
+    if (Wormhole) {
+      SmallVector<uint32_t, 16> Fields;
+      for (unsigned N = 0; N != Info->NumFields; ++N) {
+        auto Value = immediate(*II, N);
+        if (!Value)
+          return Value.takeError();
+        Fields.push_back(static_cast<uint32_t>(*Value));
+      }
+      if (Error E = RISCV::verifyTensixWormholeInstructionFields(ID, Fields))
+        return invalid(F, toString(std::move(E)));
+    }
     if (Mop) {
       if (Executor == "brisc")
         return invalid(F, "MOP slot programming requires a TRISC executor");
@@ -781,18 +798,20 @@ Error llvm::RISCV::verifyTensixModule(Module &M) {
       continue;
     Attribute CPU = F.getFnAttribute("target-cpu");
     Attribute Features = F.getFnAttribute("target-features");
-    auto HasFeature = verifyTensixTargetFeatures(
+    auto FeaturesBits = getTensixTargetFeatureBits(
         M.getTargetTriple(), CPU.isStringAttribute() ? CPU.getValueAsString() : "",
         Features.isStringAttribute() ? Features.getValueAsString() : "");
-    if (!HasFeature)
-      return HasFeature.takeError();
+    if (!FeaturesBits)
+      return FeaturesBits.takeError();
+    bool Wormhole = (*FeaturesBits)[RISCV::FeatureVendorXTTTensixWH];
+    bool HasFeature = (*FeaturesBits)[RISCV::FeatureVendorXTTTensixBH] || Wormhole;
     AssumptionCache AC(F);
     DominatorTree DT(F);
     LoopInfo LI(DT);
     TargetLibraryInfoImpl TLII(M.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
     ScalarEvolution SE(F, TLI, AC, DT, LI);
-    if (Error E = verifyIssue(F, *HasFeature, SE, AC, DT))
+    if (Error E = verifyIssue(F, HasFeature, Wormhole, SE, AC, DT))
       return E;
     auto Facts = verifyTensixSFPUFunction(F, SE, AC, DT);
     if (!Facts)
@@ -828,10 +847,11 @@ public:
       const auto *II = dyn_cast<IntrinsicInst>(&I);
       return II && RISCV::isTensixIntrinsic(II->getIntrinsicID());
     });
-    if (!ST.hasVendorXTTTensixBH() && !UsesTensix)
+    if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH() && !UsesTensix)
       return false;
     if (Error E = verifyIssue(
-            F, ST.hasVendorXTTTensixBH(),
+            F, ST.hasVendorXTTTensixBH() || ST.hasVendorXTTTensixWH(),
+            ST.hasVendorXTTTensixWH(),
             getAnalysis<ScalarEvolutionWrapperPass>().getSE(),
             getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F),
             getAnalysis<DominatorTreeWrapperPass>().getDomTree()))
@@ -872,9 +892,10 @@ PreservedAnalyses RISCVTensixNewPMGate::run(Function &F,
     const auto *II = dyn_cast<IntrinsicInst>(&I);
     return II && RISCV::isTensixIntrinsic(II->getIntrinsicID());
   });
-  if (!ST.hasVendorXTTTensixBH() && !UsesTensix)
+  if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH() && !UsesTensix)
     return PreservedAnalyses::all();
-  if (Error E = verifyIssue(F, ST.hasVendorXTTTensixBH(),
+  if (Error E = verifyIssue(F, ST.hasVendorXTTTensixBH() || ST.hasVendorXTTTensixWH(),
+          ST.hasVendorXTTTensixWH(),
           FAM.getResult<ScalarEvolutionAnalysis>(F),
           FAM.getResult<AssumptionAnalysis>(F),
           FAM.getResult<DominatorTreeAnalysis>(F)))

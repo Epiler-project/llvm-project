@@ -18,13 +18,15 @@ class TensixEncoding<bits<8> opcode, bits<8> configShift,
   bits<8> ValueBits = valueBits;
   bits<8> ModeOperandIndex = 0;
   bits<16> AllowedModes = 0;
+  bit WormholeSupported = 0;
 }
 
 def RISCVTensixEncodingTable : GenericTable {
   let FilterClass = "TensixEncoding";
   let CppTypeName = "TensixEncoding";
   let Fields = ["Opcode", "RawOpcode", "OpcodeShift", "ConfigShift",
-                "ConfigCount", "ValueBits", "ModeOperandIndex", "AllowedModes"];
+                "ConfigCount", "ValueBits", "ModeOperandIndex", "AllowedModes",
+                "WormholeSupported"];
   let PrimaryKey = ["Opcode"];
   let PrimaryKeyName = "getTensixEncoding";
 }
@@ -59,7 +61,7 @@ def RISCVTensixRegisterContentsTable : GenericTable {
   string TypeOf_RegisterID = "code";
 }
 
-let Predicates = [HasVendorXTTTensixBH], hasSideEffects = 1, isNotDuplicable = 1,
+let Predicates = [HasVendorXTTTensix], hasSideEffects = 1, isNotDuplicable = 1,
     mayLoad = 0, mayStore = 1, hasNoSchedulingInfo = 1 in {
 // This instruction consumes the loaded scalar even though its result is zero.
 // It must survive DAG folding and preserve the ordering of device reads.

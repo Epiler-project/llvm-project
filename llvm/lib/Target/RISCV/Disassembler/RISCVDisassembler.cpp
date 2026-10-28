@@ -739,19 +739,34 @@ DecodeStatus RISCVDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
     Size = 0;
     return MCDisassembler::Fail;
   }
-  if (STI.hasFeature(RISCV::FeatureVendorXTTTensixBH) &&
+  if ((STI.hasFeature(RISCV::FeatureVendorXTTTensixBH) ||
+       STI.hasFeature(RISCV::FeatureVendorXTTTensixWH)) &&
       (Bytes[0] & 0b11) != 0b11) {
-    // Blackhole repurposes the compressed space for full 32-bit Tensix words.
+    // Tensix direct issue repurposes compressed space for full 32-bit words.
     // Never consume half of an unknown or truncated Tensix instruction.
     Size = Bytes.size() >= 4 ? 4 : 0;
     if (!Size)
       return MCDisassembler::Fail;
     uint32_t Insn = support::endian::read32le(Bytes.data());
-    DecodeStatus Result =
-        decodeInstruction(DecoderTableTensix32, MI, Insn, Address, this, STI);
+    const uint8_t *TensixTable =
+        STI.hasFeature(RISCV::FeatureVendorXTTTensixWH)
+            ? DecoderTableTensix_TensixWormholeEncoding32
+            : DecoderTableTensix32;
+    DecodeStatus Result = MCDisassembler::Fail;
+    if (STI.hasFeature(RISCV::FeatureVendorXTTTensixWH))
+      Result = decodeInstruction(DecoderTableTensixWormholeUnpacr32, MI,
+                                 Insn, Address, this, STI);
+    if (Result == MCDisassembler::Fail)
+      Result = decodeInstruction(TensixTable, MI, Insn, Address, this, STI);
     if (Result != MCDisassembler::Fail)
       if (Error E = RISCV::verifyTensixMCInstruction(
               MI, *MCII, *getContext().getRegisterInfo())) {
+        consumeError(std::move(E));
+        return MCDisassembler::Fail;
+      }
+    if (Result != MCDisassembler::Fail &&
+        STI.hasFeature(RISCV::FeatureVendorXTTTensixWH))
+      if (Error E = RISCV::verifyTensixWormholeInstruction(MI, *MCII)) {
         consumeError(std::move(E));
         return MCDisassembler::Fail;
       }

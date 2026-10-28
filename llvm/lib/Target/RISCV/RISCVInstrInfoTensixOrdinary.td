@@ -32,6 +32,11 @@ class TensixOrdinaryInst<string LogicalName, bits<8> RawOpcodeValue,
       !eq(LogicalName, "ZEROACC"));
   list<string> FieldNames = Names;
   list<int> FieldMaxima = Maxima;
+  list<int> WormholeFieldMinima = !listsplat(0, !size(Names));
+  list<int> WormholeFieldMaxima = Maxima;
+  // Optional disjunction of exact logical forms. -1 retains that field's
+  // independently declared bounds; it does not create a new encoding field.
+  list<list<int>> WormholeLogicalForms = [];
   bits<8> NumFields = !size(Names);
   bits<32> RawWord = 0;
   let RawWord{31-24} = RawOpcodeValue;
@@ -488,6 +493,13 @@ def TTCLEARDVALID : TensixOrdinaryInst<"CLEARDVALID", 0x36,
     "$reset, $cleardvalid",
     ["reset", "cleardvalid"],
     [4194303, 3]> {
+  // WH CLEARDVALID.md and pinned ckernel_ops.h agree. Admit lane-local
+  // return/flip only: neither unsafe reset nor KeepReadingSameSrc nor a
+  // simultaneous two-lane release is part of this source-protocol subset.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [0, 1];
+  let WormholeFieldMaxima = [0, 2];
   bits<22> reset;
   bits<2> cleardvalid;
   let RawWord{21-0} = reset;
@@ -1074,6 +1086,9 @@ def TTNOP : TensixOrdinaryInst<"NOP", 0x02,
     "",
     [],
     []> {
+  // WormholeB0 NOP.md and its Bits32 diagram.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
 }
 
 def PseudoTTPACRPort : TensixOrdinaryPort;
@@ -1299,6 +1314,10 @@ def TTSEMGET : TensixOrdinaryInst<"SEMGET", 0xa5,
     "$sem_sel",
     ["sem_sel"],
     [4194303]> {
+  // WormholeB0 SEMGET.md: eight semaphore selectors, at raw bits 9:2.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [255];
   bits<22> sem_sel;
   let RawWord{23-2} = sem_sel;
 }
@@ -1311,6 +1330,10 @@ def TTSEMINIT : TensixOrdinaryInst<"SEMINIT", 0xa3,
     "$sem_sel, $init_value, $max_value",
     ["sem_sel", "init_value", "max_value"],
     [16383, 15, 15]> {
+  // WormholeB0 SEMINIT.md and its Bits32 diagram.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [255, 15, 15];
   bits<14> sem_sel;
   bits<4> init_value;
   bits<4> max_value;
@@ -1327,6 +1350,10 @@ def TTSEMPOST : TensixOrdinaryInst<"SEMPOST", 0xa4,
     "$sem_sel",
     ["sem_sel"],
     [4194303]> {
+  // WormholeB0 SEMPOST.md: eight semaphore selectors, at raw bits 9:2.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [255];
   bits<22> sem_sel;
   let RawWord{23-2} = sem_sel;
 }
@@ -1339,6 +1366,11 @@ def TTSEMWAIT : TensixOrdinaryInst<"SEMWAIT", 0xa6,
     "$wait_sem_cond, $sem_sel, $stall_res",
     ["wait_sem_cond", "sem_sel", "stall_res"],
     [3, 8191, 511]> {
+  // WormholeB0 SEMWAIT.md: a zero condition mask is undefined.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [1, 0, 0];
+  let WormholeFieldMaxima = [3, 255, 511];
   bits<2> wait_sem_cond;
   bits<13> sem_sel;
   bits<9> stall_res;
@@ -1487,6 +1519,12 @@ def TTSETC16 : TensixOrdinaryInst<"SETC16", 0xb2,
     "$setc16_value, $setc16_reg",
     ["setc16_value", "setc16_reg"],
     [65535, 67]> {
+  // WH SETC16.md and pinned ckernel_ops.h use the same raw encoding. Its
+  // cfg_defines.h publishes THD_STATE_SIZE=57: indices 0..56 are valid;
+  // Blackhole retains the common 0..67 range. Port and MOP forms stay BH-only.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [65535, 56];
   bits<16> setc16_value;
   bits<8> setc16_reg;
   let RawWord{15-0} = setc16_value;
@@ -1565,6 +1603,12 @@ def TTSETRWC : TensixOrdinaryInst<"SETRWC", 0x37,
     "$bitmask, $rwc_a, $rwc_b, $rwc_d, $rwc_cr, $clear_ab_vld",
     ["bitmask", "rwc_a", "rwc_b", "rwc_d", "rwc_cr", "clear_ab_vld"],
     [63, 15, 15, 15, 15, 3]> {
+  // WH source-lane counter reset only. Publication/release use distinct
+  // protocol instructions; inherited CLR_DVALID disables cannot affect it.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [1, 0, 0, 0, 0, 0];
+  let WormholeFieldMaxima = [2, 0, 0, 0, 0, 0];
   bits<6> bitmask;
   bits<4> rwc_a;
   bits<4> rwc_b;
@@ -1637,6 +1681,9 @@ def TTSTALLWAIT : TensixOrdinaryInst<"STALLWAIT", 0xa2,
     "$wait_res, $stall_res",
     ["wait_res", "stall_res"],
     [32767, 511]> {
+  // WormholeB0 STALLWAIT.md and its Bits32 diagram.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<15> wait_res;
   bits<9> stall_res;
   let RawWord{14-0} = wait_res;
@@ -1799,6 +1846,49 @@ def TTUNPACR : TensixOrdinaryInst<"UNPACR", 0x42,
   let RawWord{23} = unpack_block_selection;
 }
 
+// One formal operand ABI selects architectural encodings in TableGen. WH's
+// compact NoOp=7 performs only a sequenced source-bank ownership handoff;
+// NoOp=0x11 waits on the selected Unpacker bank and clears its payload without
+// publishing it. Their complete logical tuples, not rectangular bounds, own
+// admission. Keep BH's original independent field encoding unchanged.
+class TensixUnpacrNopEncoding<bit Wormhole> : InstructionEncoding {
+  let Size = 4;
+  // Exact AdditionalEncoding records below own WH decoding. The generalized
+  // emitter has redundant logical operands which must not be guessed during
+  // disassembly of an arbitrary raw word.
+  let DecoderNamespace = !if(Wormhole, "TensixWormholeUnpacrEmitter", "Tensix");
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0;
+  bits<2> unpack_pop;
+  bits<2> src_clrval_ctrl = !if(Wormhole, 0, ?);
+  bits<1> bank_clr_ctrl = !if(Wormhole, 0, ?);
+  // Redundant in WH emission: the form relation requires it to equal
+  // unpack_pop. Exact decoder aliases below restore the complete tuple.
+  bits<1> stall_clr_cntrl = !if(Wormhole, 0, ?);
+  bits<2> clr_to1_fmt_ctrl = !if(Wormhole, 0, ?);
+  bits<4> set_dvalid;
+  bits<4> msg_clr_cnt = !if(Wormhole, 0, ?);
+  bits<7> stream_id = !if(Wormhole, 0, ?);
+  bits<1> unpacker_select;
+  let RawWord{31-24} = 0x43;
+  let RawWord{0} = !if(Wormhole, 1, unpack_pop{0});
+  let RawWord{1} = !if(Wormhole, set_dvalid{0}, unpack_pop{1});
+  let RawWord{2} = !if(Wormhole, set_dvalid{0}, src_clrval_ctrl{0});
+  let RawWord{3} = !if(Wormhole, 0, src_clrval_ctrl{1});
+  let RawWord{4} = !if(Wormhole, unpack_pop{0}, bank_clr_ctrl);
+  let RawWord{5} = !if(Wormhole, 0, stall_clr_cntrl);
+  let RawWord{7-6} = !if(Wormhole, 0, clr_to1_fmt_ctrl);
+  let RawWord{11-8} = !if(Wormhole, 0, set_dvalid);
+  let RawWord{15-12} = !if(Wormhole, 0, msg_clr_cnt);
+  let RawWord{22-16} = !if(Wormhole, 0, stream_id);
+  let RawWord{23} = unpacker_select;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+def TTUNPACR_NOPBlackholeEncoding : TensixUnpacrNopEncoding<0>;
+def TTUNPACR_NOPWormholeEncoding : TensixUnpacrNopEncoding<1>;
+
 def PseudoTTUNPACR_NOPPort : TensixOrdinaryPort;
 def PseudoTTUNPACR_NOPMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$unpack_pop, uimm32:$src_clrval_ctrl, uimm32:$bank_clr_ctrl, uimm32:$stall_clr_cntrl, uimm32:$clr_to1_fmt_ctrl, uimm32:$set_dvalid, uimm32:$msg_clr_cnt, uimm32:$stream_id, uimm32:$unpacker_select)>;
@@ -1807,25 +1897,30 @@ def TTUNPACR_NOP : TensixOrdinaryInst<"UNPACR_NOP", 0x43,
     "$unpack_pop, $src_clrval_ctrl, $bank_clr_ctrl, $stall_clr_cntrl, $clr_to1_fmt_ctrl, $set_dvalid, $msg_clr_cnt, $stream_id, $unpacker_select",
     ["unpack_pop", "src_clrval_ctrl", "bank_clr_ctrl", "stall_clr_cntrl", "clr_to1_fmt_ctrl", "set_dvalid", "msg_clr_cnt", "stream_id", "unpacker_select"],
     [3, 3, 1, 1, 3, 15, 15, 127, 1]> {
-  bits<2> unpack_pop;
-  bits<2> src_clrval_ctrl;
-  bits<1> bank_clr_ctrl;
-  bits<1> stall_clr_cntrl;
-  bits<2> clr_to1_fmt_ctrl;
-  bits<4> set_dvalid;
-  bits<4> msg_clr_cnt;
-  bits<7> stream_id;
-  bits<1> unpacker_select;
-  let RawWord{1-0} = unpack_pop;
-  let RawWord{3-2} = src_clrval_ctrl;
-  let RawWord{4} = bank_clr_ctrl;
-  let RawWord{5} = stall_clr_cntrl;
-  let RawWord{7-6} = clr_to1_fmt_ctrl;
-  let RawWord{11-8} = set_dvalid;
-  let RawWord{15-12} = msg_clr_cnt;
-  let RawWord{22-16} = stream_id;
-  let RawWord{23} = unpacker_select;
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  let WormholeFieldMaxima = [1, 0, 0, 1, 0, 1, 0, 0, 1];
+  let WormholeLogicalForms = [[0, 0, 0, 0, 0, 1, 0, 0, -1],
+                              [1, 0, 0, 1, 0, 0, 0, 0, -1]];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [TTUNPACR_NOPBlackholeEncoding, TTUNPACR_NOPWormholeEncoding]>;
 }
+
+// Official decoder-only aliases recover each exact logical tuple without
+// adding a machine opcode or hand-decoding bits in C++.
+class TensixWormholeUnpacrDecoder<bit Clear>
+    : TensixUnpacrNopEncoding<1>, AdditionalEncoding<TTUNPACR_NOP> {
+  let Size = 4;
+  let DecoderNamespace = "TensixWormholeUnpacr";
+  let Predicates = [HasVendorXTTTensixWH];
+  let unpack_pop = !if(Clear, 1, 0);
+  let stall_clr_cntrl = Clear;
+  let set_dvalid = !if(Clear, 0, 1);
+}
+def TTUNPACR_NOPWormholePublishDecoder : TensixWormholeUnpacrDecoder<0>;
+def TTUNPACR_NOPWormholeClearDecoder : TensixWormholeUnpacrDecoder<1>;
 
 def PseudoTTWRCFGPort : TensixOrdinaryPort;
 def PseudoTTWRCFGMop : TensixOrdinaryMop<
@@ -1857,6 +1952,43 @@ def TTXMOV : TensixOrdinaryInst<"XMOV", 0x40,
   let RawWord{23} = mov_block_selection;
 }
 
+// Both models retain the same five logical fields. The WH Full subset fixes
+// four fields and keeps use32 separate from Mode; it is not SDK packed Mode7.
+class TensixZeroaccEncoding : InstructionEncoding {
+  let Size = 4;
+  let DecoderNamespace = "Tensix";
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0;
+  bits<14> where;
+  bits<3> addr_mode;
+  bits<1> clear_zero_flags;
+  bits<1> use_32_bit_mode;
+  bits<5> clear_mode;
+  let RawWord{31-24} = 0x10;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+def TTZEROACCBlackholeEncoding : TensixZeroaccEncoding {
+  let RawWord{13-0} = where;
+  let RawWord{16-14} = addr_mode;
+  let RawWord{17} = clear_zero_flags;
+  let RawWord{18} = use_32_bit_mode;
+  let RawWord{23-19} = clear_mode;
+}
+def TTZEROACCWormholeEncoding : TensixZeroaccEncoding {
+  // Constant-valued named fields also restore all five decoded operands.
+  // Revert at bit18 and all reserved bits remain zero.
+  let where = 0;
+  let addr_mode = 1;
+  let clear_zero_flags = 0;
+  let clear_mode = 3;
+  let RawWord{9-0} = where{9-0};
+  let RawWord{16-15} = addr_mode{1-0};
+  let RawWord{20-19} = clear_mode{1-0};
+  let RawWord{21} = use_32_bit_mode;
+}
+
 def PseudoTTZEROACCPort : TensixOrdinaryPort;
 def PseudoTTZEROACCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$where, uimm32:$addr_mode, uimm32:$clear_zero_flags, uimm32:$use_32_bit_mode, uimm32:$clear_mode)>;
@@ -1865,16 +1997,13 @@ def TTZEROACC : TensixOrdinaryInst<"ZEROACC", 0x10,
     "$where, $addr_mode, $clear_zero_flags, $use_32_bit_mode, $clear_mode",
     ["where", "addr_mode", "clear_zero_flags", "use_32_bit_mode", "clear_mode"],
     [16383, 7, 1, 1, 31]> {
-  bits<14> where;
-  bits<3> addr_mode;
-  bits<1> clear_zero_flags;
-  bits<1> use_32_bit_mode;
-  bits<5> clear_mode;
-  let RawWord{13-0} = where;
-  let RawWord{16-14} = addr_mode;
-  let RawWord{17} = clear_zero_flags;
-  let RawWord{18} = use_32_bit_mode;
-  let RawWord{23-19} = clear_mode;
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [0, 1, 0, 0, 3];
+  let WormholeFieldMaxima = [0, 1, 0, 1, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [TTZEROACCBlackholeEncoding, TTZEROACCWormholeEncoding]>;
 }
 
 def PseudoTTZEROSRCPort : TensixOrdinaryPort;
@@ -1956,4 +2085,45 @@ def RISCVTensixFieldTable : GenericTable {
   let Fields = ["IntrinsicID", "Index", "Name", "MaxValue"];
   let PrimaryKey = ["IntrinsicID", "Index"];
   let PrimaryKeyName = "lookupTensixInstructionField";
+}
+
+// Private WH bounds are contributed only by independently admitted records.
+class TensixWormholeField<Instruction Op, int I, int Minimum, int Maximum> {
+  Instruction Opcode = Op;
+  bits<8> Index = I;
+  bits<32> MinValue = Minimum;
+  bits<32> MaxValue = Maximum;
+}
+foreach Op = !instances<TensixOrdinaryInst>() in
+  if Op.WormholeSupported then
+    foreach I = !range(!size(Op.FieldNames)) in
+      def : TensixWormholeField<Op, I, Op.WormholeFieldMinima[I],
+                                Op.WormholeFieldMaxima[I]>;
+def RISCVTensixWormholeFieldTable : GenericTable {
+  let FilterClass = "TensixWormholeField";
+  let CppTypeName = "TensixWormholeField";
+  let Fields = ["Opcode", "Index", "MinValue", "MaxValue"];
+  let PrimaryKey = ["Opcode", "Index"];
+  let PrimaryKeyName = "getTensixWormholeField";
+}
+
+class TensixWormholeFormField<Instruction Op, int F, int I, int V> {
+  Instruction Opcode = Op;
+  bits<8> Form = F;
+  bits<8> Index = I;
+  bit Fixed = !ge(V, 0);
+  bits<32> Value = !if(Fixed, V, 0);
+}
+foreach Op = !instances<TensixOrdinaryInst>() in
+  if Op.WormholeSupported then
+    foreach F = !range(!size(Op.WormholeLogicalForms)) in
+      foreach I = !range(!size(Op.FieldNames)) in
+        def : TensixWormholeFormField<Op, F, I,
+                                      Op.WormholeLogicalForms[F][I]>;
+def RISCVTensixWormholeFormFieldTable : GenericTable {
+  let FilterClass = "TensixWormholeFormField";
+  let CppTypeName = "TensixWormholeFormField";
+  let Fields = ["Opcode", "Form", "Index", "Fixed", "Value"];
+  let PrimaryKey = ["Opcode", "Form", "Index"];
+  let PrimaryKeyName = "getTensixWormholeFormField";
 }

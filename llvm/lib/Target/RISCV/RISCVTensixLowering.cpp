@@ -48,8 +48,10 @@ SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
   bool Word = ID == Intrinsic::riscv_tt_issue_word;
   if (!Info && !Clear && !Control && !End && !TemplateOpcode && !Word)
     return SDValue();
-  if (!ST.hasVendorXTTTensixBH())
+  if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH())
     reportFatalUsageError("Tensix intrinsic requires +xtttensixbh");
+  if (ST.hasVendorXTTTensixWH() && !RISCV::isTensixWormholeIntrinsic(ID))
+    reportFatalUsageError("Tensix intrinsic is not supported on Wormhole");
   SDLoc DL(Op);
   if (Word) {
     // The issue-word fold encoded every field; only the port store remains.

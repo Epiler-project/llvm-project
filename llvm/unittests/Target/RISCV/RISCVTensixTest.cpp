@@ -49,6 +49,151 @@ TEST(RISCVTensix, OrdinaryLogicalContract) {
   EXPECT_EQ(RISCV::getTensixInstructionByName("sfpadd"), nullptr);
 }
 
+TEST(RISCVTensix, ZeroaccKeepsFiveFieldLogicalContract) {
+  const auto *Info = RISCV::getTensixInstructionByName("zeroacc");
+  ASSERT_NE(Info, nullptr);
+  EXPECT_EQ(Info->IntrinsicID, Intrinsic::riscv_tt_zeroacc);
+  EXPECT_EQ(Info->PortIntrinsicID, Intrinsic::riscv_tt_zeroacc_port);
+  EXPECT_EQ(Info->MopIntrinsicID, Intrinsic::riscv_tt_zeroacc_mop);
+  ASSERT_EQ(Info->NumFields, 5);
+  const StringRef Names[] = {"where", "addr_mode", "clear_zero_flags",
+                            "use_32_bit_mode", "clear_mode"};
+  const uint32_t Maxima[] = {16383, 7, 1, 1, 31};
+  for (unsigned I = 0; I != 5; ++I) {
+    const auto *Field = RISCV::getTensixInstructionField(*Info, I);
+    ASSERT_NE(Field, nullptr);
+    EXPECT_EQ(Field->getName(), Names[I]);
+    EXPECT_EQ(Field->MaxValue, Maxima[I]);
+  }
+  EXPECT_EQ(RISCV::getTensixInstructionField(*Info, 5), nullptr);
+}
+
+TEST(RISCVTensix, WormholeZeroaccReceivesCanonicalFullForms) {
+  EXPECT_TRUE(RISCV::isTensixWormholeIntrinsic(Intrinsic::riscv_tt_zeroacc));
+  for (uint32_t Use32 : {0u, 1u}) {
+    const uint32_t Fields[] = {0, 1, 0, Use32, 3};
+    EXPECT_TRUE(toString(RISCV::verifyTensixWormholeInstructionFields(
+                            Intrinsic::riscv_tt_zeroacc, Fields))
+                    .empty());
+  }
+}
+
+TEST(RISCVTensix, WormholeZeroaccRejectsUnreceivedFieldsAndIssueForms) {
+  struct InvalidField {
+    unsigned Index;
+    uint32_t Value;
+    StringRef Diagnostic;
+  };
+  const InvalidField Invalid[] = {
+      {0, 1, "field where must be in [0, 0]"},
+      {1, 0, "field addr_mode must be in [1, 1]"},
+      {1, 2, "field addr_mode must be in [1, 1]"},
+      {2, 1, "field clear_zero_flags must be in [0, 0]"},
+      {3, 2, "field use_32_bit_mode must be in [0, 1]"},
+      {4, 2, "field clear_mode must be in [3, 3]"},
+      {4, 7, "field clear_mode must be in [3, 3]"},
+  };
+  for (const InvalidField &Case : Invalid) {
+    SCOPED_TRACE(Case.Index);
+    SCOPED_TRACE(Case.Value);
+    uint32_t Fields[] = {0, 1, 0, 0, 3};
+    Fields[Case.Index] = Case.Value;
+    std::string Diagnostic =
+        toString(RISCV::verifyTensixWormholeInstructionFields(
+            Intrinsic::riscv_tt_zeroacc, Fields));
+    EXPECT_NE(Diagnostic.find(Case.Diagnostic.str()), std::string::npos)
+        << Diagnostic;
+  }
+  for (unsigned Count : {4u, 6u}) {
+    SmallVector<uint32_t, 6> Fields(Count, 0);
+    EXPECT_NE(toString(RISCV::verifyTensixWormholeInstructionFields(
+                          Intrinsic::riscv_tt_zeroacc, Fields))
+                  .find("incorrect number of Tensix instruction operands"),
+              std::string::npos);
+  }
+  const uint32_t Fields[] = {0, 1, 0, 0, 3};
+  for (Intrinsic::ID ID : {Intrinsic::riscv_tt_zeroacc_port,
+                          Intrinsic::riscv_tt_zeroacc_mop}) {
+    EXPECT_FALSE(RISCV::isTensixWormholeIntrinsic(ID));
+    EXPECT_NE(toString(RISCV::verifyTensixWormholeInstructionFields(ID, Fields))
+                  .find("not supported on Wormhole"),
+              std::string::npos);
+  }
+}
+
+TEST(RISCVTensix, ScalarDependentUseAcceptsBothModelsAndAllExecutorRoles) {
+  LLVMContext Ctx;
+  auto M = parse(Ctx, R"(
+    declare void @llvm.riscv.tt.dependent.use(i32)
+    define void @readback(ptr %address, ptr %output) {
+      store volatile i32 1, ptr %address, align 4
+      %value = load volatile i32, ptr %address, align 4
+      call void @llvm.riscv.tt.dependent.use(i32 %value)
+      store volatile i32 2, ptr %output, align 4
+      ret void
+    }
+  )");
+  ASSERT_TRUE(M);
+  Function *F = M->getFunction("readback");
+  for (StringRef Features : {"+xtttensixbh", "+xtttensixwh"}) {
+    SCOPED_TRACE(Features.str());
+    F->addFnAttr("target-features", Features);
+    for (StringRef Executor : {"ncrisc", "brisc", "trisc0", "trisc1",
+                               "trisc2"}) {
+      SCOPED_TRACE(Executor.str());
+      F->addFnAttr("tensix-executor", Executor);
+      std::string Diagnostic = toString(RISCV::verifyTensixModule(*M));
+      EXPECT_TRUE(Diagnostic.empty()) << Diagnostic;
+    }
+  }
+}
+
+TEST(RISCVTensix, ScalarDependentUseRequiresFeatureAndValidExecutor) {
+  LLVMContext Ctx;
+  auto M = parse(Ctx, R"(
+    declare void @llvm.riscv.tt.dependent.use(i32)
+    define void @readback(i32 %value) {
+      call void @llvm.riscv.tt.dependent.use(i32 %value)
+      ret void
+    }
+  )");
+  ASSERT_TRUE(M);
+  Function *F = M->getFunction("readback");
+  F->addFnAttr("tensix-executor", "ncrisc");
+  EXPECT_NE(toString(RISCV::verifyTensixModule(*M))
+                .find("Tensix intrinsic requires +xtttensix"),
+            std::string::npos);
+  F->addFnAttr("target-features", "+xtttensixwh");
+  F->removeFnAttr("tensix-executor");
+  EXPECT_NE(toString(RISCV::verifyTensixModule(*M))
+                .find("requires a tensix-executor function attribute"),
+            std::string::npos);
+  F->addFnAttr("tensix-executor", "host");
+  EXPECT_NE(toString(RISCV::verifyTensixModule(*M))
+                .find("invalid tensix-executor value: host"),
+            std::string::npos);
+}
+
+TEST(RISCVTensix, ScalarDependentUseRejectsNonDirectCallShapes) {
+  const StringRef Calls[] = {
+      "call void @llvm.riscv.tt.dependent.use(i32 %value) [ \"deopt\"(i32 %value) ]",
+      "call fastcc void @llvm.riscv.tt.dependent.use(i32 %value)"};
+  for (StringRef Call : Calls) {
+    SCOPED_TRACE(Call.str());
+    LLVMContext Ctx;
+    std::string Body =
+        "declare void @llvm.riscv.tt.dependent.use(i32)\n"
+        "define void @readback(i32 %value) \"target-features\"=\"+xtttensixwh\" "
+        "\"tensix-executor\"=\"ncrisc\" {\n" +
+        Call.str() + "\nret void\n}\n";
+    auto M = parse(Ctx, Body);
+    ASSERT_TRUE(M);
+    EXPECT_NE(toString(RISCV::verifyTensixModule(*M))
+                  .find("requires a direct C call without operand bundles"),
+              std::string::npos);
+  }
+}
+
 TEST(RISCVTensix, RecoverableOrdinaryRange) {
   LLVMContext Ctx;
   auto M = parse(Ctx, R"(

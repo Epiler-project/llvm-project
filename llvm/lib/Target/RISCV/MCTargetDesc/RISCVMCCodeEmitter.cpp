@@ -567,7 +567,8 @@ void RISCVMCCodeEmitter::encodeInstruction(const MCInst &MI,
                                            SmallVectorImpl<MCFixup> &Fixups,
                                            const MCSubtargetInfo &STI) const {
   if (RISCV::getTensixEncoding(MI.getOpcode())) {
-    if (!STI.hasFeature(RISCV::FeatureVendorXTTTensixBH)) {
+    if (!STI.hasFeature(RISCV::FeatureVendorXTTTensixBH) &&
+        !STI.hasFeature(RISCV::FeatureVendorXTTTensixWH)) {
       Ctx.reportError(MI.getLoc(), "Tensix instruction requires +xtttensixbh");
       return;
     }
@@ -577,6 +578,11 @@ void RISCVMCCodeEmitter::encodeInstruction(const MCInst &MI,
       return;
     }
   }
+  if (STI.hasFeature(RISCV::FeatureVendorXTTTensixWH))
+    if (Error E = RISCV::verifyTensixWormholeInstruction(MI, MCII)) {
+      Ctx.reportError(MI.getLoc(), toString(std::move(E)));
+      return;
+    }
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   // Get byte count of instruction.
   unsigned Size = Desc.getSize();

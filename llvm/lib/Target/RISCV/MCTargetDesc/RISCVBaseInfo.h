@@ -949,6 +949,22 @@ struct TensixEncoding {
   uint8_t ValueBits;
   uint8_t ModeOperandIndex;
   uint16_t AllowedModes;
+  bool WormholeSupported;
+};
+
+struct TensixWormholeField {
+  unsigned Opcode;
+  uint8_t Index;
+  uint32_t MinValue;
+  uint32_t MaxValue;
+};
+
+struct TensixWormholeFormField {
+  unsigned Opcode;
+  uint8_t Form;
+  uint8_t Index;
+  bool Fixed;
+  uint32_t Value;
 };
 
 struct TensixMachineInfo {
@@ -987,6 +1003,13 @@ Expected<TensixPortLayout> getTensixPortLayout(unsigned MachineOpcode,
 // bound-contract queries; this is not complete MC instruction admission.
 Error verifyTensixMCInstructionFields(const MCInst &MI,
                                       const MCInstrInfo &MCII);
+// WH preflight and MC admission consume the same private TableGen facts.
+bool isTensixWormholeIntrinsic(Intrinsic::ID ID);
+Error verifyTensixWormholeInstruction(const MCInst &MI,
+                                      const MCInstrInfo &MCII);
+Expected<FeatureBitset> getTensixTargetFeatureBits(const Triple &TT,
+                                                 StringRef CPU,
+                                                 StringRef Features);
 Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
                                 const MCRegisterInfo &MRI);
 
@@ -1003,6 +1026,8 @@ Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
 #define GET_RISCVTensixInstructionTable_DECL
 #define GET_RISCVTensixMachineTable_DECL
 #define GET_RISCVTensixFieldTable_DECL
+#define GET_RISCVTensixWormholeFieldTable_DECL
+#define GET_RISCVTensixWormholeFormFieldTable_DECL
 #include "RISCVGenSearchableTables.inc"
 
 inline bool isValidYBNDSWImm(int64_t Imm) {

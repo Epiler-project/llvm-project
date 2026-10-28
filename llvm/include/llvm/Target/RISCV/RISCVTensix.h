@@ -64,6 +64,14 @@ const TensixInstructionField *
 getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index);
 bool isTensixIntrinsic(Intrinsic::ID ID);
 
+// Logical WH admission is independent of instruction bit positions. The same
+// TableGen bounds and complete-form relation serve IR, MC and external typed
+// compiler clients. Only direct intrinsic IDs and static unsigned fields are
+// admitted; this proves neither execution ownership nor hardware completion.
+bool isTensixWormholeIntrinsic(Intrinsic::ID ID);
+Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
+                                            ArrayRef<uint32_t> Fields);
+
 // Non-encoding SFPU facts shared by the compiler's explicit-object binder and
 // native ingress. Logical fields select the actual native descriptor; an
 // intrinsic ID alone does not determine all condition/configuration effects.
