@@ -1,0 +1,44 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=none -verify-machineinstrs %t/lut.mir -o %t/lut.parsed.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=none -verify-machineinstrs %t/config.mir -o %t/config.parsed.mir
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=postrapseudos -verify-machineinstrs %t/lut.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=postrapseudos -verify-machineinstrs %t/config.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=postrapseudos -verify-machineinstrs -filetype=obj %t/config.mir -o %t.o 2>&1 | FileCheck %s
+# RUN: test ! -e %t.o
+
+# The correct fixed input classes pass initial MIR verification. Undef table
+# or configuration contents remain semantically invalid: the final receiver
+# cannot invent L0's numerical value or silently consume unrelated contents.
+# CHECK: contents group requires its actual fixed-register ties
+
+#--- lut.mir
+--- |
+  define void @undefined_table() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: undefined_table
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l1, $tt_l2, $tt_l3, $tt_l4, $tt_cc, $tt_config, $tt_issue
+    $tt_l4 = PseudoTTSFPContentsLUT $tt_l4, undef $tt_l0, $tt_l1, $tt_l2, $tt_l3, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET implicit $tt_l4
+...
+
+#--- config.mir
+--- |
+  define void @undefined_source() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: undefined_source
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_c11, $tt_cc, $tt_config, $tt_issue
+    PseudoTTSFPContentsConfigC11 undef $tt_l0, 0, 0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+    PseudoRET
+...

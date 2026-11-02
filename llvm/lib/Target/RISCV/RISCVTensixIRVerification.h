@@ -15,6 +15,7 @@ class ScalarEvolution;
 class AssumptionCache;
 class DominatorTree;
 bool isTensixSFPUIntrinsic(Intrinsic::ID ID);
+bool isTensixContentsIntrinsic(Intrinsic::ID ID);
 
 /// Return true for the pre-bound LLVM ABI names retired by the physical
 /// ingress cutover.  This name-based check remains available while old

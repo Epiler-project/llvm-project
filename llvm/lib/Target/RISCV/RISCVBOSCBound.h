@@ -6,6 +6,7 @@
 
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
@@ -20,6 +21,15 @@ inline bool isBOSCBoundFunction(const Function &F) {
   return F.hasFnAttribute("trex-bosc-bound-rvv") ||
          F.hasFnAttribute("trex-bosc-bound-ame");
 }
+inline bool isBOSCContentsRVVFunction(const Function &F) {
+  return F.hasFnAttribute("trex-bosc-contents-rvv");
+}
+inline bool isBOSCContentsAMEFunction(const Function &F) {
+  return F.hasFnAttribute("trex-bosc-contents-ame");
+}
+inline bool isBOSCRegisterContentsFunction(const Function &F) {
+  return isBOSCContentsRVVFunction(F) || isBOSCContentsAMEFunction(F);
+}
 FunctionPass *createRISCVBOSCIRVerificationPass(bool Supported = true);
 void initializeRISCVBOSCIRVerificationPass(PassRegistry &);
 FunctionPass *createRISCVBOSCIssueIngressPass();
@@ -32,6 +42,10 @@ public:
 };
 SDValue lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
                                 const RISCVSubtarget &ST);
+bool isBOSCContentsSFUIntrinsic(Intrinsic::ID);
+bool isBOSCOrderedRVVContentsIntrinsic(Intrinsic::ID);
+SDValue lowerBOSCContentsSFUIntrinsic(SDValue, SelectionDAG &,
+                                      const RISCVSubtarget &);
 MachineBasicBlock *emitBOSCBoundInstruction(MachineInstr &, MachineBasicBlock *,
                                             const RISCVSubtarget &);
 } // namespace llvm

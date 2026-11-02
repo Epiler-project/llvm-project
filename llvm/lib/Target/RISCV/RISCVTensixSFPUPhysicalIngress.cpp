@@ -5,10 +5,13 @@
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTensixIRVerification.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/InitializePasses.h"
 
@@ -47,17 +50,29 @@ public:
     if (!Info->usesTensixSFPU() || Info->hasTensixCodegenFailed())
       return false;
 
+    // Admit virtual numerical contents only from the actual verified ingress.
+    // Serialized machine flags alone cannot turn an arbitrary MIR value into a
+    // received contents program; fixed/staging state never becomes allocatable.
+    bool Contents = !Info->usesBoundTensixSFPU() &&
+                    llvm::any_of(instructions(MF.getFunction()),
+                                 [](const Instruction &I) {
+                                   const auto *II = dyn_cast<IntrinsicInst>(&I);
+                                   return II && isTensixContentsIntrinsic(
+                                                    II->getIntrinsicID());
+                                 });
     const auto &MRI = MF.getRegInfo();
     for (unsigned I = 0; I != MRI.getNumVirtRegs(); ++I) {
       Register Reg = Register::index2VirtReg(I);
       if (MRI.reg_nodbg_empty(Reg) || !isSFPURegister(Reg, MRI))
         continue;
+      const auto *RC = MRI.getRegClassOrNull(Reg);
+      if (Contents && RC && RISCV::SFPRRegClass.hasSubClassEq(RC))
+        continue;
 
       Info->setTensixCodegenFailed();
       MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
           MF.getFunction(),
-          "Tensix SFPU requires bound physical registers; virtual SFPU "
-          "allocation is retired"));
+          "Tensix SFPU virtual registers require verified contents SSA ingress"));
       return false;
     }
     return false;

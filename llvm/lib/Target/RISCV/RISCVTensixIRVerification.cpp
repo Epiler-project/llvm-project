@@ -6,6 +6,8 @@
 #include "RISCV.h"
 #include "RISCVTargetMachine.h"
 #include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixContentsGroup.h"
+#include "RISCVTensixLowering.h"
 #include "RISCVTensixReplay.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -27,10 +29,12 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/KnownBits.h"
+#include "llvm/Support/ModRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 #include <functional>
@@ -40,15 +44,64 @@
 using namespace llvm;
 
 bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
-  return isTensixBoundSFPUIntrinsic(ID);
+  return isTensixBoundSFPUIntrinsic(ID) || isTensixContentsIntrinsic(ID);
+}
+
+bool llvm::isTensixContentsIntrinsic(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_read_constant:
+  case Intrinsic::riscv_tt_contents_load:
+  case Intrinsic::riscv_tt_contents_add:
+  case Intrinsic::riscv_tt_contents_mul:
+  case Intrinsic::riscv_tt_contents_store:
+  case Intrinsic::riscv_tt_contents_load_immediate:
+  case Intrinsic::riscv_tt_contents_mad:
+  case Intrinsic::riscv_tt_contents_iadd:
+  case Intrinsic::riscv_tt_contents_mov:
+  case Intrinsic::riscv_tt_contents_mov_all:
+  case Intrinsic::riscv_tt_contents_prng_advance:
+  case Intrinsic::riscv_tt_contents_arecip:
+  case Intrinsic::riscv_tt_contents_exexp:
+  case Intrinsic::riscv_tt_contents_exman:
+  case Intrinsic::riscv_tt_contents_abs:
+  case Intrinsic::riscv_tt_contents_lz:
+  case Intrinsic::riscv_tt_contents_cast:
+  case Intrinsic::riscv_tt_contents_setexp_immediate:
+  case Intrinsic::riscv_tt_contents_setman_immediate:
+  case Intrinsic::riscv_tt_contents_setsgn_immediate:
+  case Intrinsic::riscv_tt_contents_setexp_vector:
+  case Intrinsic::riscv_tt_contents_setman_vector:
+  case Intrinsic::riscv_tt_contents_setsgn_vector:
+  case Intrinsic::riscv_tt_contents_iadd_immediate:
+  case Intrinsic::riscv_tt_contents_shft_immediate:
+  case Intrinsic::riscv_tt_contents_shft_vector:
+  case Intrinsic::riscv_tt_contents_and:
+  case Intrinsic::riscv_tt_contents_or:
+  case Intrinsic::riscv_tt_contents_xor:
+  case Intrinsic::riscv_tt_contents_not:
+  case Intrinsic::riscv_tt_contents_shft2:
+  case Intrinsic::riscv_tt_contents_stochrnd_immediate:
+  case Intrinsic::riscv_tt_contents_stochrnd_vector:
+  case Intrinsic::riscv_tt_contents_encc:
+  case Intrinsic::riscv_tt_contents_pushc:
+  case Intrinsic::riscv_tt_contents_popc:
+  case Intrinsic::riscv_tt_contents_setcc:
+  case Intrinsic::riscv_tt_contents_gt:
+  case Intrinsic::riscv_tt_contents_le:
+  case Intrinsic::riscv_tt_contents_compc:
+  case Intrinsic::riscv_tt_contents_nop:
+  case Intrinsic::riscv_tt_contents_config_reset:
+    return true;
+  default:
+    return isTensixContentsGroupIntrinsic(ID);
+  }
 }
 
 bool llvm::isRetiredTensixSFPUIntrinsicName(StringRef Name) {
   constexpr StringLiteral TensixPrefix = "llvm.riscv.tt.";
   if (!Name.starts_with(TensixPrefix))
     return false;
-  // The explicit bound ABI is the only supported SFPU call family.  All
-  // historical vector-carrier and implicit LReg/CReg forms share these
+  // Historical vector-carrier and implicit LReg/CReg forms share these
   // prefixes; classify them before intrinsic selection so textual IR cannot
   // silently become an external call or a legacy selector input.
   StringRef Suffix = Name.drop_front(TensixPrefix.size());
@@ -73,7 +126,8 @@ bool llvm::RISCV::isTensixIntrinsic(Intrinsic::ID ID) {
 namespace {
 bool isCarrier(Type *Ty) {
   auto *VT = dyn_cast<FixedVectorType>(Ty);
-  return VT && VT->getNumElements() == 32 && VT->getElementType()->isIntegerTy(32);
+  return VT && VT->getNumElements() == 32 &&
+         VT->getElementType()->isIntegerTy(32);
 }
 
 bool containsCarrier(Type *Ty) {
@@ -86,10 +140,32 @@ bool containsCarrier(Type *Ty) {
   return false;
 }
 
-
 Error invalid(const Function &F, const Twine &Detail) {
   return createStringError(Twine("Tensix function '") + F.getName() +
                            "': " + Detail);
+}
+
+// This scalar handoff is available to RV32 roles without a Tensix issue
+// extension. Keep its call and width contract independent of issue admission.
+Error verifyScalarReadResponse(Function &F, bool IsRV32) {
+  for (Instruction &I : instructions(F)) {
+    auto *Call = dyn_cast<CallBase>(&I);
+    const Function *Callee = Call ? Call->getCalledFunction() : nullptr;
+    if (!Callee ||
+        Callee->getIntrinsicID() != Intrinsic::riscv_tt_read_response)
+      continue;
+    if (!isa<CallInst>(Call) || Call->hasOperandBundles() ||
+        Call->getCallingConv() != CallingConv::C)
+      return invalid(F, "scalar device read response requires a direct C call "
+                        "without operand bundles");
+    if (Callee->getMemoryEffects() != MemoryEffects::unknown() ||
+        Call->getMemoryEffects() != MemoryEffects::unknown())
+      return invalid(
+          F, "scalar device read response requires full memory effects");
+    if (!IsRV32)
+      return invalid(F, "scalar device read response requires RV32");
+  }
+  return Error::success();
 }
 
 Expected<uint64_t> immediate(const IntrinsicInst &II, unsigned Index) {
@@ -106,8 +182,8 @@ Error range(const IntrinsicInst &II, unsigned Index, uint64_t Lower,
     return Value.takeError();
   if (*Value < Lower || *Value > Upper)
     return invalid(*II.getFunction(), "immediate operand " + Twine(Index) +
-                                         " must be in [" + Twine(Lower) +
-                                         ", " + Twine(Upper) + "]");
+                                          " must be in [" + Twine(Lower) +
+                                          ", " + Twine(Upper) + "]");
   return Error::success();
 }
 
@@ -134,9 +210,9 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
     if (const auto *Exact = dyn_cast<PossiblyExactOperator>(Op))
       if (Exact->isExact()) {
         const DataLayout &DL = I.getModule()->getDataLayout();
-        KnownBits Input = computeKnownBits(I.getOperand(0), DL, nullptr,
-                                          nullptr, nullptr,
-                                          /*UseInstrInfo=*/false);
+        KnownBits Input =
+            computeKnownBits(I.getOperand(0), DL, nullptr, nullptr, nullptr,
+                             /*UseInstrInfo=*/false);
         return Input.countMinTrailingZeros() >=
                Counts.getUnsignedMax().getZExtValue();
       }
@@ -158,7 +234,7 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
                               /*UseInstrInfo=*/false);
     };
     return KnownBits::haveNoCommonBitsSet(Bits(I.getOperand(0)),
-                                         Bits(I.getOperand(1)));
+                                          Bits(I.getOperand(1)));
   }
 
   // A flag is an obligation, never evidence. Check the actual operand ranges
@@ -175,7 +251,8 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
     RU = RU.intersectWith(RS, ConstantRange::Unsigned);
     LS = LS.intersectWith(LU, ConstantRange::Signed);
     RS = RS.intersectWith(RU, ConstantRange::Signed);
-    if (LU.isEmptySet() || RU.isEmptySet() || LS.isEmptySet() || RS.isEmptySet())
+    if (LU.isEmptySet() || RU.isEmptySet() || LS.isEmptySet() ||
+        RS.isEmptySet())
       return false;
     using OR = ConstantRange::OverflowResult;
     bool UnsignedSafe = false, SignedSafe = false;
@@ -223,7 +300,8 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
   }
   if (isa<PossiblyNonNegInst>(I) && I.hasNonNeg())
     return !SE.getSignedRange(SE.getSCEV(I.getOperand(0)))
-                .getSignedMin().isNegative();
+                .getSignedMin()
+                .isNegative();
   return false;
 }
 
@@ -326,13 +404,11 @@ static bool isDefinedOffset(const Value *Offset, const Instruction &Use,
 // expression's def-use relation to the guarded IV, while SCEV retains it.
 // Recover only exact constant sum/difference identities in the same loop;
 // ConstantRange performs their modular arithmetic without assuming no-wrap.
-ConstantRange refineWithRelatedInductions(const SCEV *Expr,
-                                          ConstantRange Bounds,
-                                          IntrinsicInst &Use,
-                                          ScalarEvolution &SE,
-                                          LazyValueInfo &LVI,
-                                          AssumptionCache &AC,
-                                          DominatorTree &DT) {
+ConstantRange
+refineWithRelatedInductions(const SCEV *Expr, ConstantRange Bounds,
+                            IntrinsicInst &Use, ScalarEvolution &SE,
+                            LazyValueInfo &LVI, AssumptionCache &AC,
+                            DominatorTree &DT) {
   const auto *Recurrence = dyn_cast<SCEVAddRecExpr>(Expr);
   if (!Recurrence || !Recurrence->isAffine() ||
       !Recurrence->getLoop()->contains(Use.getParent()))
@@ -356,9 +432,9 @@ ConstantRange refineWithRelatedInductions(const SCEV *Expr,
         ConstantRange::Unsigned);
     if (OtherBounds.isEmptySet())
       continue;
-    ConstantRange Related = Sum ? ConstantRange(Sum->getAPInt()).sub(OtherBounds)
-                                : OtherBounds.add(
-                                      ConstantRange(Difference->getAPInt()));
+    ConstantRange Related =
+        Sum ? ConstantRange(Sum->getAPInt()).sub(OtherBounds)
+            : OtherBounds.add(ConstantRange(Difference->getAPInt()));
     Bounds = Bounds.intersectWith(Related, ConstantRange::Unsigned);
   }
   return Bounds;
@@ -369,9 +445,9 @@ ConstantRange refineWithRelatedInductions(const SCEV *Expr,
 // the induction's bounds. Compose their facts at this issuing instruction,
 // without expanding PHI backedges or relying on later IR optimization.
 ConstantRange refineWithScalarExpressions(Value *Root, ConstantRange Bounds,
-                                         IntrinsicInst &Use,
-                                         ScalarEvolution &SE,
-                                         LazyValueInfo &LVI) {
+                                          IntrinsicInst &Use,
+                                          ScalarEvolution &SE,
+                                          LazyValueInfo &LVI) {
   constexpr unsigned NodeBudget = 128;
   unsigned Remaining = NodeBudget;
   // This cache is local to one issuing use. Path constraints must not be
@@ -389,9 +465,11 @@ ConstantRange refineWithScalarExpressions(Value *Root, ConstantRange Bounds,
     // A revisited active node is conservative even if the supported scalar
     // expression set is extended in the future. PHIs are leaves below.
     Ranges.try_emplace(V, Unknown);
-    ConstantRange Result = SE.getUnsignedRange(SE.getSCEV(V)).intersectWith(
-        LVI.getConstantRange(V, &Use, /*UndefAllowed=*/false),
-        ConstantRange::Unsigned);
+    ConstantRange Result =
+        SE.getUnsignedRange(SE.getSCEV(V))
+            .intersectWith(
+                LVI.getConstantRange(V, &Use, /*UndefAllowed=*/false),
+                ConstantRange::Unsigned);
     if (auto *BO = dyn_cast<BinaryOperator>(V)) {
       switch (BO->getOpcode()) {
       case Instruction::Add:
@@ -441,17 +519,21 @@ Error verifyReplayTemplates(Function &F, DominatorTree &DT) {
         uint32_t ID = *Identity;
         if (Kind == Intrinsic::riscv_tt_replay_template_begin) {
           if (Active || !Producers.try_emplace(ID, II).second)
-            return invalid(F, "replay template requires one non-nested producer");
+            return invalid(F,
+                           "replay template requires one non-nested producer");
           Active = II;
           ActiveID = ID;
         } else if (Kind == Intrinsic::riscv_tt_replay_template_end) {
           if (!Active || ActiveID != ID)
-            return invalid(F, "replay template end does not match its producer");
+            return invalid(F,
+                           "replay template end does not match its producer");
           Ends.try_emplace(ID, II);
           Active = nullptr;
         } else {
           if (Active)
-            return invalid(F, "replay template cannot contain an execute or MOP reference");
+            return invalid(
+                F,
+                "replay template cannot contain an execute or MOP reference");
           Executions.emplace_back(ID, II);
         }
         continue;
@@ -474,8 +556,8 @@ Error verifyReplayTemplates(Function &F, DominatorTree &DT) {
   return Error::success();
 }
 
-Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &SE,
-                  AssumptionCache &AC, DominatorTree &DT) {
+Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
+                  ScalarEvolution &SE, AssumptionCache &AC, DominatorTree &DT) {
   if (Error E = verifyReplayTemplates(F, DT))
     return E;
   LazyValueInfo LVI(&F, &AC);
@@ -483,12 +565,13 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
     auto *Call = dyn_cast<CallBase>(&I);
     const Function *Callee = Call ? Call->getCalledFunction() : nullptr;
     if (Callee && isRetiredTensixSFPUIntrinsicName(Callee->getName()))
-      return invalid(F, "unsupported Tensix intrinsic ABI: " +
-                             Callee->getName());
+      return invalid(F,
+                     "unsupported Tensix intrinsic ABI: " + Callee->getName());
   }
   Attribute ExecutorAttr = F.getFnAttribute("tensix-executor");
   StringRef Executor = ExecutorAttr.isStringAttribute()
-                           ? ExecutorAttr.getValueAsString() : StringRef();
+                           ? ExecutorAttr.getValueAsString()
+                           : StringRef();
   for (Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !RISCV::isTensixIntrinsic(II->getIntrinsicID()))
@@ -497,17 +580,24 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
       return invalid(F, "Tensix intrinsic requires +xtttensixbh");
     // The scalar readback dependency uses ordinary RISC-V instructions rather
     // than a model-specific Tensix instruction encoding.
-    if (Wormhole &&
-        II->getIntrinsicID() != Intrinsic::riscv_tt_dependent_use &&
-        !RISCV::isTensixWormholeIntrinsic(II->getIntrinsicID()))
+    if (Wormhole && isTensixContentsIntrinsic(II->getIntrinsicID())) {
+      if (Error E = verifyTensixContentsIntrinsicFields(*II, true))
+        return invalid(F, toString(std::move(E)));
+    } else if (Wormhole &&
+               II->getIntrinsicID() != Intrinsic::riscv_tt_dependent_use &&
+               !RISCV::isTensixWormholeIntrinsic(II->getIntrinsicID())) {
       return invalid(F, "Tensix intrinsic is not supported on Wormhole");
+    }
     if (Executor.empty())
-      return invalid(F, "Tensix intrinsic requires a tensix-executor function attribute");
+      return invalid(
+          F, "Tensix intrinsic requires a tensix-executor function attribute");
     if (Executor != "ncrisc" && Executor != "brisc" && Executor != "trisc0" &&
         Executor != "trisc1" && Executor != "trisc2")
       return invalid(F, "invalid tensix-executor value: " + Executor);
     if (II->hasOperandBundles() || II->getCallingConv() != CallingConv::C)
-      return invalid(F, "Tensix intrinsic requires a direct C call without operand bundles");
+      return invalid(
+          F,
+          "Tensix intrinsic requires a direct C call without operand bundles");
     Intrinsic::ID ID = II->getIntrinsicID();
     if (ID == Intrinsic::riscv_tt_dependent_use)
       continue;
@@ -519,7 +609,8 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
             Executor != "trisc2")
           return invalid(F, "bound SFPU execution requires a TRISC executor");
       } else if (Executor != "trisc1") {
-        return invalid(F, "Tensix SFPU execution requires tensix-executor=trisc1");
+        return invalid(F,
+                       "Tensix SFPU execution requires tensix-executor=trisc1");
       }
       continue;
     }
@@ -590,7 +681,8 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
         return E;
       if (Info->IntrinsicID == Intrinsic::riscv_tt_mop ||
           Info->IntrinsicID == Intrinsic::riscv_tt_mop_cfg)
-        return invalid(F, "MOP control cannot be nested in a MOP instruction slot");
+        return invalid(
+            F, "MOP control cannot be nested in a MOP instruction slot");
     }
     if (Port) {
       auto PortID = immediate(*II, 0);
@@ -610,8 +702,9 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
       }
       const Value *V = II->getArgOperand(First + N);
       if (!isDefinedOffset(V, *II, SE, AC, DT))
-        return invalid(F, Twine(Info->getName()) + " field " + Field->getName() +
-                          " must be defined and non-poison");
+        return invalid(F, Twine(Info->getName()) + " field " +
+                              Field->getName() +
+                              " must be defined and non-poison");
       const SCEV *FieldValue = SE.getSCEV(const_cast<Value *>(V));
       // A loop-header value also exists on the exiting edge. Admit a dynamic
       // field only when its unsigned bound holds at the actual issuing use,
@@ -619,28 +712,25 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
       // Combine the recurrence's global bounds with edge constraints at this
       // use. Neither alone need prove derived fields such as 1 - induction.
       ConstantRange Bounds = SE.getUnsignedRange(FieldValue);
-      if (!Bounds.isEmptySet() &&
-          Bounds.getUnsignedMax().ugt(Field->MaxValue))
+      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Field->MaxValue))
         Bounds = Bounds.intersectWith(
             LVI.getConstantRangeAtUse(II->getArgOperandUse(First + N),
                                       /*UndefAllowed=*/false),
             ConstantRange::Unsigned);
-      if (!Bounds.isEmptySet() &&
-          Bounds.getUnsignedMax().ugt(Field->MaxValue))
+      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Field->MaxValue))
         Bounds = refineWithRelatedInductions(FieldValue, Bounds, *II, SE, LVI,
-                                              AC, DT);
-      if (!Bounds.isEmptySet() &&
-          Bounds.getUnsignedMax().ugt(Field->MaxValue))
+                                             AC, DT);
+      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Field->MaxValue))
         Bounds = refineWithScalarExpressions(const_cast<Value *>(V), Bounds,
                                              *II, SE, LVI);
       if (Bounds.isEmptySet() ||
           (Bounds.getUnsignedMax().ugt(Field->MaxValue) &&
-           !SE.isKnownPredicateAt(
-               ICmpInst::ICMP_ULE, FieldValue,
-               SE.getConstant(V->getType(), Field->MaxValue), II)))
-        return invalid(F, Twine(Info->getName()) + " field " + Field->getName() +
-                          " must be proven in [0, " +
-                          Twine(Field->MaxValue) + "]");
+           !SE.isKnownPredicateAt(ICmpInst::ICMP_ULE, FieldValue,
+                                  SE.getConstant(V->getType(), Field->MaxValue),
+                                  II)))
+        return invalid(F, Twine(Info->getName()) + " field " +
+                              Field->getName() + " must be proven in [0, " +
+                              Twine(Field->MaxValue) + "]");
     }
     if (Replay) {
       if (Error E = range(*II, First + 1, 0, 1))
@@ -649,8 +739,10 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
         return E;
       if (Error E = range(*II, First + 3, 0, 31))
         return E;
-      auto Length = cast<ConstantInt>(II->getArgOperand(First + 2))->getZExtValue();
-      auto Start = cast<ConstantInt>(II->getArgOperand(First + 3))->getZExtValue();
+      auto Length =
+          cast<ConstantInt>(II->getArgOperand(First + 2))->getZExtValue();
+      auto Start =
+          cast<ConstantInt>(II->getArgOperand(First + 3))->getZExtValue();
       if (Length > 32 - Start)
         return invalid(F, "replay range must fit 32 instruction slots");
       if (Mop && !cast<ConstantInt>(II->getArgOperand(First))->isZero())
@@ -662,9 +754,48 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole, ScalarEvolution &
 
 Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
                       AssumptionCache &AC, DominatorTree &DT) {
+  if (isTensixContentsIntrinsic(II.getIntrinsicID())) {
+    switch (II.getIntrinsicID()) {
+    case Intrinsic::riscv_tt_contents_read_constant: {
+      auto Selector = immediate(II, 0);
+      if (!Selector)
+        return Selector.takeError();
+      if (*Selector != 8 && *Selector != 9 && *Selector != 10 &&
+          *Selector != 15)
+        return invalid(
+            *II.getFunction(),
+            "contents constant read requires immutable C8/C9/C10/C15");
+      return Error::success();
+    }
+    case Intrinsic::riscv_tt_contents_add:
+    case Intrinsic::riscv_tt_contents_mul:
+      return range(II, 3, 0, 3);
+    case Intrinsic::riscv_tt_contents_load:
+    case Intrinsic::riscv_tt_contents_store: {
+      if (Error E = range(II, 2, 0, 7))
+        return E;
+      auto Format = immediate(II, 3);
+      if (!Format)
+        return Format.takeError();
+      if (*Format > 15 || !(0xc17fu & (1u << *Format)))
+        return invalid(*II.getFunction(), "unsupported contents Dst format");
+      Value *OffsetValue = II.getArgOperand(1);
+      if (!isDefinedOffset(OffsetValue, II, SE, AC, DT))
+        return invalid(*II.getFunction(),
+                       "contents Dst offset must be defined and non-poison");
+      const SCEV *Offset = SE.getSCEV(OffsetValue);
+      if (SE.getUnsignedRange(Offset).getUnsignedMax().ugt(1023))
+        return invalid(*II.getFunction(),
+                       "contents Dst offset must be proven in [0, 1023]");
+      return Error::success();
+    }
+    default:
+      return verifyTensixContentsIntrinsicFields(II);
+    }
+  }
   if (!isTensixBoundSFPUIntrinsic(II.getIntrinsicID()))
     return invalid(*II.getFunction(), "unsupported Tensix intrinsic ABI: " +
-                   II.getCalledFunction()->getName());
+                                          II.getCalledFunction()->getName());
   if (Error E = verifyTensixBoundSFPUIntrinsic(II))
     return E;
   if (auto Index = getTensixBoundDstOffsetOperand(II.getIntrinsicID())) {
@@ -680,19 +811,285 @@ Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
   return Error::success();
 }
 
+// The single-result contents ABI cannot hide SFPLOAD's paired destination
+// capture or TEN-2932 writes to L4..7. Placement is still virtual here, so a
+// numerical result may use either half of SFPR. SFPLOADI is the architectural
+// exception: it has one explicit destination and is exempt from TEN-2932.
+bool requiresDisabledDestIndex(const IntrinsicInst &II) {
+  return containsCarrier(II.getType()) &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate;
+}
+
+struct ContentsLaneConfig {
+  std::optional<bool> Enable;
+  std::optional<bool> Flags;
+  bool DestIndexDisabled = false;
+
+  bool allColumnsEnabled() const { return Enable == false || Flags == true; }
+  bool operator==(const ContentsLaneConfig &Other) const {
+    return Enable == Other.Enable && Flags == Other.Flags &&
+           DestIndexDisabled == Other.DestIndexDisabled;
+  }
+  bool operator!=(const ContentsLaneConfig &Other) const {
+    return !(*this == Other);
+  }
+  void meet(const ContentsLaneConfig &Other) {
+    if (Enable != Other.Enable)
+      Enable.reset();
+    if (Flags != Other.Flags)
+      Flags.reset();
+    DestIndexDisabled &= Other.DestIndexDisabled;
+  }
+};
+
+bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
+                                 const DataLayout &DL, bool IsLoad) {
+  // Only classify complete accesses to known hardware owners. In particular,
+  // excluding just the instruction-port base would miss its 64 KiB aliases.
+  if (Pointer->getType()->getPointerAddressSpace() != 0 ||
+      DL.getPointerSizeInBits() != 32 || !AccessType->isSized())
+    return false;
+  TypeSize Size = DL.getTypeStoreSize(AccessType);
+  if (Size.isScalable() || Size.isZero())
+    return false;
+
+  int64_t Offset;
+  const Value *Base = GetPointerBaseWithConstantOffset(Pointer, Offset, DL);
+  APInt Address(32, 0);
+  if (!isa<ConstantPointerNull>(Base)) {
+    const auto *Cast = dyn_cast<Operator>(Base);
+    if (!Cast || Cast->getOpcode() != Instruction::IntToPtr)
+      return false;
+    // ConstantHoisting may have materialized the integer in scalar SSA.
+    // Accept only an exact known value, never a guessed address range.
+    KnownBits Integer = computeKnownBits(Cast->getOperand(0), DL);
+    if (!Integer.isConstant())
+      return false;
+    Address = Integer.getConstant().zextOrTrunc(32);
+  }
+  Address += APInt(32, Offset);
+  uint64_t Start = Address.getZExtValue();
+  uint64_t Bytes = Size.getFixedValue();
+  auto Within = [&](uint64_t Begin, uint64_t End) {
+    return Start >= Begin && Start < End && Bytes <= End - Start;
+  };
+
+  // Wormhole's L1 extent is also present on Blackhole. Ordinary data accesses
+  // there do not issue instructions or write the coprocessor configuration.
+  if (Within(0, 0x0016e000))
+    return true;
+  // Manual TTSync has two donecheck words on both machines. Stores discard
+  // their data; loads wait for the corresponding completion condition.
+  if (Within(0xffe80004, 0xffe8000c))
+    return true;
+  // The wallclock low, current-high and latched-high words are read-only here.
+  // Other debug registers can issue Tensix instructions and remain unknown.
+  return IsLoad && Within(0xffb121f0, 0xffb121fc);
+}
+
+void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
+                              bool &RecordOnly, unsigned &RawRecordRemaining) {
+  const auto *II = dyn_cast<IntrinsicInst>(&I);
+  if (!II) {
+    // Volatile loads are ordered effects in LLVM, so mayWriteToMemory alone
+    // cannot distinguish completion observation from an instruction issue.
+    if (const auto *Load = dyn_cast<LoadInst>(&I)) {
+      if (!preservesContentsLaneConfig(Load->getPointerOperand(),
+                                       Load->getType(),
+                                       I.getModule()->getDataLayout(), true))
+        State = {};
+      return;
+    }
+    if (const auto *Store = dyn_cast<StoreInst>(&I)) {
+      if (!preservesContentsLaneConfig(Store->getPointerOperand(),
+                                       Store->getValueOperand()->getType(),
+                                       I.getModule()->getDataLayout(), false))
+        State = {};
+      return;
+    }
+    // Unknown accesses and opaque calls may change LaneConfig, including
+    // through an alias of a Tensix instruction port.
+    if (I.mayWriteToMemory() || isa<CallBase>(I))
+      State = {};
+    return;
+  }
+  Intrinsic::ID ID = II->getIntrinsicID();
+  if (ID == Intrinsic::riscv_tt_replay_template_begin) {
+    RecordOnly = cast<ConstantInt>(II->getArgOperand(1))->isZero();
+    return;
+  }
+  if (ID == Intrinsic::riscv_tt_replay_template_end) {
+    RecordOnly = false;
+    return;
+  }
+  if (RecordOnly)
+    return;
+  const auto *Issue = RISCV::getTensixInstructionByIntrinsic(ID);
+  if (ID == Intrinsic::riscv_tt_replay ||
+      ID == Intrinsic::riscv_tt_replay_port) {
+    unsigned First = ID == Intrinsic::riscv_tt_replay_port ? 1 : 0;
+    bool Record = !cast<ConstantInt>(II->getArgOperand(First))->isZero();
+    bool Execute = !cast<ConstantInt>(II->getArgOperand(First + 1))->isZero();
+    if (Record && !Execute) {
+      RawRecordRemaining =
+          cast<ConstantInt>(II->getArgOperand(First + 2))->getZExtValue();
+      return;
+    }
+  }
+  if (RawRecordRemaining && (isTensixContentsIntrinsic(ID) ||
+                             (Issue && ID != Issue->MopIntrinsicID))) {
+    // These admitted operations each issue one native Tensix word. Scalar
+    // address/field computation and the record-end marker issue no word.
+    --RawRecordRemaining;
+    return;
+  }
+  if (ID == Intrinsic::riscv_tt_contents_encc) {
+    unsigned Value = cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
+    unsigned Mode = cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
+    if (Mode & 2)
+      State.Enable = bool(Value & 1);
+    else if ((Mode & 1) && State.Enable)
+      State.Enable = !*State.Enable;
+    State.Flags = (Mode & 8) ? bool(Value & 2) : true;
+    return;
+  }
+  if (ID == Intrinsic::riscv_tt_contents_config_reset) {
+    // SFPCONFIG reads the first eight columns' effective CC, independently
+    // of ROW_MASK, and broadcasts the selected configuration vertically.
+    // A masked reset cannot enable an already-disabled indexing field.
+    State.DestIndexDisabled |= State.allColumnsEnabled();
+    return;
+  }
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_config_lane:
+    // The actual L0 contents may enable destination indexing. Only a later
+    // effective all-column reset can establish the disabled-index contract.
+    State.DestIndexDisabled = false;
+    return;
+  case Intrinsic::riscv_tt_contents_setcc:
+  case Intrinsic::riscv_tt_contents_gt:
+  case Intrinsic::riscv_tt_contents_le:
+  case Intrinsic::riscv_tt_contents_exexp:
+  case Intrinsic::riscv_tt_contents_lz:
+  case Intrinsic::riscv_tt_contents_iadd:
+  case Intrinsic::riscv_tt_contents_iadd_immediate:
+    State.Flags.reset();
+    return;
+  case Intrinsic::riscv_tt_contents_popc:
+  case Intrinsic::riscv_tt_contents_compc:
+    // Saved raw CC may differ from both the current flags and enable field.
+    State.Enable.reset();
+    State.Flags.reset();
+    return;
+  case Intrinsic::riscv_tt_replay_template_execute:
+  case Intrinsic::riscv_tt_mop:
+  case Intrinsic::riscv_tt_mop_port:
+  case Intrinsic::riscv_tt_replay:
+  case Intrinsic::riscv_tt_replay_port:
+    // These execution effects have no contents LaneConfig summary yet.
+    State = {};
+    return;
+  default:
+    break;
+  }
+  if (isTensixContentsIntrinsic(ID) ||
+      RISCV::getTensixInstructionByIntrinsic(ID) ||
+      ID == Intrinsic::riscv_tt_dependent_use ||
+      ID == Intrinsic::riscv_tt_read_response ||
+      ID == Intrinsic::riscv_tt_replay_record_end ||
+      ID == Intrinsic::riscv_tt_replay_template_mop ||
+      ID == Intrinsic::riscv_tt_mop_clear ||
+      ID == Intrinsic::riscv_tt_mop_control_write || !II->mayWriteToMemory())
+    return;
+  State = {};
+}
+
+Error verifyContentsLaneConfig(Function &F) {
+  // Absent entries are not-yet-reached CFG nodes. Entry has unknown hardware
+  // configuration. Iterate the actual CFG to convergence; no source iteration
+  // or replay sequence is expanded to approximate a loop's reaching facts.
+  DenseMap<const BasicBlock *, ContentsLaneConfig> Outputs;
+  bool Changed;
+  do {
+    Changed = false;
+    for (const BasicBlock &BB : F) {
+      std::optional<ContentsLaneConfig> Incoming;
+      if (&BB == &F.getEntryBlock())
+        Incoming.emplace();
+      for (const BasicBlock *Pred : predecessors(&BB)) {
+        auto It = Outputs.find(Pred);
+        if (It == Outputs.end())
+          continue;
+        if (Incoming)
+          Incoming->meet(It->second);
+        else
+          Incoming = It->second;
+      }
+      if (!Incoming)
+        continue;
+      ContentsLaneConfig State = *Incoming;
+      bool RecordOnly = false;
+      unsigned RawRecordRemaining = 0;
+      for (const Instruction &I : BB)
+        updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining);
+      if (RawRecordRemaining)
+        return invalid(F, "contents SFPU raw replay recording must end in its "
+                          "basic block");
+      auto [It, Inserted] = Outputs.try_emplace(&BB, State);
+      if (Inserted || It->second != State) {
+        It->second = State;
+        Changed = true;
+      }
+    }
+  } while (Changed);
+
+  for (const BasicBlock &BB : F) {
+    if (!Outputs.count(&BB))
+      continue;
+    std::optional<ContentsLaneConfig> Incoming;
+    if (&BB == &F.getEntryBlock())
+      Incoming.emplace();
+    for (const BasicBlock *Pred : predecessors(&BB)) {
+      auto It = Outputs.find(Pred);
+      if (It == Outputs.end())
+        continue;
+      if (Incoming)
+        Incoming->meet(It->second);
+      else
+        Incoming = It->second;
+    }
+    ContentsLaneConfig State = *Incoming;
+    bool RecordOnly = false;
+    unsigned RawRecordRemaining = 0;
+    for (const Instruction &I : BB) {
+      const auto *II = dyn_cast<IntrinsicInst>(&I);
+      if (II && isTensixContentsIntrinsic(II->getIntrinsicID()) &&
+          requiresDisabledDestIndex(*II) && !State.DestIndexDisabled)
+        return invalid(F, "contents SFPU requires ENABLE_DEST_INDEX known "
+                          "disabled before a potentially affected write");
+      updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining);
+    }
+  }
+  return Error::success();
+}
+
 } // namespace
 
 Expected<TensixSFPUFunctionFacts>
 llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
                                AssumptionCache &AC, DominatorTree &DT) {
   TensixSFPUFunctionFacts Facts;
-  bool Bound = false;
+  bool Bound = false, Contents = false;
   for (const Instruction &I : instructions(F)) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !isTensixSFPUIntrinsic(II->getIntrinsicID()))
       continue;
     Bound = isTensixBoundSFPUIntrinsic(II->getIntrinsicID()) || Bound;
+    Contents = isTensixContentsIntrinsic(II->getIntrinsicID()) || Contents;
   }
+
+  if (Bound && Contents)
+    return invalid(F, "bound SFPU and contents SSA cannot mix in one function");
 
   // The physical bound ABI cannot leak an old vector carrier through the
   // function boundary. Ordinary RVV functions are not sent through this
@@ -706,6 +1103,16 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
   for (Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
     bool SFPU = II && isTensixSFPUIntrinsic(II->getIntrinsicID());
+    bool GroupTuple =
+        II && getTensixContentsGroupResultCount(II->getIntrinsicID()) > 1;
+    auto *Extract = dyn_cast<ExtractValueInst>(&I);
+    auto *Tuple = Extract
+                      ? dyn_cast<IntrinsicInst>(Extract->getAggregateOperand())
+                      : nullptr;
+    bool GroupExtract =
+        Tuple &&
+        getTensixContentsGroupResultCount(Tuple->getIntrinsicID()) > 1 &&
+        Extract->getNumIndices() == 1 && isCarrier(I.getType());
     Facts.UsesSFPU |= SFPU;
     bool Carrier = containsCarrier(I.getType());
     for (Value *Input : I.operands()) {
@@ -713,15 +1120,18 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
         continue;
       Carrier = true;
       if (isa<Constant>(Input))
-        return invalid(F, "SFPU carrier constants require explicit target initialization");
-      if (!isCarrier(Input->getType()))
+        return invalid(
+            F, "SFPU carrier constants require explicit target initialization");
+      if (!isCarrier(Input->getType()) && !GroupExtract)
         return invalid(F, "SFPU carrier cannot be nested in an aggregate");
     }
     if (Bound && Carrier)
-      return invalid(F, "bound SFPU ingress cannot contain an unbound carrier or PHI");
-    if (Carrier && !SFPU && !isa<PHINode>(I))
-      return invalid(F, "SFPU carrier is only legal in target intrinsics and PHI");
-    if (containsCarrier(I.getType()) && !isCarrier(I.getType()))
+      return invalid(
+          F, "bound SFPU ingress cannot contain an unbound carrier or PHI");
+    if (Carrier && !SFPU && !isa<PHINode>(I) && !GroupExtract)
+      return invalid(F,
+                     "SFPU carrier is only legal in target intrinsics and PHI");
+    if (containsCarrier(I.getType()) && !isCarrier(I.getType()) && !GroupTuple)
       return invalid(F, "SFPU carrier cannot be nested in an aggregate");
     if (SFPU) {
       if (II->hasOperandBundles())
@@ -733,6 +1143,9 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
 
   if (!Facts.UsesSFPU)
     return Facts;
+  if (Contents)
+    if (Error E = verifyContentsLaneConfig(F))
+      return std::move(E);
   for (Instruction &I : instructions(F)) {
     // Includes indirect calls, inline assembly, invokes and callbr. Scalar
     // calls do not prove preservation of the fixed SFPU state of this
@@ -756,6 +1169,7 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
       case Intrinsic::riscv_tt_setc16:
       case Intrinsic::riscv_tt_setc16_port:
       case Intrinsic::riscv_tt_dependent_use:
+      case Intrinsic::riscv_tt_read_response:
       case Intrinsic::lifetime_start:
       case Intrinsic::lifetime_end:
       case Intrinsic::assume:
@@ -784,12 +1198,15 @@ Error llvm::RISCV::verifyTensixModule(Module &M) {
       const auto *CI = dyn_cast<CallInst>(U);
       if (!CI || CI->getCalledFunction() != &Decl || CI->hasOperandBundles() ||
           CI->getCallingConv() != CallingConv::C)
-        return createStringError("Tensix intrinsic requires a direct C call without operand bundles");
+        return createStringError("Tensix intrinsic requires a direct C call "
+                                 "without operand bundles");
     }
   }
   for (Function &F : M) {
     if (F.isDeclaration())
       continue;
+    if (Error E = verifyScalarReadResponse(F, M.getTargetTriple().isRISCV32()))
+      return E;
     bool Uses = llvm::any_of(instructions(F), [](const Instruction &I) {
       const auto *II = dyn_cast<IntrinsicInst>(&I);
       return II && isTensixIntrinsic(II->getIntrinsicID());
@@ -799,12 +1216,14 @@ Error llvm::RISCV::verifyTensixModule(Module &M) {
     Attribute CPU = F.getFnAttribute("target-cpu");
     Attribute Features = F.getFnAttribute("target-features");
     auto FeaturesBits = getTensixTargetFeatureBits(
-        M.getTargetTriple(), CPU.isStringAttribute() ? CPU.getValueAsString() : "",
+        M.getTargetTriple(),
+        CPU.isStringAttribute() ? CPU.getValueAsString() : "",
         Features.isStringAttribute() ? Features.getValueAsString() : "");
     if (!FeaturesBits)
       return FeaturesBits.takeError();
     bool Wormhole = (*FeaturesBits)[RISCV::FeatureVendorXTTTensixWH];
-    bool HasFeature = (*FeaturesBits)[RISCV::FeatureVendorXTTTensixBH] || Wormhole;
+    bool HasFeature =
+        (*FeaturesBits)[RISCV::FeatureVendorXTTTensixBH] || Wormhole;
     AssumptionCache AC(F);
     DominatorTree DT(F);
     LoopInfo LI(DT);
@@ -823,6 +1242,7 @@ Error llvm::RISCV::verifyTensixModule(Module &M) {
 namespace {
 class RISCVTensixIRVerification : public FunctionPass {
   bool SupportedPipeline;
+
 public:
   static char ID;
   explicit RISCVTensixIRVerification(bool Supported = true)
@@ -839,6 +1259,8 @@ public:
   bool runOnFunction(Function &F) override {
     auto &TM = getAnalysis<TargetPassConfig>().getTM<RISCVTargetMachine>();
     const auto &ST = TM.getSubtarget<RISCVSubtarget>(F);
+    if (Error E = verifyScalarReadResponse(F, !ST.is64Bit()))
+      reportFatalUsageError(Twine(toString(std::move(E))));
     bool UsesSFPU = llvm::any_of(instructions(F), [](const Instruction &I) {
       auto *II = dyn_cast<IntrinsicInst>(&I);
       return II && isTensixSFPUIntrinsic(II->getIntrinsicID());
@@ -857,7 +1279,8 @@ public:
             getAnalysis<DominatorTreeWrapperPass>().getDomTree()))
       reportFatalUsageError(Twine(toString(std::move(E))));
     if (UsesSFPU && !SupportedPipeline)
-      reportFatalUsageError("Tensix SFPU requires the SelectionDAG legacy codegen pipeline");
+      reportFatalUsageError(
+          "Tensix SFPU requires the SelectionDAG legacy codegen pipeline");
     auto Facts = verifyTensixSFPUFunction(
         F, getAnalysis<ScalarEvolutionWrapperPass>().getSE(),
         getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F),
@@ -882,31 +1305,34 @@ FunctionPass *llvm::createRISCVTensixIRVerificationPass(bool Supported) {
 }
 
 PreservedAnalyses RISCVTensixNewPMGate::run(Function &F,
-                                         FunctionAnalysisManager &FAM) {
+                                            FunctionAnalysisManager &FAM) {
   bool UsesSFPU = llvm::any_of(instructions(F), [](const Instruction &I) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);
     return II && isTensixSFPUIntrinsic(II->getIntrinsicID());
   });
   const auto &ST = TM->getSubtarget<RISCVSubtarget>(F);
+  if (Error E = verifyScalarReadResponse(F, !ST.is64Bit()))
+    reportFatalUsageError(Twine(toString(std::move(E))));
   bool UsesTensix = llvm::any_of(instructions(F), [](const Instruction &I) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);
     return II && RISCV::isTensixIntrinsic(II->getIntrinsicID());
   });
   if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH() && !UsesTensix)
     return PreservedAnalyses::all();
-  if (Error E = verifyIssue(F, ST.hasVendorXTTTensixBH() || ST.hasVendorXTTTensixWH(),
-          ST.hasVendorXTTTensixWH(),
-          FAM.getResult<ScalarEvolutionAnalysis>(F),
+  if (Error E = verifyIssue(
+          F, ST.hasVendorXTTTensixBH() || ST.hasVendorXTTTensixWH(),
+          ST.hasVendorXTTTensixWH(), FAM.getResult<ScalarEvolutionAnalysis>(F),
           FAM.getResult<AssumptionAnalysis>(F),
           FAM.getResult<DominatorTreeAnalysis>(F)))
     reportFatalUsageError(Twine(toString(std::move(E))));
-  auto Facts = verifyTensixSFPUFunction(
-      F, FAM.getResult<ScalarEvolutionAnalysis>(F),
-      FAM.getResult<AssumptionAnalysis>(F),
-      FAM.getResult<DominatorTreeAnalysis>(F));
+  auto Facts =
+      verifyTensixSFPUFunction(F, FAM.getResult<ScalarEvolutionAnalysis>(F),
+                               FAM.getResult<AssumptionAnalysis>(F),
+                               FAM.getResult<DominatorTreeAnalysis>(F));
   if (!Facts)
     reportFatalUsageError(Twine(toString(Facts.takeError())));
   if (UsesSFPU)
-    reportFatalUsageError("Tensix SFPU requires the SelectionDAG legacy codegen pipeline");
+    reportFatalUsageError(
+        "Tensix SFPU requires the SelectionDAG legacy codegen pipeline");
   return PreservedAnalyses::all();
 }

@@ -800,6 +800,13 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
         MCInstBuilder(RISCV::SW).addReg(Word).addReg(Address).addImm(0));
     return;
   }
+  case RISCV::PseudoTTReadResponse:
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::ADDI)
+                       .addReg(RISCV::X0)
+                       .addReg(MI->getOperand(0).getReg())
+                       .addImm(0));
+    return;
   case RISCV::PseudoTTDependentUse:
     EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::AND)
                                      .addReg(RISCV::X0)
@@ -985,7 +992,8 @@ void RISCVAsmPrinter::emitTargetFeaturePop(const MCSubtargetInfo &STI,
 }
 
 bool RISCVAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
-  if (MF.getInfo<RISCVMachineFunctionInfo>()->hasTensixCodegenFailed())
+  if (MF.getInfo<RISCVMachineFunctionInfo>()->hasTensixCodegenFailed() ||
+      MF.getProperties().hasFailedRegAlloc())
     return false;
   STI = &MF.getSubtarget<RISCVSubtarget>();
 

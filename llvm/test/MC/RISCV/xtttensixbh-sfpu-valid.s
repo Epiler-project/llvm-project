@@ -10,7 +10,7 @@ addi a0, a0, 1
 
 # ENC: ttsfploadi l0, 0, 0 # encoding: [0x01,0x00,0x00,0xc4]
 # DIS: 4: {{.*}}ttsfploadi l0, 0, 0
-# NOFEATURE: instruction requires the following: 'XTTTensixBH'
+# NOFEATURE: instruction requires the following: 'XTTTensixBH' or 'XTTTensixWH'
 ttsfploadi l0, 0, 0
 # ENC: ttsfploadi l7, 65535, 10 # encoding: [0xfd,0xff,0xeb,0xc5]
 # DIS: 8: {{.*}}ttsfploadi l7, 65535, 10

@@ -1124,6 +1124,12 @@ def DRET : Priv<"dret", 0b0111101>, Sched<[]> {
 // Assembler Pseudo Instructions (User-Level ISA, Version 2.2, Chapter 20)
 //===----------------------------------------------------------------------===//
 
+// Keep the actual readback GPR live through register allocation. The scalar
+// ADDI emitted by AsmPrinter must not fold to an unused arithmetic result.
+let hasSideEffects = 1, isNotDuplicable = 1, mayLoad = 1, mayStore = 1,
+    hasNoSchedulingInfo = 1 in
+def PseudoTTReadResponse : Pseudo<(outs), (ins GPR:$value), []>;
+
 // Note that the size is 32 because up to 8 32-bit instructions are needed to
 // generate an arbitrary 64-bit immediate. However, the size does not really
 // matter since PseudoLI is currently only used in the AsmParser where it gets

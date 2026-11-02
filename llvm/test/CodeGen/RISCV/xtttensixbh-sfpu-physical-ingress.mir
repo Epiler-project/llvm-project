@@ -3,10 +3,10 @@
 # RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-sfpu-physical-ingress %t/scalar.mir -o - | FileCheck %s --check-prefix=SCALAR
 # RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-sfpu-physical-ingress %t/bound.mir -o - | FileCheck %s --check-prefix=BOUND
 
-# The SFPU value path is retired. Producers must enter machine code with
-# physical SFPU/LReg operands; ordinary scalar virtual registers remain the
-# responsibility of the generic RISC-V allocator.
-# VIRTUAL: error: {{.*}}Cannot use non-allocatable class 'SFPR' for virtual register
+# Virtual SFPU values require actual contents SSA ingress, rather than a
+# serialized machine flag. Bound physical operands remain supported; ordinary
+# scalar virtual registers remain the generic RISC-V allocator's responsibility.
+# VIRTUAL: Tensix SFPU virtual registers require verified contents SSA ingress
 # SCALAR-LABEL: name: scalar_virtual
 # SCALAR: %0:gpr = COPY $x10
 # BOUND-LABEL: name: bound_physical

@@ -6,11 +6,14 @@
 #include "MCTargetDesc/RISCVBaseInfo.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCVBOSCAME.h"
+#include "RISCVISelLowering.h"
 #include "RISCVInstrInfo.h"
+#include "RISCVMachineFunctionInfo.h"
 #include "RISCVRegisterInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTargetMachine.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -19,11 +22,16 @@
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Target/RISCV/RISCVBOSC.h"
 #include <array>
 #include <limits>
 #include <optional>
@@ -170,9 +178,13 @@ std::optional<unsigned> exactLanes(uint64_t AVL, bool Exact512) {
   return std::nullopt;
 }
 
+Error invalid(const Function &F, const Twine &Message) {
+  return createStringError("BOSC bound RVV function '" + F.getName() +
+                           "': " + Message);
+}
+
 [[noreturn]] void fail(const Function &F, const Twine &Message) {
-  reportFatalUsageError("BOSC bound RVV function '" + F.getName() +
-                        "': " + Message);
+  reportFatalUsageError(Twine(toString(invalid(F, Message))));
 }
 
 bool isBOSCFPRVVIntrinsic(Intrinsic::ID ID);
@@ -218,6 +230,24 @@ bool isBOSCFPRVVIntrinsic(Intrinsic::ID ID) {
          ID == Intrinsic::riscv_bosc_fcmp_lt ||
          ID == Intrinsic::riscv_bosc_fcmp_eq;
 }
+
+bool isOrderedIntegerContentsIntrinsic(Intrinsic::ID ID) {
+  return ID == Intrinsic::riscv_bosc_rvv_contents_add ||
+         ID == Intrinsic::riscv_bosc_rvv_contents_maximum ||
+         ID == Intrinsic::riscv_bosc_rvv_contents_isplat ||
+         ID == Intrinsic::riscv_bosc_rvv_contents_iadd_scalar ||
+         ID == Intrinsic::riscv_bosc_rvv_contents_shl ||
+         ID == Intrinsic::riscv_bosc_rvv_contents_gather_scalar;
+}
+
+bool requiresRVVF32(Intrinsic::ID ID) {
+  return isBOSCFPRVVIntrinsic(ID) ||
+         (isBOSCOrderedRVVContentsIntrinsic(ID) &&
+          !isOrderedIntegerContentsIntrinsic(ID) &&
+          ID != Intrinsic::riscv_bosc_rvv_contents_load &&
+          ID != Intrinsic::riscv_bosc_rvv_contents_store &&
+          ID != Intrinsic::riscv_bosc_read_bits_contents);
+}
 bool isBoundUnaryIntrinsic(Intrinsic::ID ID) {
   return ID == Intrinsic::riscv_bosc_fcvt_to_i32 ||
          ID == Intrinsic::riscv_bosc_fcvt_from_i32 ||
@@ -255,13 +285,15 @@ unsigned boundPhysicalOperands(Intrinsic::ID ID) {
              : 1;
 }
 
-unsigned gatherIndex(const IntrinsicInst &II, bool Exact512) {
+Expected<unsigned> gatherIndex(const IntrinsicInst &II, bool Exact512) {
   const auto *Index = dyn_cast<ConstantInt>(II.getArgOperand(2));
   if (!Index || Index->getValue().ugt(16))
-    fail(*II.getFunction(), "gather index must be a constant in 0..16");
+    return invalid(*II.getFunction(),
+                   "gather index must be a constant in 0..16");
   unsigned Lane = Index->getZExtValue();
   if (Lane == 16 && !Exact512)
-    fail(*II.getFunction(), "gather index 16 requires exact VLEN=512");
+    return invalid(*II.getFunction(),
+                   "gather index 16 requires exact VLEN=512");
   return Lane;
 }
 
@@ -285,14 +317,15 @@ bool hasBOSCObservationIntrinsic(const Function &F) {
   });
 }
 
-unsigned physicalArgument(const IntrinsicInst &II, unsigned Index) {
+Expected<unsigned> physicalArgument(const IntrinsicInst &II, unsigned Index) {
   auto *CI = dyn_cast<ConstantInt>(II.getArgOperand(Index));
   if (isMaskOperand(II.getIntrinsicID(), Index)) {
     if (!CI || !CI->isZero())
-      fail(*II.getFunction(), "physical mask operand must be v0");
+      return invalid(*II.getFunction(), "physical mask operand must be v0");
   } else if (!CI || CI->getValue().getActiveBits() > 5 || !CI->getZExtValue())
-    fail(*II.getFunction(),
-         "physical vector register must be in v1..v31; v0 is reserved");
+    return invalid(
+        *II.getFunction(),
+        "physical vector register must be in v1..v31; v0 is reserved");
   return CI->getZExtValue();
 }
 
@@ -306,8 +339,322 @@ bool containsVector(Type *Ty) {
   return false;
 }
 
-LaneState transfer(const BasicBlock &BB, LaneState State, bool Verify,
-                   bool Exact512) {
+bool containsFloatingVector(Type *Ty) {
+  if (auto *VT = dyn_cast<VectorType>(Ty))
+    return VT->getElementType()->isFloatingPointTy();
+  if (auto *ST = dyn_cast<StructType>(Ty))
+    return llvm::any_of(ST->elements(), containsFloatingVector);
+  return false;
+}
+
+bool isContentsRVVIntrinsic(Intrinsic::ID ID) {
+  return RISCVVIntrinsicsTable::getRISCVVIntrinsicInfo(ID) ||
+         ID == Intrinsic::riscv_vsetvli || ID == Intrinsic::riscv_vsetvlimax ||
+         isBOSCOrderedRVVContentsIntrinsic(ID) ||
+         isBOSCContentsSFUIntrinsic(ID);
+}
+
+bool isActualE32M1VL(const Value *VL) {
+  SmallVector<const Value *, 8> Worklist{VL};
+  SmallPtrSet<const Value *, 16> Visited;
+  SmallPtrSet<const Value *, 16> Seeded;
+  SmallVector<const PHINode *, 8> PHIs;
+  while (!Worklist.empty()) {
+    const Value *V = Worklist.pop_back_val();
+    if (!Visited.insert(V).second)
+      continue;
+    if (auto *CI = dyn_cast<ConstantInt>(V)) {
+      if (!CI->isZero())
+        return false;
+      Seeded.insert(V);
+      continue;
+    }
+    if (auto *Phi = dyn_cast<PHINode>(V)) {
+      PHIs.push_back(Phi);
+      Worklist.append(Phi->incoming_values().begin(),
+                      Phi->incoming_values().end());
+      continue;
+    }
+    auto *II = dyn_cast<IntrinsicInst>(V);
+    if (!II)
+      return false;
+    unsigned SEWIndex;
+    if (II->getIntrinsicID() == Intrinsic::riscv_vsetvli)
+      SEWIndex = 1;
+    else if (II->getIntrinsicID() == Intrinsic::riscv_vsetvlimax)
+      SEWIndex = 0;
+    else
+      return false;
+    auto *SEW = dyn_cast<ConstantInt>(II->getArgOperand(SEWIndex));
+    auto *LMUL = dyn_cast<ConstantInt>(II->getArgOperand(SEWIndex + 1));
+    if (!SEW || SEW->getZExtValue() != 2 || !LMUL || !LMUL->isZero())
+      return false;
+    Seeded.insert(V);
+  }
+  // Every leaf must be an actual result or zero, and every PHI cycle must
+  // reach such a seed. Merely revisiting a PHI cannot validate a seedless SCC.
+  bool Changed;
+  do {
+    Changed = false;
+    for (const PHINode *Phi : PHIs)
+      if (!Seeded.contains(Phi) &&
+          llvm::any_of(Phi->incoming_values(), [&](const Value *Incoming) {
+            return Seeded.contains(Incoming);
+          })) {
+        Seeded.insert(Phi);
+        Changed = true;
+      }
+  } while (Changed);
+  return llvm::all_of(PHIs,
+                      [&](const PHINode *Phi) { return Seeded.contains(Phi); });
+}
+
+struct ContentsVLRange {
+  unsigned Minimum = 16;
+  bool MayBePositive = false;
+};
+
+// Only a prefix through lane 15 is needed by the immediate gather receiver.
+// The architectural middle AVL interval guarantees ceil(AVL/2), not VLMAX.
+ContentsVLRange contentsVLRange(const Value *VL,
+                                const Value *PositiveVL = nullptr) {
+  ContentsVLRange Result;
+  SmallVector<const Value *, 8> Worklist{VL};
+  SmallPtrSet<const Value *, 16> Visited;
+  while (!Worklist.empty()) {
+    const Value *V = Worklist.pop_back_val();
+    if (!Visited.insert(V).second)
+      continue;
+    if (auto *Phi = dyn_cast<PHINode>(V)) {
+      Worklist.append(Phi->incoming_values().begin(),
+                      Phi->incoming_values().end());
+      continue;
+    }
+    if (auto *CI = dyn_cast<ConstantInt>(V); CI && CI->isZero()) {
+      Result.Minimum = 0;
+      continue;
+    }
+    auto *II = dyn_cast<IntrinsicInst>(V);
+    if (II && II->getIntrinsicID() == Intrinsic::riscv_vsetvlimax) {
+      Result.MayBePositive = true;
+      continue;
+    }
+    if (II && II->getIntrinsicID() == Intrinsic::riscv_vsetvli)
+      if (auto *AVL = dyn_cast<ConstantInt>(II->getArgOperand(0))) {
+        unsigned Prefix = AVL->getValue().uge(32) ? 16
+                          : AVL->getValue().ule(16)
+                              ? AVL->getZExtValue()
+                              : (AVL->getZExtValue() + 1) / 2;
+        Result.Minimum = std::min(Result.Minimum, Prefix);
+        Result.MayBePositive |= !AVL->isZero();
+        continue;
+      }
+    Result.Minimum = 0;
+    Result.MayBePositive = true;
+  }
+  if (VL == PositiveVL) {
+    Result.Minimum = std::max(Result.Minimum, 1u);
+    Result.MayBePositive = true;
+  }
+  return Result;
+}
+
+// Gather may read a lane outside active VL, but never an undefined tail.
+// Receive the lane from actual contents producers, preserving CFG PHIs and
+// seeded cycles. No physical selector, repair copy or source loop cloning is
+// needed. The gather's positive-VL path also validates a same-VL lane zero.
+Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
+                                     const Value *PositiveVL, bool Exact512) {
+  using Node = std::pair<const Value *, unsigned>;
+  DenseMap<Node, SmallVector<Node, 3>> Dependencies;
+  DenseMap<Node, bool> Seeded;
+  SmallVector<Node, 16> Worklist{{Source, Lane}};
+  while (!Worklist.empty()) {
+    Node Key = Worklist.pop_back_val();
+    auto [It, Inserted] = Dependencies.try_emplace(Key);
+    if (!Inserted)
+      continue;
+    auto &[V, Index] = Key;
+    auto Add = [&](const Value *Input, unsigned InputLane) {
+      Node Dependency{Input, InputLane};
+      It->second.push_back(Dependency);
+      Worklist.push_back(Dependency);
+    };
+    if (isa<UndefValue>(V))
+      return false;
+    if (auto *C = dyn_cast<Constant>(V)) {
+      const Constant *Element = C->getSplatValue();
+      if (!Element || isa<UndefValue>(Element))
+        return false;
+      Seeded[Key] = true;
+      continue;
+    }
+    if (auto *Phi = dyn_cast<PHINode>(V)) {
+      for (const Value *Incoming : Phi->incoming_values())
+        Add(Incoming, Index);
+      continue;
+    }
+    if (auto *Cast = dyn_cast<BitCastInst>(V)) {
+      auto *SrcTy = dyn_cast<VectorType>(Cast->getSrcTy());
+      auto *DstTy = dyn_cast<VectorType>(Cast->getDestTy());
+      if (!SrcTy || !DstTy ||
+          SrcTy->getElementCount() != DstTy->getElementCount())
+        return false;
+      Add(Cast->getOperand(0), Index);
+      continue;
+    }
+    auto *II = dyn_cast<IntrinsicInst>(V);
+    if (!II || (!isBOSCOrderedRVVContentsIntrinsic(II->getIntrinsicID()) &&
+                !isBOSCContentsSFUIntrinsic(II->getIntrinsicID())))
+      return false;
+    auto ID = II->getIntrinsicID();
+    auto Range =
+        contentsVLRange(II->getArgOperand(II->arg_size() - 1), PositiveVL);
+    if (!Range.MayBePositive) {
+      Add(II->getArgOperand(0), Index);
+      continue;
+    }
+    if (Range.Minimum <= Index)
+      return false;
+    switch (ID) {
+    case Intrinsic::riscv_bosc_rvv_contents_load:
+      Seeded[Key] = true;
+      break;
+    case Intrinsic::riscv_bosc_rvv_contents_isplat:
+    case Intrinsic::riscv_bosc_rvv_contents_fsplat:
+      if (isa<UndefValue>(II->getArgOperand(1)))
+        return false;
+      Seeded[Key] = true;
+      break;
+    case Intrinsic::riscv_bosc_rvv_contents_gather_scalar: {
+      auto InputLane = gatherIndex(*II, Exact512);
+      if (!InputLane)
+        return InputLane.takeError();
+      if (*InputLane == 16)
+        Seeded[Key] = true;
+      else
+        Add(II->getArgOperand(1), *InputLane);
+      break;
+    }
+    case Intrinsic::riscv_bosc_rvv_contents_fmacc:
+      Add(II->getArgOperand(0), Index);
+      [[fallthrough]];
+    case Intrinsic::riscv_bosc_rvv_contents_add:
+    case Intrinsic::riscv_bosc_rvv_contents_maximum:
+    case Intrinsic::riscv_bosc_rvv_contents_fadd:
+    case Intrinsic::riscv_bosc_rvv_contents_fsub:
+    case Intrinsic::riscv_bosc_rvv_contents_fmul:
+    case Intrinsic::riscv_bosc_rvv_contents_fdiv:
+    case Intrinsic::riscv_bosc_rvv_contents_fmax:
+      Add(II->getArgOperand(2), Index);
+      [[fallthrough]];
+    case Intrinsic::riscv_bosc_rvv_contents_iadd_scalar:
+    case Intrinsic::riscv_bosc_rvv_contents_shl:
+      if (isa<UndefValue>(II->getArgOperand(2)))
+        return false;
+      [[fallthrough]];
+    case Intrinsic::riscv_bosc_rvv_contents_fcvt_to_i32:
+    case Intrinsic::riscv_bosc_rvv_contents_fcvt_from_i32:
+    case Intrinsic::riscv_bosc_sfu_exp2_contents:
+    case Intrinsic::riscv_bosc_sfu_rcp_contents:
+      Add(II->getArgOperand(1), Index);
+      break;
+    default:
+      return false;
+    }
+  }
+  bool Changed;
+  do {
+    Changed = false;
+    for (const auto &[Key, Inputs] : Dependencies)
+      if (!Seeded.lookup(Key) && llvm::any_of(Inputs, [&](Node Input) {
+            return Seeded.lookup(Input);
+          })) {
+        Seeded[Key] = true;
+        Changed = true;
+      }
+  } while (Changed);
+  return llvm::all_of(Dependencies, [&](const auto &Entry) {
+    return Seeded.lookup(Entry.first);
+  });
+}
+
+Error verifyContentsRVVIR(Function &F, bool Exact512) {
+  if (F.getFnAttribute("trex-bosc-contents-rvv").getValueAsString() != "1")
+    return invalid(F, "unsupported RVV contents ABI version");
+  if (F.hasFnAttribute("trex-bosc-bound-rvv"))
+    return invalid(F, "bound and contents RVV ABIs cannot share a function");
+  if (containsVector(F.getReturnType()) ||
+      llvm::any_of(F.args(), [](const Argument &A) {
+        return containsVector(A.getType());
+      }))
+    return invalid(F, "RVV contents cannot cross the scalar function ABI");
+  for (Instruction &I : instructions(F)) {
+    auto *II = dyn_cast<IntrinsicInst>(&I);
+    if (II && (isBOSCOrderedRVVContentsIntrinsic(II->getIntrinsicID()) ||
+               isBOSCContentsSFUIntrinsic(II->getIntrinsicID()))) {
+      unsigned VLIndex =
+          II->getIntrinsicID() == Intrinsic::riscv_bosc_read_bits_contents
+              ? 1
+              : II->arg_size() - 1;
+      if (!isActualE32M1VL(II->getArgOperand(VLIndex)))
+        return invalid(
+            F, "RVV contents require an actual e32,m1 VL result or literal "
+               "zero");
+      if (II->getIntrinsicID() == Intrinsic::riscv_bosc_read_bits_contents) {
+        const auto *Width = dyn_cast<ConstantInt>(II->getArgOperand(2));
+        if (!Width ||
+            (Width->getZExtValue() != 8 && Width->getZExtValue() != 32 &&
+             Width->getZExtValue() != 64))
+          return invalid(F, "bit observation width must be 8, 32, or 64");
+      }
+      if (II->getIntrinsicID() == Intrinsic::riscv_bosc_rvv_contents_shl) {
+        const auto *Amount = dyn_cast<ConstantInt>(II->getArgOperand(2));
+        if (!Amount || Amount->getValue().ugt(31))
+          return invalid(F, "e32 shift amount must be in 0..31");
+      }
+      if (II->getIntrinsicID() ==
+          Intrinsic::riscv_bosc_rvv_contents_gather_scalar) {
+        auto Lane = gatherIndex(*II, Exact512);
+        if (!Lane)
+          return Lane.takeError();
+        const Value *VL = II->getArgOperand(VLIndex);
+        if (*Lane != 16 && contentsVLRange(VL).MayBePositive) {
+          auto Defined =
+              isContentsLaneDefined(II->getArgOperand(1), *Lane, VL, Exact512);
+          if (!Defined)
+            return Defined.takeError();
+          if (!*Defined)
+            return invalid(
+                F, "gather source lane is not defined on every incoming path");
+        }
+      }
+    }
+    bool Vector = containsVector(I.getType()) ||
+                  llvm::any_of(I.operands(), [](const Value *V) {
+                    return containsVector(V->getType());
+                  });
+    if (!Vector)
+      continue;
+    if (isa<PHINode, BitCastInst>(I))
+      continue;
+    if (!II || !isContentsRVVIntrinsic(II->getIntrinsicID()))
+      return invalid(
+          F, "RVV contents require formal RVV/SFU intrinsics or PHI/bitcast");
+    if (RISCVVIntrinsicsTable::getRISCVVIntrinsicInfo(II->getIntrinsicID()) &&
+        (II->mayReadOrWriteMemory() || containsFloatingVector(II->getType()) ||
+         llvm::any_of(II->args(), [](const Use &U) {
+           return containsFloatingVector(U->getType());
+         })))
+      return invalid(
+          F,
+          "RVV contents memory and FP operations require ordered intrinsics");
+  }
+  return Error::success();
+}
+
+Expected<LaneState> transfer(const BasicBlock &BB, LaneState State, bool Verify,
+                             bool Exact512) {
   for (const Instruction &I : BB) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !isBoundIntrinsic(II->getIntrinsicID()))
@@ -317,32 +664,44 @@ LaneState transfer(const BasicBlock &BB, LaneState State, bool Verify,
     // participate in the RVV lane/configuration dataflow below.
     if (isScalarObservationIntrinsic(ID))
       continue;
+    SmallVector<unsigned, 4> Registers;
+    if (ID != Intrinsic::riscv_bosc_setvl)
+      for (unsigned Index = 0; Index != boundPhysicalOperands(ID); ++Index) {
+        auto Register = physicalArgument(*II, Index);
+        if (!Register)
+          return Register.takeError();
+        Registers.push_back(*Register);
+      }
     if (ID == Intrinsic::riscv_bosc_read_bits) {
       if (Verify) {
         auto *Width = dyn_cast<ConstantInt>(II->getArgOperand(3));
         if (!Width ||
             (Width->getZExtValue() != 8 && Width->getZExtValue() != 32 &&
              Width->getZExtValue() != 64))
-          fail(*BB.getParent(), "bit observation width must be 8, 32, or 64");
+          return invalid(*BB.getParent(),
+                         "bit observation width must be 8, 32, or 64");
         if (State.Configurations.size() != 1)
-          fail(*BB.getParent(),
-               "bit observation requires one reaching vector configuration");
+          return invalid(
+              *BB.getParent(),
+              "bit observation requires one reaching vector configuration");
         const void *Config = State.Configurations.begin()->first;
         Value *Restore = II->getArgOperand(2);
         if (Config && Config != Restore)
-          fail(*BB.getParent(),
-               "bit observation must restore the active setvl result");
+          return invalid(
+              *BB.getParent(),
+              "bit observation must restore the active setvl result");
         if (!Config) {
           auto *Zero = dyn_cast<ConstantInt>(Restore);
           if (!Zero || !Zero->isZero())
-            fail(*BB.getParent(), "bit observation without a source "
-                                  "configuration must restore literal zero");
+            return invalid(*BB.getParent(),
+                           "bit observation without a source "
+                           "configuration must restore literal zero");
         }
       }
       // The temporary configuration is private to this operation. Do not
       // expose the scratch as an initialized business e32 vector: only one
       // element was read, under a potentially different element width.
-      State.Initialized[physicalArgument(*II, 0)] = std::nullopt;
+      State.Initialized[Registers[0]] = std::nullopt;
       continue;
     }
     if (ID == Intrinsic::riscv_bosc_setvl) {
@@ -352,56 +711,71 @@ LaneState transfer(const BasicBlock &BB, LaneState State, bool Verify,
       continue;
     }
     if (Verify && !State.configured())
-      fail(*BB.getParent(), "vector operation requires an explicit setvl on "
-                            "every incoming path");
-    auto Read = [&](unsigned Index) {
-      unsigned Reg = physicalArgument(*II, Index);
+      return invalid(*BB.getParent(),
+                     "vector operation requires an explicit setvl on "
+                     "every incoming path");
+    auto Read = [&](unsigned Index) -> Error {
+      unsigned Reg = Registers[Index];
       if (Verify && !State.readable(Reg))
-        fail(*BB.getParent(), "read of undefined physical vector register v" +
-                                  Twine(Reg) +
-                                  " covering the active setvl lanes");
+        return invalid(*BB.getParent(),
+                       "read of undefined physical vector register v" +
+                           Twine(Reg) + " covering the active setvl lanes");
+      return Error::success();
     };
     if (isBoundBinaryIntrinsic(ID) || ID == Intrinsic::riscv_bosc_merge) {
-      Read(1);
-      Read(2);
+      if (Error E = Read(1))
+        return std::move(E);
+      if (Error E = Read(2))
+        return std::move(E);
     }
     if (ID == Intrinsic::riscv_bosc_fmacc)
-      Read(0);
+      if (Error E = Read(0))
+        return std::move(E);
     if (ID == Intrinsic::riscv_bosc_merge)
-      Read(3);
+      if (Error E = Read(3))
+        return std::move(E);
     if (isBoundUnaryIntrinsic(ID))
-      Read(1);
+      if (Error E = Read(1))
+        return std::move(E);
     if (ID == Intrinsic::riscv_bosc_gather_scalar) {
-      unsigned Index = gatherIndex(*II, Exact512);
-      if (Verify && Index < 16 && !State.noActiveLanes() &&
-          !State.readableLane(physicalArgument(*II, 1), Index))
-        fail(*BB.getParent(),
-             "gather index reads an uninitialized source lane");
+      auto Index = gatherIndex(*II, Exact512);
+      if (!Index)
+        return Index.takeError();
+      if (Verify && *Index < 16 && !State.noActiveLanes() &&
+          !State.readableLane(Registers[1], *Index))
+        return invalid(*BB.getParent(),
+                       "gather index reads an uninitialized source lane");
     }
     if (isBoundReduceIntrinsic(ID))
-      Read(1);
+      if (Error E = Read(1))
+        return std::move(E);
     if (isBoundReduceIntrinsic(ID) || ID == Intrinsic::riscv_bosc_fextract) {
-      unsigned Reg = physicalArgument(*II, 0);
+      unsigned Reg = Registers[0];
       if (Verify && !State.readableZero(Reg))
-        fail(*BB.getParent(),
-             "scalar lane read requires initialized lane zero");
+        return invalid(*BB.getParent(),
+                       "scalar lane read requires initialized lane zero");
       if (isBoundReduceIntrinsic(ID))
         State.reduce(Reg);
       continue;
     }
-    if (ID == Intrinsic::riscv_bosc_store)
-      Read(0);
-    else
-      State.define(physicalArgument(*II, 0));
+    if (ID == Intrinsic::riscv_bosc_store) {
+      if (Error E = Read(0))
+        return std::move(E);
+    } else
+      State.define(Registers[0]);
   }
   return State;
 }
 
-void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
+Error verifyIR(Function &F, bool Supported, bool Exact512 = false) {
   bool Bound = isBOSCBoundFunction(F);
   bool RVV = F.hasFnAttribute("trex-bosc-bound-rvv");
   bool DMA = hasDMAIntrinsic(F);
   bool Observation = hasBOSCObservationIntrinsic(F);
+  bool ContentsRVV = isBOSCContentsRVVFunction(F);
+  if (ContentsRVV)
+    if (Error E = verifyContentsRVVIR(F, Exact512))
+      return E;
   for (Instruction &I : instructions(F)) {
     auto *Call = dyn_cast<CallBase>(&I);
     if (!Call)
@@ -411,44 +785,54 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
     if (Callee && Callee->getName().starts_with("llvm.riscv.bosc.") &&
         (!II || (!isBoundIntrinsic(II->getIntrinsicID()) &&
                  !isBOSCAMEIntrinsic(II->getIntrinsicID()) &&
+                 !isBOSCOrderedRVVContentsIntrinsic(II->getIntrinsicID()) &&
+                 !isBOSCContentsSFUIntrinsic(II->getIntrinsicID()) &&
                  !isDMAIntrinsic(II->getIntrinsicID()))))
-      fail(F, "unknown BOSC intrinsic");
+      return invalid(F, "unknown BOSC intrinsic");
     if (II && II->getIntrinsicID() == Intrinsic::riscv_bosc_read_bits && !RVV)
-      fail(F, "bit observation requires trex-bosc-bound-rvv=1");
+      return invalid(F, "bit observation requires trex-bosc-bound-rvv=1");
+    if (II && isBOSCContentsSFUIntrinsic(II->getIntrinsicID()) && !ContentsRVV)
+      return invalid(F, "SFU contents require RVV contents scope");
+    if (II && isBOSCOrderedRVVContentsIntrinsic(II->getIntrinsicID()) &&
+        !ContentsRVV)
+      return invalid(F, "ordered RVV contents require RVV contents scope");
     if (II && isBoundIntrinsic(II->getIntrinsicID()) &&
         !isScalarObservationIntrinsic(II->getIntrinsicID()) && !RVV &&
         !F.hasFnAttribute("trex-bosc-bound-ame"))
-      fail(F, "intrinsic requires trex-bosc-bound-rvv=1");
+      return invalid(F, "intrinsic requires trex-bosc-bound-rvv=1");
   }
-  verifyBOSCAMEIR(F);
-  if (!Bound && !DMA && !Observation)
-    return;
+  if (Error E = verifyBOSCAMEIR(F))
+    return E;
+  if (!Bound && !DMA && !Observation && !isBOSCRegisterContentsFunction(F))
+    return Error::success();
   if (!Supported)
-    fail(F, "requires the SelectionDAG legacy codegen pipeline");
+    return invalid(F, "requires the SelectionDAG legacy codegen pipeline");
   if (RVV && F.getFnAttribute("trex-bosc-bound-rvv").getValueAsString() != "1")
-    fail(F, "unsupported bound ABI version");
-  if (containsVector(F.getReturnType()))
-    fail(F, "LLVM vector values are forbidden in bound scope");
+    return invalid(F, "unsupported bound ABI version");
+  if (!ContentsRVV && containsVector(F.getReturnType()))
+    return invalid(F, "LLVM vector values are forbidden in bound scope");
   for (const Argument &A : F.args())
-    if (containsVector(A.getType()))
-      fail(F, "LLVM vector values are forbidden in bound scope");
+    if (!ContentsRVV && containsVector(A.getType()))
+      return invalid(F, "LLVM vector values are forbidden in bound scope");
   for (Instruction &I : instructions(F)) {
-    if (containsVector(I.getType()) ||
-        llvm::any_of(I.operands(), [](const Value *V) {
-          return containsVector(V->getType());
-        }))
-      fail(F, "LLVM vector values are forbidden in bound scope");
+    if (!ContentsRVV && (containsVector(I.getType()) ||
+                         llvm::any_of(I.operands(), [](const Value *V) {
+                           return containsVector(V->getType());
+                         })))
+      return invalid(F, "LLVM vector values are forbidden in bound scope");
     auto *Call = dyn_cast<CallBase>(&I);
     if (!Call)
       continue;
     auto *II = dyn_cast<IntrinsicInst>(Call);
     if (II && isa<DbgInfoIntrinsic>(II))
       continue;
+    if (II && ContentsRVV && isContentsRVVIntrinsic(II->getIntrinsicID()))
+      continue;
     // Compiler-authored math and address guards terminate bound execution.
     // Their validity does not depend on whether the function also issues DMA.
     if (II && II->getIntrinsicID() == Intrinsic::trap) {
       if (!isa_and_nonnull<UnreachableInst>(I.getNextNode()))
-        fail(F, "trap must be immediately followed by unreachable");
+        return invalid(F, "trap must be immediately followed by unreachable");
       continue;
     }
     // Explicit scalar memory max-number uses the official f32 intrinsic;
@@ -476,8 +860,9 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
     if (!II || (!isBoundIntrinsic(II->getIntrinsicID()) &&
                 !isBOSCAMEIntrinsic(II->getIntrinsicID()) &&
                 !isDMAIntrinsic(II->getIntrinsicID())))
-      fail(F, "calls, inline assembly and unbound intrinsics are forbidden "
-              "in bound scope");
+      return invalid(
+          F, "calls, inline assembly and unbound intrinsics are forbidden "
+             "in bound scope");
     if (isBOSCAMEIntrinsic(II->getIntrinsicID()) ||
         isDMAIntrinsic(II->getIntrinsicID()))
       continue;
@@ -487,17 +872,28 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
       continue;
     if (II->getIntrinsicID() != Intrinsic::riscv_bosc_setvl)
       for (unsigned I = 0; I != boundPhysicalOperands(II->getIntrinsicID());
-           ++I)
-        physicalArgument(*II, I);
+           ++I) {
+        auto Register = physicalArgument(*II, I);
+        if (!Register)
+          return Register.takeError();
+      }
     if (II->getIntrinsicID() == Intrinsic::riscv_bosc_shl) {
       const auto *Amount = dyn_cast<ConstantInt>(II->getArgOperand(2));
       if (!Amount || Amount->getValue().getActiveBits() > 5)
-        fail(F, "e32 shift amount must be in 0..31");
+        return invalid(F, "e32 shift amount must be in 0..31");
     }
     if (II->getIntrinsicID() == Intrinsic::riscv_bosc_gather_scalar) {
-      gatherIndex(*II, Exact512);
-      if (physicalArgument(*II, 0) == physicalArgument(*II, 1))
-        fail(F, "gather destination must not overlap its source");
+      auto Index = gatherIndex(*II, Exact512);
+      if (!Index)
+        return Index.takeError();
+      auto Destination = physicalArgument(*II, 0);
+      if (!Destination)
+        return Destination.takeError();
+      auto Source = physicalArgument(*II, 1);
+      if (!Source)
+        return Source.takeError();
+      if (*Destination == *Source)
+        return invalid(F, "gather destination must not overlap its source");
     }
   }
   // Must-definition analysis, including CFG joins and loop backedges. Top for
@@ -513,9 +909,11 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
                                                           : LaneState::top();
       for (const BasicBlock *Pred : predecessors(&BB))
         In.meet(Out[Pred]);
-      LaneState Next = transfer(BB, In, false, Exact512);
-      if (Out[&BB] != Next) {
-        Out[&BB] = Next;
+      auto Next = transfer(BB, In, false, Exact512);
+      if (!Next)
+        return Next.takeError();
+      if (Out[&BB] != *Next) {
+        Out[&BB] = *Next;
         Changed = true;
       }
     }
@@ -525,8 +923,51 @@ void verifyIR(Function &F, bool Supported, bool Exact512 = false) {
                                                         : LaneState::top();
     for (const BasicBlock *Pred : predecessors(&BB))
       In.meet(Out[Pred]);
-    transfer(BB, In, true, Exact512);
+    auto Next = transfer(BB, In, true, Exact512);
+    if (!Next)
+      return Next.takeError();
   }
+  return Error::success();
+}
+
+Error verifyBOSCFunction(Function &F, const RISCVSubtarget &ST,
+                         bool Supported) {
+  if (Error E = verifyIR(F, Supported,
+                         ST.hasVInstructions() && ST.getRealVLen() == 512))
+    return E;
+  if (isBOSCBoundFunction(F) || isBOSCRegisterContentsFunction(F) ||
+      hasDMAIntrinsic(F) || hasBOSCObservationIntrinsic(F)) {
+    if (hasBOSCObservationIntrinsic(F) && !ST.is64Bit())
+      return invalid(F, "BOSC observation counter requires RV64");
+    if (hasDMAIntrinsic(F) && !ST.is64Bit())
+      return invalid(F, "patch7 DMA requires RV64");
+    if (isBOSCContentsRVVFunction(F) &&
+        (!ST.is64Bit() || !ST.hasVInstructions() || ST.getRealMinVLen() < 512))
+      return invalid(F, "RVV contents require RV64 +v +zvl512b");
+    if (F.hasFnAttribute("trex-bosc-bound-rvv") &&
+        (!ST.is64Bit() || !ST.hasStdExtV() || ST.getRealMinVLen() < 512))
+      return invalid(F, "requires bound scope and RV64 +v +zvl512b");
+    if (llvm::any_of(instructions(F),
+                     [](const Instruction &I) {
+                       const auto *II = dyn_cast<IntrinsicInst>(&I);
+                       return II && requiresRVVF32(II->getIntrinsicID());
+                     }) &&
+        !ST.hasVInstructionsF32())
+      return invalid(
+          F, "FP32 vector arithmetic requires vector floating-point F32");
+    if ((F.hasFnAttribute("trex-bosc-bound-ame") ||
+         isBOSCContentsAMEFunction(F)) &&
+        (!ST.is64Bit() || !ST.hasVendorXBOSCAME()))
+      return invalid(F, "requires bound AME scope and RV64 +xboscame");
+    if (!ST.hasVendorXBOSCSFU() &&
+        llvm::any_of(instructions(F), [](const Instruction &I) {
+          const auto *II = dyn_cast<IntrinsicInst>(&I);
+          return II && (isBOSCSFUIntrinsic(II->getIntrinsicID()) ||
+                        isBOSCContentsSFUIntrinsic(II->getIntrinsicID()));
+        }))
+      return invalid(F, "SFU offline code generation requires +xboscsfu");
+  }
+  return Error::success();
 }
 
 class RISCVBOSCIRVerification final : public FunctionPass {
@@ -541,34 +982,8 @@ public:
   bool runOnFunction(Function &F) override {
     auto &TM = getAnalysis<TargetPassConfig>().getTM<RISCVTargetMachine>();
     const auto &ST = TM.getSubtarget<RISCVSubtarget>(F);
-    verifyIR(F, Supported, ST.hasVInstructions() && ST.getRealVLen() == 512);
-    if (isBOSCBoundFunction(F) || hasDMAIntrinsic(F) ||
-        hasBOSCObservationIntrinsic(F)) {
-      if (hasBOSCObservationIntrinsic(F) && !ST.is64Bit())
-        fail(F, "BOSC observation counter requires RV64");
-      if (hasDMAIntrinsic(F) && !ST.is64Bit())
-        fail(F, "patch7 DMA requires RV64");
-      if (F.hasFnAttribute("trex-bosc-bound-rvv") &&
-          (!ST.is64Bit() || !ST.hasStdExtV() || ST.getRealMinVLen() < 512))
-        fail(F, "requires bound scope and RV64 +v +zvl512b");
-      if (llvm::any_of(instructions(F),
-                       [](const Instruction &I) {
-                         const auto *II = dyn_cast<IntrinsicInst>(&I);
-                         return II &&
-                                isBOSCFPRVVIntrinsic(II->getIntrinsicID());
-                       }) &&
-          !ST.hasVInstructionsF32())
-        fail(F, "FP32 vector arithmetic requires vector floating-point F32");
-      if (F.hasFnAttribute("trex-bosc-bound-ame") &&
-          (!ST.is64Bit() || !ST.hasVendorXBOSCAME()))
-        fail(F, "requires bound AME scope and RV64 +xboscame");
-      if (!ST.hasVendorXBOSCSFU() &&
-          llvm::any_of(instructions(F), [](const Instruction &I) {
-            const auto *II = dyn_cast<IntrinsicInst>(&I);
-            return II && isBOSCSFUIntrinsic(II->getIntrinsicID());
-          }))
-        fail(F, "SFU offline code generation requires +xboscsfu");
-    }
+    if (Error E = verifyBOSCFunction(F, ST, Supported))
+      reportFatalUsageError(Twine(toString(std::move(E))));
     return false;
   }
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -810,7 +1225,9 @@ void verifyMachineFlow(const MachineFunction &MF) {
 // nonvolatile scalar memory are deliberately absent: LLVM still owns their
 // scheduling and register allocation.
 bool requiresIssueOrder(const MachineInstr &MI) {
-  unsigned Opcode = MI.getOpcode();
+  unsigned Opcode = RISCV::getRVVMCOpcode(MI.getOpcode());
+  if (!Opcode)
+    Opcode = MI.getOpcode();
   if (isBOSCAMEOpcode(Opcode) || isBinaryOpcode(Opcode) ||
       isUnaryOpcode(Opcode) || Opcode == RISCV::VSETVLI ||
       Opcode == RISCV::VSETIVLI || Opcode == RISCV::VLE32_V ||
@@ -871,8 +1288,9 @@ void verifyReadBits(const MachineInstr &MI) {
   const auto &F = MF.getFunction();
   const auto &MRI = MF.getRegInfo();
   const auto &TRI = *MF.getSubtarget().getRegisterInfo();
-  if (!F.hasFnAttribute("trex-bosc-bound-rvv"))
-    fail(F, "bit observation requires bound RVV scope");
+  bool Contents = isBOSCContentsRVVFunction(F);
+  if (!F.hasFnAttribute("trex-bosc-bound-rvv") && !Contents)
+    fail(F, "bit observation requires bound or contents RVV scope");
   if (MI.getNumExplicitOperands() != 5)
     fail(F, "bit observation has invalid operand count");
   const MachineOperand &WidthOperand = MI.getOperand(4);
@@ -888,8 +1306,13 @@ void verifyReadBits(const MachineInstr &MI) {
       fail(F, "bit observation has invalid register operand");
     Register Reg = MO.getReg();
     if (I == 1) {
-      if (Reg.isVirtual() || !RISCV::VRRegClass.contains(Reg) ||
-          Reg == RISCV::V0 || MO.isRenamable())
+      if (Contents) {
+        if (Reg.isVirtual()
+                ? !RISCV::VRRegClass.hasSubClassEq(MRI.getRegClass(Reg))
+                : !RISCV::VRRegClass.contains(Reg))
+          fail(F, "bit observation scratch requires an allocator-owned VR");
+      } else if (Reg.isVirtual() || !RISCV::VRRegClass.contains(Reg) ||
+                 Reg == RISCV::V0 || MO.isRenamable())
         fail(F, "bit observation requires a bound physical scratch v1..v31");
       continue;
     }
@@ -952,6 +1375,7 @@ public:
   }
   bool runOnMachineFunction(MachineFunction &MF) override {
     if (!isBOSCBoundFunction(MF.getFunction()) &&
+        !isBOSCRegisterContentsFunction(MF.getFunction()) &&
         !hasDMAIntrinsic(MF.getFunction()))
       return false;
     bool Changed = false;
@@ -986,12 +1410,50 @@ public:
   }
   bool runOnMachineFunction(MachineFunction &MF) override {
     if (!isBOSCBoundFunction(MF.getFunction()) &&
+        !isBOSCRegisterContentsFunction(MF.getFunction()) &&
         !hasDMAIntrinsic(MF.getFunction()))
       return false;
     const auto &MRI = MF.getRegInfo();
     const auto &ST = MF.getSubtarget<RISCVSubtarget>();
     const auto &TRI = *ST.getRegisterInfo();
+    if (isBOSCRegisterContentsFunction(MF.getFunction())) {
+      auto *Info = MF.getInfo<RISCVMachineFunctionInfo>();
+      if (Info->hasTensixCodegenFailed() ||
+          MF.getProperties().hasFailedRegAlloc())
+        return false;
+      for (const MachineBasicBlock &MBB : MF)
+        for (const MachineInstr &MI : MBB) {
+          if (MI.isCall() || MI.isInlineAsm()) {
+            Info->setTensixCodegenFailed();
+            MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+                MF.getFunction(),
+                "machine call or inline assembly escapes contents scope"));
+            return false;
+          }
+        }
+    }
     verifyBOSCAMEMachine(MF);
+    if (isBOSCRegisterContentsFunction(MF.getFunction()) &&
+        !MF.getFunction().hasFnAttribute("trex-bosc-bound-rvv")) {
+      for (const MachineBasicBlock &MBB : MF)
+        for (const MachineInstr &MI : MBB) {
+          if (MI.getOpcode() == RISCV::PseudoBOSCReadBitsBound)
+            verifyReadBits(MI);
+          verifyIssueOrder(MI);
+          unsigned Opcode = RISCV::getRVVMCOpcode(MI.getOpcode());
+          if (!Opcode)
+            Opcode = MI.getOpcode();
+          bool FP = isRoundedBinaryOpcode(Opcode) ||
+                    isConversionOpcode(Opcode) || isCompareOpcode(Opcode) ||
+                    Opcode == RISCV::VFMAX_VV || Opcode == RISCV::VFMACC_VV ||
+                    Opcode == RISCV::VFREDOSUM_VS ||
+                    Opcode == RISCV::VFREDMAX_VS;
+          if (FP && !MI.mayRaiseFPException())
+            fail(MF.getFunction(),
+                 "RVV contents FP operation lost accrued exception effects");
+        }
+      return false;
+    }
     if (MF.getFunction().hasFnAttribute("trex-bosc-bound-rvv") &&
         (!ST.is64Bit() || !ST.hasStdExtV() || ST.getRealMinVLen() < 512))
       fail(MF.getFunction(), "requires RV64 +v +zvl512b");
@@ -1105,6 +1567,276 @@ public:
 };
 } // namespace
 
+Error llvm::RISCV::verifyBOSCModule(Module &M, TargetMachine &TM) {
+  std::string Details;
+  raw_string_ostream OS(Details);
+  if (verifyModule(M, &OS))
+    return createStringError("invalid LLVM module: " + OS.str());
+  if (!TM.getTargetTriple().isRISCV() ||
+      M.getTargetTriple() != TM.getTargetTriple())
+    return createStringError(
+        "BOSC module requires the actual RISC-V target machine triple");
+  auto &RTM = static_cast<RISCVTargetMachine &>(TM);
+  // Obtain target facts without importing untrusted per-function vscale
+  // bounds. A separate module leaves the candidate and its users untouched.
+  Module Baseline("bosc.target", M.getContext());
+  Baseline.setTargetTriple(TM.getTargetTriple());
+  Baseline.setDataLayout(TM.createDataLayout());
+  Function *BaselineFunction = Function::Create(
+      FunctionType::get(Type::getVoidTy(M.getContext()), false),
+      GlobalValue::ExternalLinkage, "bosc.target", Baseline);
+  const auto &BaselineST = RTM.getSubtarget<RISCVSubtarget>(*BaselineFunction);
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    // Library ingress uses the actual machine's already-accepted target
+    // configuration. Do not let per-function overrides reach subtarget
+    // construction, where incompatible CPU/features may report a fatal error.
+    for (auto [Name, Value] :
+         {std::pair<StringRef, StringRef>{"target-cpu", TM.getTargetCPU()},
+          {"target-features", TM.getTargetFeatureString()}}) {
+      Attribute A = F.getFnAttribute(Name);
+      if (A.isValid() && A.getValueAsString() != Value)
+        return invalid(F,
+                       Twine(Name) + " must match the actual target machine");
+    }
+    // The generic verifier checks power-of-two vscale bounds. RISC-V
+    // subtarget construction additionally requires 64 <= VLEN <= 65536.
+    Attribute Scale = F.getFnAttribute(Attribute::VScaleRange);
+    if (Scale.isValid() && (Scale.getVScaleRangeMin() > 1024 ||
+                            Scale.getVScaleRangeMax().value_or(0) > 1024))
+      return invalid(F, "vscale_range exceeds the RISC-V VLEN limit");
+    if (Scale.isValid())
+      if (Error E = BaselineST.verifyRVVVectorBounds(
+              Scale.getVScaleRangeMin() * RISCV::RVVBitsPerBlock,
+              Scale.getVScaleRangeMax().value_or(0) * RISCV::RVVBitsPerBlock))
+        return E;
+    const auto &ST = RTM.getSubtarget<RISCVSubtarget>(F);
+    if (Error E = verifyBOSCFunction(F, ST, true))
+      return E;
+  }
+  return Error::success();
+}
+
+bool llvm::isBOSCContentsSFUIntrinsic(Intrinsic::ID ID) {
+  return ID == Intrinsic::riscv_bosc_sfu_exp2_contents ||
+         ID == Intrinsic::riscv_bosc_sfu_rcp_contents;
+}
+
+bool llvm::isBOSCOrderedRVVContentsIntrinsic(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::riscv_bosc_rvv_contents_add:
+  case Intrinsic::riscv_bosc_rvv_contents_maximum:
+  case Intrinsic::riscv_bosc_rvv_contents_isplat:
+  case Intrinsic::riscv_bosc_rvv_contents_iadd_scalar:
+  case Intrinsic::riscv_bosc_rvv_contents_shl:
+  case Intrinsic::riscv_bosc_rvv_contents_gather_scalar:
+  case Intrinsic::riscv_bosc_rvv_contents_load:
+  case Intrinsic::riscv_bosc_rvv_contents_store:
+  case Intrinsic::riscv_bosc_rvv_contents_fadd:
+  case Intrinsic::riscv_bosc_rvv_contents_fsub:
+  case Intrinsic::riscv_bosc_rvv_contents_fmul:
+  case Intrinsic::riscv_bosc_rvv_contents_fdiv:
+  case Intrinsic::riscv_bosc_rvv_contents_fmax:
+  case Intrinsic::riscv_bosc_rvv_contents_fmacc:
+  case Intrinsic::riscv_bosc_rvv_contents_fcvt_to_i32:
+  case Intrinsic::riscv_bosc_rvv_contents_fcvt_from_i32:
+  case Intrinsic::riscv_bosc_rvv_contents_fcmp_lt:
+  case Intrinsic::riscv_bosc_rvv_contents_fcmp_eq:
+  case Intrinsic::riscv_bosc_rvv_contents_freduce_sum:
+  case Intrinsic::riscv_bosc_rvv_contents_freduce_max:
+  case Intrinsic::riscv_bosc_rvv_contents_fsplat:
+  case Intrinsic::riscv_bosc_rvv_contents_fextract:
+  case Intrinsic::riscv_bosc_read_bits_contents:
+    return true;
+  default:
+    return false;
+  }
+}
+
+namespace {
+SDValue lowerOrderedRVVContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
+                                         const RISCVSubtarget &ST) {
+  auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
+  if (!isBOSCOrderedRVVContentsIntrinsic(ID))
+    return SDValue();
+  const Function &F = DAG.getMachineFunction().getFunction();
+  if (!isBOSCContentsRVVFunction(F) || !ST.is64Bit() ||
+      !ST.hasVInstructions() || ST.getRealMinVLen() < 512)
+    fail(F, "ordered RVV contents require RV64 +v +zvl512b contents scope");
+  bool Load = ID == Intrinsic::riscv_bosc_rvv_contents_load;
+  bool Store = ID == Intrinsic::riscv_bosc_rvv_contents_store;
+  bool Observe = ID == Intrinsic::riscv_bosc_read_bits_contents;
+  if (requiresRVVF32(ID) && !ST.hasVInstructionsF32())
+    fail(F, "FP32 vector arithmetic requires vector floating-point F32");
+
+  SDLoc DL(Op);
+  auto Target = [&](uint64_t Value) {
+    return DAG.getTargetConstant(Value, DL, MVT::i64);
+  };
+  SDValue Chain = Op.getOperand(0);
+  if (Observe) {
+    const auto *Width = dyn_cast<ConstantSDNode>(Op.getOperand(4));
+    if (!Width || (Width->getZExtValue() != 8 && Width->getZExtValue() != 32 &&
+                   Width->getZExtValue() != 64))
+      fail(F, "bit observation width must be 8, 32, or 64");
+    SDValue Operands[] = {
+        Op.getOperand(2), Op.getOperand(3),
+        DAG.getTargetConstant(Width->getZExtValue(), DL, MVT::i32), Chain};
+    // The unused vector output is an ordinary allocator-owned scratch, not a
+    // physical selector or spill slot. Keep the entire observation closed.
+    auto *Node = DAG.getMachineNode(
+        RISCV::PseudoBOSCReadBitsBound, DL,
+        DAG.getVTList(MVT::i64, MVT::nxv2i32, MVT::Other), Operands);
+    auto *MMO = DAG.getMachineFunction().getMachineMemOperand(
+        MachinePointerInfo(),
+        MachineMemOperand::MOLoad | MachineMemOperand::MOVolatile,
+        LocationSize::precise(Width->getZExtValue() / 8),
+        Align(Width->getZExtValue() / 8));
+    DAG.setNodeMemRefs(Node, {MMO});
+    return DAG.getMergeValues({SDValue(Node, 0), SDValue(Node, 2)}, DL);
+  }
+
+  SmallVector<SDValue, 9> Operands;
+  unsigned Opcode = 0;
+  bool Rounded = false;
+  bool Compare = ID == Intrinsic::riscv_bosc_rvv_contents_fcmp_lt ||
+                 ID == Intrinsic::riscv_bosc_rvv_contents_fcmp_eq;
+  bool Extract = ID == Intrinsic::riscv_bosc_rvv_contents_fextract;
+  bool Reduce = ID == Intrinsic::riscv_bosc_rvv_contents_freduce_sum ||
+                ID == Intrinsic::riscv_bosc_rvv_contents_freduce_max;
+  switch (ID) {
+  case Intrinsic::riscv_bosc_rvv_contents_add:
+    Opcode = RISCV::PseudoVADD_VV_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_maximum:
+    Opcode = RISCV::PseudoVMAX_VV_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_isplat:
+    Opcode = RISCV::PseudoVMV_V_X_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_iadd_scalar:
+    Opcode = RISCV::PseudoVADD_VX_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_shl:
+    Opcode = RISCV::PseudoVSLL_VI_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_gather_scalar:
+    Opcode = RISCV::PseudoVRGATHER_VI_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_load:
+    Opcode = RISCV::PseudoVLE32_V_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_store:
+    Opcode = RISCV::PseudoVSE32_V_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fadd:
+    Opcode = RISCV::PseudoVFADD_VV_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fsub:
+    Opcode = RISCV::PseudoVFSUB_VV_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fmul:
+    Opcode = RISCV::PseudoVFMUL_VV_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fdiv:
+    Opcode = RISCV::PseudoVFDIV_VV_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fmax:
+    Opcode = RISCV::PseudoVFMAX_VV_M1_E32;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fmacc:
+    Opcode = RISCV::PseudoVFMACC_VV_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fcvt_to_i32:
+    Opcode = RISCV::PseudoVFCVT_X_F_V_M1;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fcvt_from_i32:
+    Opcode = RISCV::PseudoVFCVT_F_X_V_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fcmp_lt:
+    Opcode = RISCV::PseudoBOSC_VMFLT_VV_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fcmp_eq:
+    Opcode = RISCV::PseudoBOSC_VMFEQ_VV_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_freduce_sum:
+    Opcode = RISCV::PseudoVFREDOSUM_VS_M1_E32;
+    Rounded = true;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_freduce_max:
+    Opcode = RISCV::PseudoVFREDMAX_VS_M1_E32;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fsplat:
+    Opcode = RISCV::PseudoVFMV_V_FPR32_M1;
+    break;
+  case Intrinsic::riscv_bosc_rvv_contents_fextract:
+    Opcode = RISCV::PseudoVFMV_FPR32_S;
+    break;
+  default:
+    llvm_unreachable("classified ordered RVV contents intrinsic");
+  }
+  unsigned LastArgument = Op.getNumOperands() - 1;
+  if (Compare) {
+    // VL=0 preserves every old mask bit. With positive VL, inactive mask tails
+    // are still architecturally agnostic; the tie makes no stronger promise.
+    if (Op.getOperand(2).isUndef()) {
+      // An undefined prior mask has no bits to preserve, including at VL=0.
+      // Avoid manufacturing a passthru register copy for initialization.
+      Opcode = ID == Intrinsic::riscv_bosc_rvv_contents_fcmp_lt
+                   ? RISCV::PseudoVMFLT_VV_M1
+                   : RISCV::PseudoVMFEQ_VV_M1;
+      Operands.append({Op.getOperand(3), Op.getOperand(4)});
+    } else {
+      Operands.append({Op.getOperand(2), Op.getOperand(3), Op.getOperand(4)});
+    }
+  } else if (Extract) {
+    Operands.push_back(Op.getOperand(2));
+  } else {
+    for (unsigned I = 2; I != LastArgument; ++I) {
+      bool Immediate =
+          I == 4 && (ID == Intrinsic::riscv_bosc_rvv_contents_shl ||
+                     ID == Intrinsic::riscv_bosc_rvv_contents_gather_scalar);
+      Operands.push_back(Immediate ? Target(Op.getConstantOperandVal(I))
+                                   : Op.getOperand(I));
+    }
+    if (Reduce)
+      Operands.push_back(Op.getOperand(2)); // old lane zero is the seed.
+  }
+  if (Rounded)
+    Operands.push_back(Target(RISCVFPRndMode::DYN));
+  if (!Extract)
+    Operands.push_back(Op.getOperand(LastArgument));
+  Operands.push_back(Target(5)); // log2(e32)
+  if (!Store && !Compare && !Extract)
+    Operands.push_back(
+        Target(RISCVVType::TAIL_AGNOSTIC | RISCVVType::MASK_AGNOSTIC));
+  Operands.push_back(Chain);
+  auto VTs = Store ? DAG.getVTList(MVT::Other)
+                   : DAG.getVTList(Op.getValueType(), MVT::Other);
+  // The official pseudos own encoding, overlap/tied constraints, vsetvli
+  // insertion and dynamic FRM dependencies. An empty flag set intentionally
+  // retains possible FP exceptions; never attach NoFPExcept here.
+  auto *Node = DAG.getMachineNode(Opcode, DL, VTs, Operands);
+  if (Load || Store) {
+    auto *MMO = DAG.getMachineFunction().getMachineMemOperand(
+        MachinePointerInfo(),
+        (Load ? MachineMemOperand::MOLoad : MachineMemOperand::MOStore) |
+            MachineMemOperand::MOVolatile,
+        LocationSize::beforeOrAfterPointer(), Align(4));
+    DAG.setNodeMemRefs(Node, {MMO});
+  }
+  return SDValue(Node, 0);
+}
+} // namespace
+
 char RISCVBOSCIRVerification::ID = 0;
 INITIALIZE_PASS_BEGIN(RISCVBOSCIRVerification, "riscv-bosc-ir-verify",
                       "Verify BOSC bound RVV IR", false, false)
@@ -1130,7 +1862,8 @@ FunctionPass *llvm::createRISCVBOSCBoundVerificationPass() {
 }
 PreservedAnalyses llvm::RISCVBOSCNewPMGate::run(Function &F,
                                                 FunctionAnalysisManager &) {
-  verifyIR(F, false);
+  if (Error E = verifyIR(F, false))
+    reportFatalUsageError(Twine(toString(std::move(E))));
   return PreservedAnalyses::all();
 }
 
@@ -1141,6 +1874,10 @@ SDValue llvm::lowerBOSCBoundIntrinsic(SDValue Op, SelectionDAG &DAG,
   // through to the target's normal lowering path.
   if (Op.getNumOperands() <= 1)
     return SDValue();
+  if (SDValue Contents = lowerOrderedRVVContentsIntrinsic(Op, DAG, ST))
+    return Contents;
+  if (SDValue Contents = lowerBOSCContentsSFUIntrinsic(Op, DAG, ST))
+    return Contents;
   auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
   if (ID == Intrinsic::riscv_bosc_read_mcycle) {
     if (!ST.is64Bit())

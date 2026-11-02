@@ -1044,22 +1044,19 @@ def BOSCConfigReg : RISCVRegisterClass<[XLenVT], 32,
   let isAllocatable = 0;
 }
 
-// BOSC AME resources are architectural state, not LLVM allocatable values.
-// Keep all sixteen tile slots and eight accumulator slots visible to the MC
-// layer so the receiver can materialize MLIR's physical bindings directly.
+// The contents ABI allocates opaque Tr/Acc values. Bound functions reserve
+// these same physical registers and retain their existing immediate ABI.
 foreach Index = 0-15 in
   def BOSC_TR#Index : RISCVReg<Index, "tr"#Index>;
 foreach Index = 0-7 in
   def BOSC_ACC#Index : RISCVReg<Index, "acc"#Index>;
 let RegInfos = XLenRI in {
-  def BOSCTrReg : RISCVRegisterClass<[untyped], 32,
+  def BOSCTrReg : RISCVRegisterClass<[riscv_bosc_ame_tr], 32,
                                      (add (sequence "BOSC_TR%u", 0, 15))> {
-    let isAllocatable = 0;
     let DecoderMethod = "DecodeSimpleRegisterClass<RISCV::BOSC_TR0, 16>";
   }
-  def BOSCAccReg : RISCVRegisterClass<[untyped], 32,
+  def BOSCAccReg : RISCVRegisterClass<[riscv_bosc_ame_acc], 32,
                                       (add (sequence "BOSC_ACC%u", 0, 7))> {
-    let isAllocatable = 0;
     let DecoderMethod = "DecodeSimpleRegisterClass<RISCV::BOSC_ACC0, 8>";
   }
 }

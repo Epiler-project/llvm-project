@@ -12,6 +12,7 @@
 
 #include "RISCVTargetMachine.h"
 #include "RISCVBOSCBound.h"
+#include "RISCVRegisterContents.h"
 #include "RISCVTensixReplayTemplate.h"
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
@@ -171,6 +172,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeRISCVBOSCIRVerificationPass(*PR);
   initializeRISCVBOSCIssueIngressPass(*PR);
   initializeRISCVBOSCBoundVerificationPass(*PR);
+  initializeRISCVRegisterContentsAllocationPass(*PR);
   initializeRISCVTensixIRVerificationPass(*PR);
   initializeRISCVTensixIssueWordFoldPass(*PR);
   initializeRISCVTensixBoundVerificationPass(*PR);
@@ -396,10 +398,17 @@ public:
 static bool onlyAllocateRVVReg(const TargetRegisterInfo &TRI,
                                const MachineRegisterInfo &MRI,
                                const Register Reg) {
-  if (isBOSCBoundFunction(MRI.getMF().getFunction()))
+  if (isBOSCBoundFunction(MRI.getMF().getFunction()) &&
+      !isBOSCContentsRVVFunction(MRI.getMF().getFunction()))
     return false;
   const TargetRegisterClass *RC = MRI.getRegClass(Reg);
   return RISCVRegisterInfo::isRVVRegClass(RC);
+}
+
+static bool onlyAllocateRegisterContents(const TargetRegisterInfo &,
+                                         const MachineRegisterInfo &MRI,
+                                         Register Reg) {
+  return isRISCVRegisterContentsClass(MRI.getMF(), *MRI.getRegClass(Reg));
 }
 
 static FunctionPass *useDefaultRegisterAllocator() { return nullptr; }
@@ -517,8 +526,19 @@ FunctionPass *RISCVPassConfig::createRVVRegAllocPass(bool Optimized) {
 }
 
 bool RISCVPassConfig::addRegAssignAndRewriteFast() {
+  // FastRA transports live-out values through stack slots. Restricted contents
+  // have no such storage, so allocate only those classes with the ordinary
+  // global allocator, including at O0. Preserve the selected RVV/GPR
+  // allocators for the remaining classes; coalescing still runs per function.
+  // PHI elimination and two-address conversion introduce copies which must
+  // coalesce before allocating classes without an implicit move instruction.
+  addPass(&RegisterCoalescerID);
+  addPass(createRISCVRegisterContentsAllocationPass());
+  addPass(createGreedyRegisterAllocator(onlyAllocateRegisterContents));
+  addPass(createVirtRegRewriter(false));
   addPass(createRVVRegAllocPass(false));
   addPass(createRISCVInsertVSETVLIPass());
+  addPass(createRISCVBOSCIssueIngressPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
       EnableRISCVDeadRegisterElimination)
     addPass(createRISCVDeadRegisterDefinitionsPass());
@@ -526,9 +546,16 @@ bool RISCVPassConfig::addRegAssignAndRewriteFast() {
 }
 
 bool RISCVPassConfig::addRegAssignAndRewriteOptimized() {
+  // Allocate restricted contents independently of the user-selected scalar
+  // and RVV allocators: even a fast override must not introduce stack storage
+  // for these classes. The ordinary allocators handle the remaining vregs.
+  addPass(createRISCVRegisterContentsAllocationPass());
+  addPass(createGreedyRegisterAllocator(onlyAllocateRegisterContents));
+  addPass(createVirtRegRewriter(false));
   addPass(createRVVRegAllocPass(true));
   addPass(createVirtRegRewriter(false));
   addPass(createRISCVInsertVSETVLIPass());
+  addPass(createRISCVBOSCIssueIngressPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
       EnableRISCVDeadRegisterElimination)
     addPass(createRISCVDeadRegisterDefinitionsPass());

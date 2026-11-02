@@ -6,6 +6,8 @@
 // Physical registers are MLIR-owned immediates, never LLVM vector SSA values.
 // Unspecified memory effects deliberately serialize the external register state
 // with scalar memory. No pure/readonly attribute may erase that state effect.
+def llvm_bosc_nxv2i32_ty : LLVMType<nxv2i32>;
+def llvm_bosc_nxv2i1_ty : LLVMType<nxv2i1>;
 let TargetPrefix = "riscv" in {
 class BOSCBoundIntrinsic<list<LLVMType> Results, list<LLVMType> Inputs,
                          list<IntrinsicProperty> Properties = []>
@@ -128,4 +130,82 @@ def int_riscv_bosc_ame_mma_b_select : BOSCBoundIntrinsic<[],
     [llvm_i32_ty, llvm_i32_ty, llvm_i1_ty, llvm_i32_ty, llvm_i32_ty],
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<3>>,
      ImmArg<ArgIndex<4>>]>;
+
+// Contents ABI: the final three operands name the actual setm/setn/setk
+// results. Matrix roles are opaque first-class values, not selector integers.
+class BOSCAMEContentsLoad<LLVMType Contents>
+    : BOSCBoundIntrinsic<[Contents],
+        [llvm_ptr_ty, llvm_i64_ty, llvm_i64_ty, llvm_i64_ty, llvm_i64_ty]>;
+def int_riscv_bosc_ame_contents_load_a
+    : BOSCAMEContentsLoad<llvm_riscv_bosc_ame_tr_ty>;
+def int_riscv_bosc_ame_contents_load_b
+    : BOSCAMEContentsLoad<llvm_riscv_bosc_ame_tr_ty>;
+def int_riscv_bosc_ame_contents_load_c
+    : BOSCAMEContentsLoad<llvm_riscv_bosc_ame_acc_ty>;
+def int_riscv_bosc_ame_contents_store_c : BOSCBoundIntrinsic<[],
+    [llvm_riscv_bosc_ame_acc_ty, llvm_ptr_ty, llvm_i64_ty,
+     llvm_i64_ty, llvm_i64_ty, llvm_i64_ty]>;
+class BOSCAMEContentsMMA : BOSCBoundIntrinsic<[llvm_riscv_bosc_ame_acc_ty],
+    [llvm_riscv_bosc_ame_acc_ty, llvm_riscv_bosc_ame_tr_ty,
+     llvm_riscv_bosc_ame_tr_ty, llvm_i64_ty, llvm_i64_ty, llvm_i64_ty]>;
+def int_riscv_bosc_ame_contents_mma : BOSCAMEContentsMMA;
+def int_riscv_bosc_ame_contents_fp_mma : BOSCAMEContentsMMA;
+class BOSCSFUContents : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+    [llvm_bosc_nxv2i32_ty, llvm_bosc_nxv2i32_ty, llvm_i64_ty]>;
+def int_riscv_bosc_sfu_exp2_contents : BOSCSFUContents;
+def int_riscv_bosc_sfu_rcp_contents : BOSCSFUContents;
+
+// Ordered RVV contents operations receive raw e32 register bits. The final
+// operand is an actual e32,m1 VL result, a PHI of actual results, or zero.
+// Unlike the generic pure RVV floating-point intrinsics, these operations
+// preserve dynamic rounding, accrued FP exceptions, and the device issue
+// order. Loads/stores are volatile SPM accesses, not ordinary cached memory.
+class BOSCRVVContentsBinary : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+    [llvm_bosc_nxv2i32_ty, llvm_bosc_nxv2i32_ty,
+     llvm_bosc_nxv2i32_ty, llvm_i64_ty]>;
+def int_riscv_bosc_rvv_contents_add : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_maximum : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_fadd : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_fsub : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_fmul : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_fdiv : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_fmax : BOSCRVVContentsBinary;
+def int_riscv_bosc_rvv_contents_fmacc : BOSCRVVContentsBinary;
+class BOSCRVVContentsUnary : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+    [llvm_bosc_nxv2i32_ty, llvm_bosc_nxv2i32_ty, llvm_i64_ty]>;
+def int_riscv_bosc_rvv_contents_fcvt_to_i32 : BOSCRVVContentsUnary;
+def int_riscv_bosc_rvv_contents_fcvt_from_i32 : BOSCRVVContentsUnary;
+def int_riscv_bosc_rvv_contents_freduce_sum : BOSCRVVContentsUnary;
+def int_riscv_bosc_rvv_contents_freduce_max : BOSCRVVContentsUnary;
+class BOSCRVVContentsCompare : BOSCBoundIntrinsic<[llvm_bosc_nxv2i1_ty],
+    [llvm_bosc_nxv2i1_ty, llvm_bosc_nxv2i32_ty,
+     llvm_bosc_nxv2i32_ty, llvm_i64_ty]>;
+// VL=0 preserves the entire prior mask. For positive VL, inactive mask tails
+// remain architecturally agnostic, independent of the vector-tail policy.
+def int_riscv_bosc_rvv_contents_fcmp_lt : BOSCRVVContentsCompare;
+def int_riscv_bosc_rvv_contents_fcmp_eq : BOSCRVVContentsCompare;
+def int_riscv_bosc_rvv_contents_fsplat
+    : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+        [llvm_bosc_nxv2i32_ty, llvm_float_ty, llvm_i64_ty]>;
+def int_riscv_bosc_rvv_contents_isplat
+    : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+        [llvm_bosc_nxv2i32_ty, llvm_i64_ty, llvm_i64_ty]>;
+class BOSCRVVContentsScalar<list<IntrinsicProperty> Properties = []>
+    : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+        [llvm_bosc_nxv2i32_ty, llvm_bosc_nxv2i32_ty,
+         llvm_i64_ty, llvm_i64_ty], Properties>;
+def int_riscv_bosc_rvv_contents_iadd_scalar : BOSCRVVContentsScalar;
+def int_riscv_bosc_rvv_contents_shl
+    : BOSCRVVContentsScalar<[ImmArg<ArgIndex<2>>]>;
+def int_riscv_bosc_rvv_contents_gather_scalar
+    : BOSCRVVContentsScalar<[ImmArg<ArgIndex<2>>]>;
+def int_riscv_bosc_rvv_contents_fextract
+    : BOSCBoundIntrinsic<[llvm_float_ty], [llvm_bosc_nxv2i32_ty, llvm_i64_ty]>;
+def int_riscv_bosc_rvv_contents_load
+    : BOSCBoundIntrinsic<[llvm_bosc_nxv2i32_ty],
+        [llvm_bosc_nxv2i32_ty, llvm_ptr_ty, llvm_i64_ty]>;
+def int_riscv_bosc_rvv_contents_store
+    : BOSCBoundIntrinsic<[], [llvm_bosc_nxv2i32_ty, llvm_ptr_ty, llvm_i64_ty]>;
+def int_riscv_bosc_read_bits_contents : BOSCBoundIntrinsic<[llvm_i64_ty],
+    [llvm_ptr_ty, llvm_i64_ty, llvm_i32_ty], [ImmArg<ArgIndex<2>>]>;
 }

@@ -33,7 +33,7 @@
 # INVALID: error: Wormhole CLEARDVALID field reset must be in [0, 0]
 # INVALID: error: Wormhole CLEARDVALID field cleardvalid must be in [1, 2]
 # INVALID: error: Wormhole CLEARDVALID field cleardvalid must be in [1, 2]
-# INVALID: error: Wormhole SETRWC field bitmask must be in [1, 2]
+# INVALID: error: Wormhole SETRWC field bitmask must be in [1, 15]
 # INVALID: error: Wormhole SETRWC field rwc_a must be in [0, 0]
 # INVALID: error: Wormhole SETRWC field clear_ab_vld must be in [0, 0]
 
@@ -58,6 +58,6 @@ ttcleardvalid 1, 1
 ttcleardvalid 2, 1
 ttcleardvalid 0, 0
 ttcleardvalid 0, 3
-ttsetrwc 3, 0, 0, 0, 0, 0
+ttsetrwc 16, 0, 0, 0, 0, 0
 ttsetrwc 1, 1, 0, 0, 0, 0
 ttsetrwc 1, 0, 0, 0, 0, 1

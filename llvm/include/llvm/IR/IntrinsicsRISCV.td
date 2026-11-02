@@ -18,6 +18,15 @@ let TargetPrefix = "riscv" in {
       [IntrHasSideEffects, IntrConvergent, IntrNoDuplicate]>;
 }
 
+// Consume a scalar device read response before subsequent memory actions.
+// This emits an ordinary RISC-V instruction and needs no Tensix issue feature.
+// Keep full memory effects: volatile readback alone only orders the request,
+// whereas consuming its actual returned register also orders the response.
+let TargetPrefix = "riscv" in {
+  def int_riscv_tt_read_response : Intrinsic<[], [llvm_i32_ty],
+      [IntrHasSideEffects, IntrConvergent, IntrNoDuplicate]>;
+}
+
 //===----------------------------------------------------------------------===//
 // Atomics
 

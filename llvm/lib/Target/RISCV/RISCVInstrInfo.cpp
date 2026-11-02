@@ -14,8 +14,11 @@
 #include "MCTargetDesc/RISCVBaseInfo.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCV.h"
+#include "RISCVBOSCBound.h"
+#include "RISCVRegisterContents.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTensixContentsGroup.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -242,6 +245,19 @@ Register RISCVInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
 
 bool RISCVInstrInfo::isReMaterializableImpl(
     const MachineInstr &MI) const {
+  const MachineFunction &MF = *MI.getMF();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  for (const MachineOperand &MO : MI.defs()) {
+    if (!MO.isReg() || !MO.getReg())
+      continue;
+    const TargetRegisterClass *RC =
+        MO.getReg().isVirtual()
+            ? MRI.getRegClass(MO.getReg())
+            : MF.getSubtarget().getRegisterInfo()->getMinimalPhysRegClass(
+                  MO.getReg());
+    if (RC && isRISCVRegisterContentsClass(MF, *RC))
+      return false;
+  }
   switch (RISCV::getRVVMCOpcode(MI.getOpcode())) {
   case RISCV::VMV_V_X:
   case RISCV::VFMV_V_F:
@@ -509,6 +525,50 @@ void RISCVInstrInfo::copyPhysRegVector(
   }
 }
 
+static StringRef getContentsCopyError(const MachineFunction &MF,
+                                      const TargetRegisterInfo &TRI,
+                                      Register DstReg, Register SrcReg) {
+  const Function &F = MF.getFunction();
+  if (isBOSCContentsAMEFunction(F) &&
+      (RISCV::BOSCTrRegRegClass.contains(DstReg) ||
+       RISCV::BOSCTrRegRegClass.contains(SrcReg) ||
+       RISCV::BOSCAccRegRegClass.contains(DstReg) ||
+       RISCV::BOSCAccRegRegClass.contains(SrcReg)))
+    return "BOSC register contents cannot synthesize a matrix register copy";
+  if (isBOSCContentsRVVFunction(F) &&
+      (RISCVRegisterInfo::isRVVRegClass(TRI.getMinimalPhysRegClass(DstReg)) ||
+       RISCVRegisterInfo::isRVVRegClass(TRI.getMinimalPhysRegClass(SrcReg))))
+    return "BOSC register contents cannot synthesize a vector register copy";
+  if (RISCV::SFPRReadRegClass.contains(DstReg) ||
+      RISCV::SFPRReadRegClass.contains(SrcReg))
+    return "Tensix SFPU cannot synthesize a register copy";
+  return {};
+}
+
+bool RISCVInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
+  if (expandTensixContentsGroupPseudo(MI, STI))
+    return true;
+  if (!MI.isCopy() || MI.allDefsAreDead() || MI.getOperand(1).isUndef() ||
+      MI.getOperand(0).getReg() == MI.getOperand(1).getReg())
+    return false;
+  auto &MF = *MI.getMF();
+  StringRef Error = getContentsCopyError(MF, *STI.getRegisterInfo(),
+                                         MI.getOperand(0).getReg(),
+                                         MI.getOperand(1).getReg());
+  if (Error.empty())
+    return false;
+
+  // The generic COPY expander erases the instruction after copyPhysReg,
+  // whose void interface cannot return failure. Retain the real def/use on
+  // this failed allocation so subsequent verification remains well-formed;
+  // the target printer rejects the failed function without emitting it.
+  MF.getProperties().setFailedRegAlloc();
+  MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+  MF.getFunction().getContext().diagnose(
+      DiagnosticInfoUnsupported(MF.getFunction(), Error));
+  return true;
+}
+
 void RISCVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MBBI,
                                  const DebugLoc &DL, Register DstReg,
@@ -516,14 +576,15 @@ void RISCVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  bool RenamableDest, bool RenamableSrc) const {
   const TargetRegisterInfo *TRI = STI.getRegisterInfo();
   RegState KillFlag = getKillRegState(KillSrc);
-  // SFPU movement requires an authored bound instruction. A missing bound
-  // function flag does not authorize a generic COPY to invent that movement.
-  if (RISCV::SFPRReadRegClass.contains(DstReg) ||
-      RISCV::SFPRReadRegClass.contains(SrcReg)) {
-    auto &MF = *MBB.getParent();
+  auto &MF = *MBB.getParent();
+  StringRef Error = getContentsCopyError(MF, *TRI, DstReg, SrcReg);
+  if (!Error.empty()) {
+    if (DstReg == SrcReg)
+      return;
+    MF.getProperties().setFailedRegAlloc();
     MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
-    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
-        MF.getFunction(), "Tensix SFPU cannot synthesize a register copy"));
+    MF.getFunction().getContext().diagnose(
+        DiagnosticInfoUnsupported(MF.getFunction(), Error));
     return;
   }
 
@@ -685,6 +746,16 @@ void RISCVInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                          const TargetRegisterClass *RC,
                                          Register VReg,
                                          MachineInstr::MIFlag Flags) const {
+  const Function &F = MBB.getParent()->getFunction();
+  if ((isBOSCContentsRVVFunction(F) &&
+       RISCVRegisterInfo::isRVVRegClass(RC)) ||
+      (isBOSCContentsAMEFunction(F) &&
+       (RISCV::BOSCTrRegRegClass.hasSubClassEq(RC) ||
+        RISCV::BOSCAccRegRegClass.hasSubClassEq(RC)))) {
+    F.getContext().diagnose(DiagnosticInfoUnsupported(
+        F, "BOSC register contents cannot spill or reload"));
+    return;
+  }
   if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
     auto &MF = *MBB.getParent();
     MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
@@ -782,6 +853,16 @@ void RISCVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           const TargetRegisterClass *RC,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
+  const Function &F = MBB.getParent()->getFunction();
+  if ((isBOSCContentsRVVFunction(F) &&
+       RISCVRegisterInfo::isRVVRegClass(RC)) ||
+      (isBOSCContentsAMEFunction(F) &&
+       (RISCV::BOSCTrRegRegClass.hasSubClassEq(RC) ||
+        RISCV::BOSCAccRegRegClass.hasSubClassEq(RC)))) {
+    F.getContext().diagnose(DiagnosticInfoUnsupported(
+        F, "BOSC register contents cannot spill or reload"));
+    return;
+  }
   if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
     auto &MF = *MBB.getParent();
     MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();

@@ -80,6 +80,9 @@ class TensixPhysicalInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
   let Inst{1-0} = RawWord{31-30};
   let DecoderNamespace = "Tensix";
   let Predicates = [HasVendorXTTTensixBH];
+  // Additional bounds are indexed by complete native MC operand number.
+  // -1 retains the common descriptor contract, including register operands.
+  list<int> WormholeOperandMaxima = [];
   let hasSideEffects = 1;
   let isNotDuplicable = 1;
   let isConvergent = 1;
@@ -93,6 +96,8 @@ class TensixPhysicalInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
 def TTSFPLOADI : TensixPhysicalInst<0x71, (outs SFPR:$dst),
     (ins SFPR:$old, uimm16:$value, uimm4:$mode),
     "ttsfploadi", "$dst, $value, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<4> dst;
   bits<16> value;
   bits<4> mode;
@@ -114,16 +119,22 @@ class TensixMove<bits<4> Mode, dag Inputs, string Mnemonic, string Operands>
 }
 def TTSFPMOV : TensixMove<0, (ins SFPR:$old, SFPRRead:$src),
     "ttsfpmov", "$dst, $src"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Constraints = "$dst = $old";
 }
 def TTSFPMOVNeg : TensixMove<1, (ins SFPR:$old, SFPRRead:$src),
     "ttsfpmov.neg", "$dst, $src"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Constraints = "$dst = $old";
 }
 // Allocator copies, fixed reads and fixed writes all use this exact instruction.
 // It has no old-destination input and does not read CC lane enable state.
 def TTSFPMOVAll : TensixMove<2, (ins SFPRRead:$src),
     "ttsfpmov.all", "$dst, $src"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Uses = [TT_CONFIG, TT_ISSUE];
 }
 // FROM_SPECIAL selector 9 returns the active lane's old PRNG word and then
@@ -156,10 +167,17 @@ class TensixMAD<bits<8> RawOpcodeValue, dag Inputs, string Mnemonic, string Oper
 }
 def TTSFPMAD : TensixMAD<0x84,
     (ins SFPR:$old, SFPRRead:$a, SFPRRead:$b, SFPRRead:$c, uimm2:$mode),
-    "ttsfpmad", "$dst, $a, $b, $c, $mode">;
+    "ttsfpmad", "$dst, $a, $b, $c, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, -1, -1, -1, 0];
+}
 def TTSFPMUL : TensixMAD<0x86,
     (ins SFPR:$old, SFPRRead:$a, SFPRRead:$b, uimm2:$mode),
     "ttsfpmul", "$dst, $a, $b, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, -1, -1, 0];
   let RawWord{11-8} = 9;
   // The tied old destination occupies operand 1 in MCInst.
   let ModeOperandIndex = 4;
@@ -169,6 +187,9 @@ def TTSFPMUL : TensixMAD<0x86,
 def TTSFPADD : TensixMAD<0x85,
     (ins SFPR:$old, SFPRRead:$b, SFPRRead:$c, uimm2:$mode),
     "ttsfpadd", "$dst, $b, $c, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, -1, -1, 0];
   let a = 10;
   let Uses = [TT_C10, TT_CC, TT_CONFIG, TT_ISSUE];
 }
@@ -227,6 +248,8 @@ def TTSFPPOPCOrTop : TensixPhysicalInst<0x88, (outs), (ins),
   let Defs = [TT_CC, TT_ISSUE];
 }
 def TTSFPNOP : TensixPhysicalInst<0x8f, (outs), (ins), "ttsfpnop", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Uses = [TT_ISSUE];
 }
 
@@ -273,6 +296,8 @@ def TTSFPCONFIGLane : TensixPhysicalInst<0x91, (outs),
 }
 def TTSFPCONFIGReset : TensixPhysicalInst<0x91, (outs), (ins),
     "ttsfpconfig.reset", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let RawWord{23-8} = 0;
   let RawWord{7-4} = 15;
   let RawWord{3-0} = 1;
@@ -282,6 +307,8 @@ def TTSFPCONFIGReset : TensixPhysicalInst<0x91, (outs), (ins),
 
 def TTSFPENCC : TensixPhysicalInst<0x8a, (outs), (ins uimm2:$value, uimm4:$mode),
                              "ttsfpencc", "$value, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<2> value;
   bits<4> mode;
   let ModeOperandIndex = 1;
@@ -326,6 +353,40 @@ def TTSFPLE : TensixCompare<0x96, "ttsfple">;
 // Dst uses a logical 10-bit offset in this compiler contract. The ISA field
 // reserves 13 bits; high fields are never invented by masking a scalar value.
 def tensix_dst_offset : RISCVUImmLeafOp<10>;
+// SFPLOAD/STORE use AddrMod bits 15:13 on BH, but bits 15:14 on WH.
+// Keep the same native operand ABI and let the architectural MC encoding
+// select both emission and disassembly, rather than shifting in lowering.
+class TensixDstEncoding<bits<8> Opcode> : InstructionEncoding {
+  let Size = 4;
+  let DecoderNamespace = "Tensix";
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0;
+  bits<4> reg;
+  bits<4> format;
+  bits<3> addrmode;
+  bits<10> offset;
+  let RawWord{31-24} = Opcode;
+  let RawWord{23-20} = reg;
+  let RawWord{19-16} = format;
+  let RawWord{9-0} = offset;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+class TensixDstBlackholeEncoding<bits<8> Opcode>
+    : TensixDstEncoding<Opcode> {
+  let RawWord{15-13} = addrmode;
+}
+class TensixDstWormholeEncoding<bits<8> Opcode>
+    : TensixDstEncoding<Opcode> {
+  let addrmode{2} = 0;
+  let RawWord{15-14} = addrmode{1-0};
+}
+def TTSFPLOADBlackholeEncoding : TensixDstBlackholeEncoding<0x70>;
+def TTSFPLOADWormholeEncoding : TensixDstWormholeEncoding<0x70>;
+def TTSFPSTOREBlackholeEncoding : TensixDstBlackholeEncoding<0x72>;
+def TTSFPSTOREWormholeEncoding : TensixDstWormholeEncoding<0x72>;
+
 class TensixDst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
                 string Mnemonic, string Operands>
     : TensixPhysicalInst<RawOpcodeValue, Outputs, Inputs, Mnemonic, Operands> {
@@ -338,12 +399,19 @@ class TensixDst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,
   let RawWord{15-13} = addrmode;
   let RawWord{9-0} = offset;
   let ValueBits = 10;
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [!cast<InstructionEncoding>(NAME # "BlackholeEncoding"),
+       !cast<InstructionEncoding>(NAME # "WormholeEncoding")]>;
   let Uses = [TT_CC, TT_CONFIG, TT_DST, TT_ISSUE];
   let Defs = [TT_DST, TT_ISSUE];
 }
 def TTSFPLOAD : TensixDst<0x70, (outs SFPR:$reg),
     (ins SFPR:$old, tensix_dst_offset:$offset, uimm3:$addrmode, uimm4:$format),
     "ttsfpload", "$reg, $offset, $addrmode, $format"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, -1, 3];
   let Constraints = "$reg = $old";
   let mayLoad = 1;
   let ModeOperandIndex = 4;
@@ -355,6 +423,9 @@ def TTSFPLOAD : TensixDst<0x70, (outs SFPR:$reg),
 def TTSFPSTORE : TensixDst<0x72, (outs),
     (ins SFPR:$reg, tensix_dst_offset:$offset, uimm3:$addrmode, uimm4:$format),
     "ttsfpstore", "$reg, $offset, $addrmode, $format"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, 3];
   let ModeOperandIndex = 3;
   // Format 0 selects SRCB; 1/2 convert FP16/BF16, 3 is FP32, 4 is raw.
   // 5/6/8 select INT8/UINT16/INT16 with direction-specific conversions.
@@ -386,3 +457,11 @@ def PseudoTTSFPSTORE : Pseudo<(outs GPR:$word, GPR:$address),
 include "RISCVInstrInfoTensixSFPU.td"
 
 include "RISCVInstrInfoTensixBound.td"
+
+// These records augment the ordinary WH field table with independently
+// admitted native SFPU limits. No physical register selector is an i32 field.
+foreach Op = !instances<TensixPhysicalInst>() in
+  if Op.WormholeSupported then
+    foreach I = !range(!size(Op.WormholeOperandMaxima)) in
+      if !ge(Op.WormholeOperandMaxima[I], 0) then
+        def : TensixWormholeField<Op, I, 0, Op.WormholeOperandMaxima[I]>;

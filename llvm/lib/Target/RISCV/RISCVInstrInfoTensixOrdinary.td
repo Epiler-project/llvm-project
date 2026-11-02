@@ -1099,6 +1099,21 @@ def TTPACR : TensixOrdinaryInst<"PACR", 0x41,
     "$last, $flush, $ctxtctrl, $concat, $ovrdthreadid, $readintfsel, $zerowrite, $addrcntcontext, $addrmode, $dstaccessmode, $rowpadzero, $cfgcontext",
     ["last", "flush", "ctxtctrl", "concat", "ovrdthreadid", "readintfsel", "zerowrite", "addrcntcontext", "addrmode", "dstaccessmode", "rowpadzero", "cfgcontext"],
     [1, 1, 3, 7, 1, 15, 1, 3, 3, 1, 7, 7]> {
+  // WH PACR.md: only its seven actual fields exist. The additional BH
+  // context/row-padding fields must remain zero; the packer mask has a closed
+  // set of hardware-defined combinations.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1, 1, 0, 1, 1, 15, 1, 0, 3, 0, 0, 0];
+  let WormholeLogicalForms = [
+      [-1, -1, 0, -1, -1, 0, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 1, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 2, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 3, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 4, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 8, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 12, -1, 0, -1, 0, 0, 0],
+      [-1, -1, 0, -1, -1, 15, -1, 0, -1, 0, 0, 0]];
   bits<1> last;
   bits<1> flush;
   bits<2> ctxtctrl;
@@ -1387,6 +1402,11 @@ def TTSETADC : TensixOrdinaryInst<"SETADC", 0x50,
     "$value, $dimensionindex, $channelindex, $cntsetmask",
     ["value", "dimensionindex", "channelindex", "cntsetmask"],
     [262143, 3, 1, 7]> {
+  // WH SETADC.md defines the same fields. Receive current-thread counters;
+  // nonzero ThreadOverride (value bits17:16) has no accepted hardware contract.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [65535, 3, 1, 7];
   bits<18> value;
   bits<2> dimensionindex;
   bits<1> channelindex;
@@ -1603,12 +1623,12 @@ def TTSETRWC : TensixOrdinaryInst<"SETRWC", 0x37,
     "$bitmask, $rwc_a, $rwc_b, $rwc_d, $rwc_cr, $clear_ab_vld",
     ["bitmask", "rwc_a", "rwc_b", "rwc_d", "rwc_cr", "clear_ab_vld"],
     [63, 15, 15, 15, 15, 3]> {
-  // WH source-lane counter reset only. Publication/release use distinct
-  // protocol instructions; inherited CLR_DVALID disables cannot affect it.
+  // WH reset of any subset of A/B/Dst/Fidelity counters, without bank flips,
+  // relative counters or nonzero values. Publication/release remain separate.
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
   let WormholeFieldMinima = [1, 0, 0, 0, 0, 0];
-  let WormholeFieldMaxima = [2, 0, 0, 0, 0, 0];
+  let WormholeFieldMaxima = [15, 0, 0, 0, 0, 0];
   bits<6> bitmask;
   bits<4> rwc_a;
   bits<4> rwc_b;

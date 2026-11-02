@@ -140,6 +140,48 @@ def BOSC_SFU_EXP2 : BOSCSFU<0b000, "vsfu.exp2.v">;
 def BOSC_SFU_RCP : BOSCSFU<0b010, "vsfu.rcp.v">;
 }
 
+// Keep actual VL and the old destination in the normal RVV pseudo contract.
+// InsertVSETVLI, register allocation and pseudo expansion receive them before
+// the real instruction is emitted. No physical selector enters this ABI.
+let Predicates = [IsRV64, HasVInstructions, HasVendorXBOSCSFU],
+    VLMul = V_M1.value, SEW = 32, hasSideEffects = 1,
+    isNotDuplicable = 1, isConvergent = 1,
+    hasNoSchedulingInfo = 1 in {
+def PseudoBOSC_SFU_EXP2_M1 : VPseudoUnaryNoMask<VR, VR> {
+  let BaseInstr = BOSC_SFU_EXP2;
+}
+def PseudoBOSC_SFU_RCP_M1 : VPseudoUnaryNoMask<VR, VR> {
+  let BaseInstr = BOSC_SFU_RCP;
+}
+}
+
+// A mask destination is unchanged when VL=0. Generic unmasked compare pseudos
+// do not receive a passthru, so they cannot preserve a mutable mask's old bits
+// through register allocation. Keep only that architectural tied dependency;
+// with VL>0 mask tails remain agnostic, as required by the base instruction.
+class BOSCContentsCompare<Instruction Base>
+    : RISCVVPseudo<(outs VR:$rd),
+        (ins VR:$passthru, VR:$rs2, VR:$rs1, AVL:$vl, sew:$sew)> {
+  let Predicates = [IsRV64, HasVInstructionsAnyF];
+  let BaseInstr = Base;
+  let Constraints = "$rd = $passthru";
+  let TargetOverlapConstraintType = 2;
+  let VLMul = V_M1.value;
+  let SEW = 32;
+  let HasVLOp = 1;
+  let HasSEWOp = 1;
+  let IncludeInInversePseudoTable = 0;
+  let mayRaiseFPException = 1;
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let isConvergent = 1;
+  let hasNoSchedulingInfo = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+}
+def PseudoBOSC_VMFLT_VV_M1 : BOSCContentsCompare<VMFLT_VV>;
+def PseudoBOSC_VMFEQ_VV_M1 : BOSCContentsCompare<VMFEQ_VV>;
+
 //===----------------------------------------------------------------------===//
 // BOSC AME fixed-profile receiver
 //===----------------------------------------------------------------------===//

@@ -177,7 +177,8 @@ BitVector RISCVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   auto &Subtarget = MF.getSubtarget<RISCVSubtarget>();
   unsigned Fixed = MF.getInfo<RISCVMachineFunctionInfo>()->getTensixFixedLRegs();
   for (MCPhysReg Reg : RISCV::SFPRRegClass)
-    if (!Subtarget.hasVendorXTTTensixBH() ||
+    if ((!Subtarget.hasVendorXTTTensixBH() &&
+         !Subtarget.hasVendorXTTTensixWH()) ||
         MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU() ||
         (Fixed & (1u << getEncodingValue(Reg))))
       markSuperRegs(Reserved, Reg);
@@ -206,23 +207,26 @@ BitVector RISCVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // allocation, copy, spill or reload even in a DMA-only scalar function.
   markSuperRegs(Reserved, RISCV::BOSC_ISSUE);
 
-  // BOSC VRF allocation is complete in MLIR. LLVM may allocate only scalar
-  // registers; reserve every physical vector register and overlapping group.
-  if (isBOSCBoundFunction(MF.getFunction()))
+  // A fixed RVV scope reserves the VRF. An explicitly received contents scope
+  // may allocate vectors independently of a still-fixed AME execution scope.
+  if (isBOSCBoundFunction(MF.getFunction()) &&
+      !isBOSCContentsRVVFunction(MF.getFunction()))
     for (MCPhysReg Reg : RISCV::VRRegClass)
       markSuperRegs(Reserved, Reg);
 
-  // AME is physically bound before LLVM and has no allocatable value class in
-  // a bound function. Keep ordinary RISC-V functions free of BOSC-only
-  // reservations so this extension remains opt-in.
-  if (MF.getFunction().hasFnAttribute("trex-bosc-bound-ame")) {
+  // The dedicated contents classes are available only to the actual extension;
+  // the old bound ingress keeps its complete matrix-file reservation.
+  if (!Subtarget.hasVendorXBOSCAME() ||
+      MF.getFunction().hasFnAttribute("trex-bosc-bound-ame")) {
     for (MCPhysReg Reg : RISCV::BOSCTrRegRegClass)
       markSuperRegs(Reserved, Reg);
     for (MCPhysReg Reg : RISCV::BOSCAccRegRegClass)
       markSuperRegs(Reserved, Reg);
-    for (MCPhysReg Reg : RISCV::BOSCConfigRegRegClass)
-      markSuperRegs(Reserved, Reg);
   }
+  // M/N/K/MTYPE are fixed hardware state in both bound and contents functions.
+  // Only the ordinary Tr/Acc files become allocatable contents classes.
+  for (MCPhysReg Reg : RISCV::BOSCConfigRegRegClass)
+    markSuperRegs(Reserved, Reg);
 
   // Use markSuperRegs to ensure any register aliases are also reserved
   markSuperRegs(Reserved, RISCV::X2_H); // sp

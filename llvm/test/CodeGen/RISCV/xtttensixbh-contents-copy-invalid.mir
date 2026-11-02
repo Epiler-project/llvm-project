@@ -1,0 +1,22 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=postrapseudos -verify-machineinstrs %s -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=postrapseudos -verify-machineinstrs -filetype=obj %s -o %t.o 2>&1 | FileCheck %s
+# RUN: test ! -e %t.o
+
+# A nonidentity SFPR COPY left by PHI or two-address repair must fail without
+# erasing its live definition, crashing verification, or publishing an object.
+# An explicitly authored TTSFPMOV instruction is not an allocator repair COPY.
+# CHECK: Tensix SFPU cannot synthesize a register copy
+--- |
+  define void @contents_copy() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_copy
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0
+    $tt_l1 = COPY $tt_l0
+    PseudoRET implicit $tt_l1
+...

@@ -79,7 +79,10 @@ unsigned readMask(const MachineInstr &MI, const TargetRegisterInfo &TRI) {
   return Mask;
 }
 bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
-                   unsigned Pending) {
+                   unsigned Pending, bool Wormhole = false) {
+  // Wormhole does not interlock any next-cycle MAD consumer. Blackhole
+  // interlocks ordinary reads and only needs the exceptional cases below.
+  bool ReadsPendingMAD = Wormhole && ((Pending & 0xffu) & readMask(MI, TRI));
   bool ReadsPendingL0 = readsL0ForConfig(MI) && (Pending & 1u);
   bool ReadsPendingDest = isIAdd(MI) &&
       (Pending & lregBit(MI.getOperand(0), TRI));
@@ -99,14 +102,33 @@ bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
   bool ReplayBoundary = isReplayExecution(MI) && Pending;
   bool PipelineGap = (Pending & SFPUCooldown) && isSFPU(MI) &&
                      MI.getOpcode() != RISCV::TTSFPNOP;
-  return ReadsPendingL0 || ReadsPendingDest || ReadsPendingShift ||
-         ReadsPendingSwap || ReadsPendingShuffle || ReadsPendingLUT ||
-         ReplayBoundary || PipelineGap;
+  return ReadsPendingMAD || ReadsPendingL0 || ReadsPendingDest ||
+         ReadsPendingShift || ReadsPendingSwap || ReadsPendingShuffle ||
+         ReadsPendingLUT || ReplayBoundary || PipelineGap;
+}
+bool waitsForWormholeSFPU(const MachineInstr &MI) {
+  // Only native issue establishes these masks here. A port word is opaque,
+  // and programming a MOP slot does not execute the programmed instruction.
+  if (MI.getOpcode() != RISCV::TTSTALLWAIT ||
+      MI.getNumExplicitOperands() != 2 || !MI.getOperand(0).isImm() ||
+      !MI.getOperand(1).isImm())
+    return false;
+  int64_t Condition = MI.getOperand(0).getImm();
+  int64_t Block = MI.getOperand(1).getImm();
+  if (Condition < 0 || Condition > 32767 || Block < 0 || Block > 511)
+    return false;
+  // C14 waits for this thread's SFPU pipeline; B8 gates every following
+  // SFPU issue until that wait clears. STALLWAIT itself need not drain at
+  // issue time for the next SFPU consumer to be safe.
+  return (Condition & (1u << 14)) && (Block & (1u << 8));
 }
 unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
                     unsigned Pending,
                     const TensixSFPUReplayExecutionEffects *ReplayEffects =
-                        nullptr) {
+                        nullptr,
+                    bool Wormhole = false) {
+  if (Wormhole && waitsForWormholeSFPU(MI))
+    return 0;
   // Reuse the replay verifier's native exit state. A union of physical defs
   // cannot describe the pending MAD/LUT result or a cross-lane cooldown.
   if ((MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
@@ -505,7 +527,8 @@ public:
             DstIncoming = Next.State.DstCycles;
             continue;
           }
-          Outgoing = afterIssue(MI, TRI, Outgoing, &ReplayEffects);
+          Outgoing = afterIssue(MI, TRI, Outgoing, &ReplayEffects,
+                                ST.hasVendorXTTTensixWH());
           DstIncoming = afterDstIssue(MI, DstIncoming);
         }
         if (Exit.lookup(&BB) != Outgoing) {
@@ -547,7 +570,8 @@ public:
         // The immutable authored body cannot absorb a newly inserted issue.
         // Fence an executed record at its header, before capturing starts.
         bool RecordBoundary = ExecutedRecordHeaders.contains(&MI) && Pending;
-        if (needsSFPUWait(MI, TRI, Pending) || RecordBoundary) {
+        if (needsSFPUWait(MI, TRI, Pending, ST.hasVendorXTTTensixWH()) ||
+            RecordBoundary) {
           if (RecordedBodies.contains(&MI))
             return Fail("explicit SFPU replay template requires an authored hazard gap");
           if (!Repair)
@@ -574,7 +598,8 @@ public:
           Pending = 0;
           Modified = true;
         }
-        Pending = afterIssue(MI, TRI, Pending, &ReplayEffects);
+        Pending = afterIssue(MI, TRI, Pending, &ReplayEffects,
+                             ST.hasVendorXTTTensixWH());
         DstPending = afterDstIssue(MI, DstPending);
       }
     }

@@ -13,5 +13,5 @@ ttsemwait 0, 1, 2
 # The initial WH feature is deliberately a bounded instruction subset.
 ttsetc16 2, 57
 # CHECK: error: Wormhole SETC16 field setc16_reg must be in [0, 56]
-ttsfpmov l0, l1
+ttsfparecip l0, l1, 0
 # CHECK: error: instruction requires the following: 'XTTTensixBH'

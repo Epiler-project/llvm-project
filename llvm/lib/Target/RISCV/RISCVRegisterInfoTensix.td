@@ -30,11 +30,18 @@ let Namespace = "RISCV" in {
 
 def SFPR : RISCVRegisterClass<[v32i32], 1024,
                              (add (sequence "TT_L%u", 0, 7))> {
-  // Physical native instructions use this class for register facts. No
-  // selector or allocator may create virtual SFPU values from it.
+  // Only ordinary writable contents participate in LLVM allocation. Constants,
+  // macro staging and shared hardware state remain fixed nonallocatable banks.
   let Size = 1024;
-  let isAllocatable = 0;
+  let isAllocatable = 1;
   let DecoderMethod = "DecodeTensixLReg";
+}
+foreach I = 0-7 in {
+  def SFPR#I : RISCVRegisterClass<[v32i32], 1024,
+                                  (add !cast<Register>("TT_L"#I))> {
+    let Size = 1024;
+    let isAllocatable = 1;
+  }
 }
 def SFPCR : RISCVRegisterClass<[v32i32], 1024,
                               (add (sequence "TT_C%u", 8, 15))> {

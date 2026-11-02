@@ -27,6 +27,7 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Target/TargetMachine.h"
 #include <bitset>
 #include <memory>
@@ -103,7 +104,7 @@ private:
 
   bool IsLittleEndian = true;
 
-#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER) \
+#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER)                    \
   bool ATTRIBUTE = DEFAULT;
 #include "RISCVGenSubtargetInfo.inc"
 
@@ -170,9 +171,11 @@ public:
   /// initializeProperties().
   RISCVProcFamilyEnum getProcFamily() const { return RISCVProcFamily; }
 
-  RISCVVRGatherCostModelEnum getVRGatherCostModel() const { return RISCVVRGatherCostModel; }
+  RISCVVRGatherCostModelEnum getVRGatherCostModel() const {
+    return RISCVVRGatherCostModel;
+  }
 
-#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER) \
+#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER)                    \
   bool GETTER() const { return ATTRIBUTE; }
 #include "RISCVGenSubtargetInfo.inc"
 
@@ -219,12 +222,8 @@ public:
 
   bool is64Bit() const { return IsRV64; }
   bool isLittleEndian() const { return IsLittleEndian; }
-  MVT getXLenVT() const {
-    return is64Bit() ? MVT::i64 : MVT::i32;
-  }
-  unsigned getXLen() const {
-    return is64Bit() ? 64 : 32;
-  }
+  MVT getXLenVT() const { return is64Bit() ? MVT::i64 : MVT::i32; }
+  unsigned getXLen() const { return is64Bit() ? 64 : 32; }
   bool useMIPSLoadStorePairs() const;
   bool useMIPSCCMovInsn() const;
   unsigned getFLen() const {
@@ -251,6 +250,10 @@ public:
     assert(hasVInstructions() && "Expected V extension");
     return hasVInstructionsI64() ? 64 : 32;
   }
+  // Receive function vector bounds before constructing its subtarget. The
+  // current subtarget supplies the ISA's Zvl constraint; zero is unspecified
+  // and UINT_MAX is the existing default-minimum sentinel.
+  Error verifyRVVVectorBounds(unsigned Min, unsigned Max) const;
   unsigned getRealMinVLen() const {
     unsigned VLen = getMinRVVVectorSizeInBits();
     return VLen == 0 ? ZvlLen : VLen;
@@ -364,9 +367,9 @@ protected:
   mutable std::unique_ptr<InlineAsmLowering> InlineAsmLoweringInfo;
 
   // Return the known range for the bit length of RVV data registers as set
-  // at the command line. A value of 0 means nothing is known about that particular
-  // limit beyond what's implied by the architecture.
-  // NOTE: Please use getRealMinVLen and getRealMaxVLen instead!
+  // at the command line. A value of 0 means nothing is known about that
+  // particular limit beyond what's implied by the architecture. NOTE: Please
+  // use getRealMinVLen and getRealMaxVLen instead!
   unsigned getMaxRVVVectorSizeInBits() const;
   unsigned getMinRVVVectorSizeInBits() const;
 

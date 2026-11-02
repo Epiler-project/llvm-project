@@ -6,6 +6,7 @@
 
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/Error.h"
 
 namespace llvm {
 class Function;
@@ -15,11 +16,12 @@ class MachineInstr;
 class RISCVSubtarget;
 class SelectionDAG;
 bool isBOSCAMEIntrinsic(Intrinsic::ID);
+bool isBOSCAMEContentsIntrinsic(Intrinsic::ID);
 bool isBOSCAMEOpcode(unsigned);
-void verifyBOSCAMEIR(Function &);
+Error verifyBOSCAMEIR(Function &);
 void verifyBOSCAMEMachine(const MachineFunction &);
 SDValue lowerBOSCAMEIntrinsic(SDValue, SelectionDAG &, const RISCVSubtarget &);
 MachineBasicBlock *emitBOSCAMEInstruction(MachineInstr &, MachineBasicBlock *,
-                                         const RISCVSubtarget &);
+                                          const RISCVSubtarget &);
 } // namespace llvm
 #endif

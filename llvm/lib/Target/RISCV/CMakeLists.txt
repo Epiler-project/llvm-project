@@ -68,6 +68,7 @@ add_llvm_target(RISCVCodeGen
   RISCVPushPopOptimizer.cpp
   RISCVQCRelaxMarking.cpp
   RISCVRedundantCopyElimination.cpp
+  RISCVRegisterContents.cpp
   RISCVRegisterInfo.cpp
   RISCVSelectionDAGInfo.cpp
   RISCVSubtarget.cpp
@@ -75,6 +76,7 @@ add_llvm_target(RISCVCodeGen
   RISCVTargetObjectFile.cpp
   RISCVTargetTransformInfo.cpp
   RISCVTensixCopyCCCleanup.cpp
+  RISCVTensixContentsGroup.cpp
   RISCVTensixHazards.cpp
   RISCVTensixIRVerification.cpp
   RISCVTensixIssueWordFold.cpp

@@ -240,9 +240,28 @@ Error verifyTensixWormholeInstruction(const MCInst &MI,
   if (!Encoding->WormholeSupported)
     return createStringError("Tensix instruction is not supported on Wormhole");
   const auto *Machine = getTensixMachineInfo(MI.getOpcode());
-  if (!Machine || MI.getNumOperands() !=
-                      MCII.get(MI.getOpcode()).getNumOperands())
+  if (MI.getNumOperands() != MCII.get(MI.getOpcode()).getNumOperands())
     return createStringError("incorrect number of Tensix instruction operands");
+  if (!Machine) {
+    // SFPU operands are real registers, unlike ordinary logical issue fields.
+    // Shared native descriptors own field widths and supported modes; WH-only
+    // bounds below are contributed by those same TableGen instructions.
+    if (Error E = verifyTensixMCInstructionFields(MI, MCII))
+      return E;
+    for (unsigned I = 0; I != MI.getNumOperands(); ++I) {
+      const auto *Field = getTensixWormholeField(MI.getOpcode(), I);
+      if (!Field)
+        continue;
+      const MCOperand &Operand = MI.getOperand(I);
+      if (!Operand.isImm() || Operand.getImm() < Field->MinValue ||
+          uint64_t(Operand.getImm()) > Field->MaxValue)
+        return createStringError(
+            "Wormhole " + MCII.getName(MI.getOpcode()).drop_front(2) +
+            " operand " + Twine(I) + " must be in [" + Twine(Field->MinValue) +
+            ", " + Twine(Field->MaxValue) + "]");
+    }
+    return Error::success();
+  }
   SmallVector<uint32_t, 16> Fields;
   for (const auto &Operand : MI) {
     if (!Operand.isImm() || Operand.getImm() < 0 ||

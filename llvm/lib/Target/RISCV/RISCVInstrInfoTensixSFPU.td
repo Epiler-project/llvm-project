@@ -27,7 +27,10 @@ def TTSFPEXEXP : TensixUnary<0x77, "ttsfpexexp", 0x0f0f> {
   let Defs = [TT_CC, TT_ISSUE];
 }
 def TTSFPEXMAN : TensixUnary<0x78, "ttsfpexman", 0x0003>;
-def TTSFPABS : TensixUnary<0x7d, "ttsfpabs", 0x0003>;
+def TTSFPABS : TensixUnary<0x7d, "ttsfpabs", 0x0003> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+}
 def TTSFPLZ : TensixUnary<0x81, "ttsfplz", 0x5555> {
   let Defs = [TT_CC, TT_ISSUE];
 }
@@ -66,10 +69,22 @@ class TensixBitwise<bits<8> Opcode, string Name>
   let RawWord{7-4} = dst;
   let Constraints = "$dst = $old";
 }
-def TTSFPAND : TensixBitwise<0x7e, "ttsfpand">;
-def TTSFPOR : TensixBitwise<0x7f, "ttsfpor">;
-def TTSFPXOR : TensixBitwise<0x8d, "ttsfpxor">;
-def TTSFPNOT : TensixBitwise<0x80, "ttsfpnot">;
+def TTSFPAND : TensixBitwise<0x7e, "ttsfpand"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+}
+def TTSFPOR : TensixBitwise<0x7f, "ttsfpor"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+}
+def TTSFPXOR : TensixBitwise<0x8d, "ttsfpxor"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+}
+def TTSFPNOT : TensixBitwise<0x80, "ttsfpnot"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+}
 
 class TensixSignedImmediate<bits<8> Opcode, string Name, bits<16> Modes>
     : TensixPhysicalInst<Opcode, (outs SFPR:$dst),
@@ -206,3 +221,5 @@ def TTSFPTRANSP : TensixPhysicalInst<0x8c, (outs), (ins), "ttsfptransp", ""> {
   let Uses = [TT_L0, TT_L1, TT_L2, TT_L3, TT_CC, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_L0, TT_L1, TT_L2, TT_L3, TT_L4, TT_L5, TT_L6, TT_L7, TT_ISSUE];
 }
+
+include "RISCVInstrInfoTensixContentsGroup.td"
