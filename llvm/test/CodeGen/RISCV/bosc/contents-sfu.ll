@@ -1,5 +1,7 @@
 ; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscsfu -verify-machineinstrs < %s | FileCheck %s
 ; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscsfu -stop-after=finalize-isel < %s | FileCheck %s --check-prefix=ISEL
+; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscsfu -O0 -verify-machineinstrs -filetype=obj %s -o %t.O0.o
+; RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b,+xboscsfu -O2 -verify-machineinstrs -filetype=obj %s -o %t.O2.o
 
 declare i64 @llvm.riscv.vsetvli.i64(i64, i64 immarg, i64 immarg)
 declare <vscale x 2 x i32> @llvm.riscv.bosc.rvv.contents.load(<vscale x 2 x i32>, ptr, i64)

@@ -1,0 +1,85 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/mutable.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLES
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/capture.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLES
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/raw-numerical.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RAW
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/mutable.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLES
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/capture.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLES
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/raw-numerical.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RAW
+#
+# ROLES: contents replay allocation differs from its recorded register roles
+# RAW: record-only SFPU body requires nonexecuting native payload words
+#
+# The numerical roles are checked again after allocation, even for direct
+# MIR ingress. The finalized mode0 header accepts only void issue payloads;
+# an executing numerical body cannot be laundered by the new source recipe.
+
+#--- mutable.mir
+--- |
+  target triple = "riscv32"
+  define void @record_only_roles() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_only_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_c10, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 41, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l2 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l2, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- capture.mir
+--- |
+  target triple = "riscv32"
+  define void @record_only_roles() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_only_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_c10, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 41, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- raw-numerical.mir
+--- |
+  target triple = "riscv32"
+  define void @record_only_roles() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_only_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_c10, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsSFPUReplay 1, 0, 1, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

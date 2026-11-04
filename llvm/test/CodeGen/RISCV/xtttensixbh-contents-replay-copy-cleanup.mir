@@ -1,0 +1,107 @@
+# RUN: llc -O2 -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -riscv-tensix-enable-copy-cc-cleanup=true -run-pass=riscv-tensix-copy-cc-cleanup %s -o - | FileCheck %s
+#
+# Each contents control is an independent external issue owner. Cleanup must
+# preserve the complete function, including self moves and duplicate enables
+# both before and after the marker. An unowned control proves cleanup is active.
+#
+# This is a pass-local ownership test: the markers intentionally do not form
+# valid Replay templates. Do not feed this fixture to template finalization,
+# whole-pipeline validation, or code emission.
+#
+# CHECK-LABEL: name: retain_contents_begin
+# CHECK: bb.0:
+# CHECK-NEXT: $tt_l2 = TTSFPMOV $tt_l2, $tt_l2,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1,
+# CHECK-NEXT: $tt_l3 = TTSFPMOVAll $tt_l3,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: PseudoRET
+#
+# CHECK-LABEL: name: retain_contents_end
+# CHECK: bb.0:
+# CHECK-NEXT: $tt_l2 = TTSFPMOV $tt_l2, $tt_l2,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: PseudoTTContentsReplayTemplateEnd 41, $tt_l0,
+# CHECK-NEXT: $tt_l3 = TTSFPMOVAll $tt_l3,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: PseudoRET
+#
+# CHECK-LABEL: name: retain_contents_execute
+# CHECK: bb.0:
+# CHECK-NEXT: $tt_l2 = TTSFPMOV $tt_l2, $tt_l2,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1,
+# CHECK-NEXT: $tt_l3 = TTSFPMOVAll $tt_l3,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: PseudoRET
+#
+# CHECK-LABEL: name: cleanup_unowned
+# CHECK: bb.0:
+# CHECK-NEXT: TTSFPENCC 3, 10,
+# CHECK-NEXT: PseudoRET
+#
+--- |
+  define void @retain_contents_begin() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_contents_end() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @retain_contents_execute() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @cleanup_unowned() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: retain_contents_begin
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l2 = TTSFPMOV $tt_l2, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_l3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_contents_end
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l2 = TTSFPMOV $tt_l2, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_l3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: retain_contents_execute
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l2 = TTSFPMOV $tt_l2, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_l3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: cleanup_unowned
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l2 = TTSFPMOV $tt_l2, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l3 = TTSFPMOVAll $tt_l3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...

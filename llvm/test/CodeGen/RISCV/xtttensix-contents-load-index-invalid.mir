@@ -1,0 +1,139 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/undef-old.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/undef-old.mir -o %t/undef-old.o 2>&1 | FileCheck %s --check-prefix=ROLE
+# RUN: test ! -e %t/undef-old.o
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/wrong-old-pair.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/wrong-old-pair.mir -o %t/wrong-old-pair.o 2>&1 | FileCheck %s --check-prefix=CLASS
+# RUN: test ! -e %t/wrong-old-pair.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/missing-effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/missing-effects.mir -o %t/missing-effects.o 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: test ! -e %t/missing-effects.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/format.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FORMAT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/format.mir -o %t/format.o 2>&1 | FileCheck %s --check-prefix=FORMAT
+# RUN: test ! -e %t/format.o
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/offset.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=OFFSET
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/offset.mir -o %t/offset.o 2>&1 | FileCheck %s --check-prefix=OFFSET
+# RUN: test ! -e %t/offset.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/wh-addrmod.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRMOD
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -start-before=riscv-tensix-hazards -filetype=obj %t/wh-addrmod.mir -o %t/wh-addrmod.o 2>&1 | FileCheck %s --check-prefix=ADDRMOD
+# RUN: test ! -e %t/wh-addrmod.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/extra-effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -filetype=obj %t/extra-effects.mir -o %t/bh-extra-effects.o 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: test ! -e %t/bh-extra-effects.o
+
+# Malformed MIR is rejected before object publication. MIRParser performs
+# generic class/tie and required implicit checks first. Extra effects, undefined
+# old contents and legal-class field errors are checked by the native owner.
+# ROLE: bound Tensix SFPU operand does not match its native register role
+# CLASS: Bad machine code: Tied physical registers must match.
+# EFFECTS: missing implicit register operand 'implicit $tt_config'
+# EXTRA: bound Tensix SFPU physical effects differ from the native descriptor
+# FORMAT: SFPLOADIndex mode must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# OFFSET: Bad machine code: Invalid immediate
+# OFFSET: TTSFPLOADIndex{{.*}}1024, 0, 3
+# ADDRMOD: Wormhole SFPLOADIndex operand 5 must be in [0, 3]
+
+#--- undef-old.mir
+--- |
+  define void @undef_old() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: undef_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex undef $tt_l0, $tt_l4, 0, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- wrong-old-pair.mir
+--- |
+  define void @wrong_old_pair() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: wrong_old_pair
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex $tt_l0, $tt_l5, 0, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- missing-effects.mir
+--- |
+  define void @missing_effects() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_effects
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex $tt_l0, $tt_l4, 0, 0, 3, implicit $tt_cc, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- format.mir
+--- |
+  define void @format() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: format
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex $tt_l0, $tt_l4, 0, 0, 7, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- offset.mir
+--- |
+  define void @offset() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: offset
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex $tt_l0, $tt_l4, 1024, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- wh-addrmod.mir
+--- |
+  define void @wh_addrmod() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: wh_addrmod
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex $tt_l0, $tt_l4, 0, 4, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- extra-effects.mir
+--- |
+  define void @extra_effects() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: extra_effects
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4 = TTSFPLOADIndex $tt_l0, $tt_l4, 0, 0, 3, implicit $tt_cc, implicit $tt_config, implicit-def $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

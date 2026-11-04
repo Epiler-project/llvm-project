@@ -24,9 +24,18 @@ bool isTensixBoundSFPUIntrinsic(Intrinsic::ID ID);
 /// Descriptor-owned machine tuple checks, shared by private ingress and final
 /// native verification. They do not reconstruct source objects or bindings.
 Error verifyTensixMachineEffects(const MachineInstr &MI);
+/// Variable-arity owners supply their independently checked explicit count.
+/// Implicit physical effects retain the exact native descriptor contract.
+Error verifyTensixMachineEffects(const MachineInstr &MI,
+                                unsigned ExplicitOperandCount);
 Error verifyTensixMachineOperands(const MachineInstr &MI,
                                   const MachineRegisterInfo &MRI,
                                   const TargetRegisterInfo &TRI);
+
+/// Check the fixed-address TRISC synchronization pseudo, its complete issue
+/// dependency and its allocator-owned scratch before admission or emission.
+Error verifyTensixCoprocessorWait(const MachineInstr &MI,
+                                  const RISCVSubtarget &ST);
 
 /// Check each physical operand and its native form's ties, fixed group and
 /// logical fields. The caller separately proves a dynamic Dst offset is

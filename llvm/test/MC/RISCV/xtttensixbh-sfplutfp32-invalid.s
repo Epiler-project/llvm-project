@@ -1,4 +1,5 @@
 # RUN: not llvm-mc -triple=riscv32 -mattr=+xtttensixbh %s 2>&1 | FileCheck %s
+# RUN: not llvm-mc -triple=riscv32 -mattr=+xtttensixwh %s 2>&1 | FileCheck %s
 
 ttsfplutfp32.3r 2
 # CHECK: error: immediate must be an integer in the range [0, 1]

@@ -24,10 +24,12 @@ bool isSFPURegister(Register Reg, const MachineRegisterInfo &MRI) {
     return false;
   if (Reg.isPhysical())
     return RISCV::SFPRReadRegClass.contains(Reg) ||
+           RISCV::SFPRIndexPairRegClass.contains(Reg) ||
            RISCV::SFPStageRegClass.contains(Reg) ||
            RISCV::SFPStateRegClass.contains(Reg);
   const TargetRegisterClass *RC = MRI.getRegClassOrNull(Reg);
   return RC && (RISCV::SFPRReadRegClass.hasSubClassEq(RC) ||
+                RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC) ||
                 RISCV::SFPStageRegClass.hasSubClassEq(RC) ||
                 RISCV::SFPStateRegClass.hasSubClassEq(RC));
 }
@@ -66,7 +68,9 @@ public:
       if (MRI.reg_nodbg_empty(Reg) || !isSFPURegister(Reg, MRI))
         continue;
       const auto *RC = MRI.getRegClassOrNull(Reg);
-      if (Contents && RC && RISCV::SFPRRegClass.hasSubClassEq(RC))
+      if (Contents && RC &&
+          (RISCV::SFPRRegClass.hasSubClassEq(RC) ||
+           RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC)))
         continue;
 
       Info->setTensixCodegenFailed();

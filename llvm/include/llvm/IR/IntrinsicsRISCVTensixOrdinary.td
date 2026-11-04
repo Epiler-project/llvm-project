@@ -5,6 +5,55 @@
 // Static issue consumes immediate logical fields. Instruction-port issue uses
 // an immediate port and defined, range-proven scalar logical fields.
 let TargetPrefix = "riscv" in {
+// Authored replay roles are independent complete contents values. The first
+// mutable_count flat variadic operands are mutable; the rest are readonly.
+// Execute always returns an unpacked literal struct of mutable_count v32i32
+// fields, including the one-field case. The formal IR receiver owns shape,
+// complete role/type checks, ancestry and the recorded body contract.
+def int_riscv_tt_contents_replay_template_begin : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty,
+     llvm_i32_ty, llvm_vararg_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>,
+     ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<4>>]>;
+def int_riscv_tt_contents_replay_template_end : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_vararg_ty], [ImmArg<ArgIndex<0>>]>;
+def int_riscv_tt_contents_replay_template_execute :
+    TensixIntrinsic<[llvm_any_ty],
+        [llvm_i32_ty, llvm_i32_ty, llvm_vararg_ty],
+        [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
+// MOP programming has no numerical result. The common BH/WH profile repeats
+// one template through MOP1 with positive static outer/inner counts in 1..127.
+// Slots5/7 name the template; outer>1 also requires slot8 to name it. With
+// outer=1, slot8 may instead be plain NOP. All other instruction slots are NOP.
+// Execute returns the final contents after outer*inner hardware repetitions
+// and retains the same readonly capture; no source iteration is duplicated.
+def int_riscv_tt_contents_replay_template_mop : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
+def int_riscv_tt_contents_replay_template_mop_execute :
+    TensixIntrinsic<[llvm_any_ty],
+        [llvm_i32_ty, llvm_i32_ty, llvm_vararg_ty],
+        [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
+// Non-executing record-only recipes. Role indices address begin's flat list:
+// mutables first, then read-only captures. Destination must name a mutable;
+// a binary source may name either kind. Each word reads the current runtime
+// contents of its roles in template order, including earlier mutable writes.
+// Recording itself neither reads nor defines those numerical SSA contents;
+// execute remains their sole old/result boundary for mode zero.
+class TensixContentsReplayBinaryRecipe : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+def int_riscv_tt_contents_replay_template_record_iadd :
+    TensixContentsReplayBinaryRecipe;
+def int_riscv_tt_contents_replay_template_record_and :
+    TensixContentsReplayBinaryRecipe;
+def int_riscv_tt_contents_replay_template_record_or :
+    TensixContentsReplayBinaryRecipe;
+def int_riscv_tt_contents_replay_template_record_xor :
+    TensixContentsReplayBinaryRecipe;
+def int_riscv_tt_contents_replay_template_record_not : TensixIntrinsic<[],
+    [llvm_i32_ty, llvm_i32_ty],
+    [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>]>;
 def int_riscv_tt_mop_clear : TensixIntrinsic<[], [llvm_i32_ty],
     [ImmArg<ArgIndex<0>>]>;
 // Local MOP control cells are scalar configuration, not instruction slots.

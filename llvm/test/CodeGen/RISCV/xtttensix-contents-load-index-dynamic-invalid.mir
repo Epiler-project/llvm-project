@@ -1,0 +1,204 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/undef-old.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ROLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/undef-old.mir -o %t/undef-old.o 2>&1 | FileCheck %s --check-prefix=ROLE
+# RUN: test ! -e %t/undef-old.o
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/wrong-old.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=GENERIC
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/wrong-old.mir -o %t/wrong-old.o 2>&1 | FileCheck %s --check-prefix=GENERIC
+# RUN: test ! -e %t/wrong-old.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/scratch-overlap.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/scratch-overlap.mir -o %t/scratch-overlap.o 2>&1 | FileCheck %s --check-prefix=OVERLAP
+# RUN: test ! -e %t/scratch-overlap.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/zero-scratch.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WRITABLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/zero-scratch.mir -o %t/zero-scratch.o 2>&1 | FileCheck %s --check-prefix=WRITABLE
+# RUN: test ! -e %t/zero-scratch.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/missing-effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PARSER
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/missing-effects.mir -o %t/missing-effects.o 2>&1 | FileCheck %s --check-prefix=PARSER
+# RUN: test ! -e %t/missing-effects.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/extra-effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/extra-effects.mir -o %t/extra-effects.o 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: test ! -e %t/extra-effects.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/missing-memory.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MEMORY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/missing-memory.mir -o %t/missing-memory.o 2>&1 | FileCheck %s --check-prefix=MEMORY
+# RUN: test ! -e %t/missing-memory.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/store-only.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MEMORY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/store-only.mir -o %t/store-only.o 2>&1 | FileCheck %s --check-prefix=MEMORY
+# RUN: test ! -e %t/store-only.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/format.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FORMAT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/format.mir -o %t/format.o 2>&1 | FileCheck %s --check-prefix=FORMAT
+# RUN: test ! -e %t/format.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs=false -run-pass=riscv-tensix-hazards %t/wh-addrmod.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRMOD
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs=false -start-before=riscv-tensix-hazards -filetype=obj %t/wh-addrmod.mir -o %t/wh-addrmod.o 2>&1 | FileCheck %s --check-prefix=ADDRMOD
+# RUN: test ! -e %t/wh-addrmod.o
+
+# MIRParser unconditionally runs MachineFunction::verify; its precise generic
+# class/tie crash and missing-implicit parse error are separate from the target
+# receiver's own role, scratch, exact-effects, memory and field diagnostics.
+# No flag or parser modification bypasses those earlier validation layers.
+# ROLE: bound Tensix SFPU operand does not match its native register role
+# GENERIC: Bad machine code: Tied physical registers must match.
+# PARSER: missing implicit register operand 'implicit $tt_config'
+# OVERLAP: bound Tensix SFPU early-clobber operand overlaps another operand
+# WRITABLE: bound Tensix SFPU scalar scratch must be writable
+# EFFECTS: bound Tensix SFPU physical effects differ from the native descriptor
+# MEMORY: contents paired LOAD port requires its volatile memory effects
+# FORMAT: SFPLOADIndex mode must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# ADDRMOD: Wormhole SFPLOADIndex operand 5 must be in [0, 3]
+
+#--- undef-old.mir
+--- |
+  define void @undef_old() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: undef_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex undef $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- wrong-old.mir
+--- |
+  define void @wrong_old() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: wrong_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l5, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- scratch-overlap.mir
+--- |
+  define void @scratch_overlap() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scratch_overlap
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x5 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- zero-scratch.mir
+--- |
+  define void @zero_scratch() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: zero_scratch
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x0, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- missing-effects.mir
+--- |
+  define void @missing_effects() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_effects
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- extra-effects.mir
+--- |
+  define void @extra_effects() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: extra_effects
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue, implicit $tt_cc :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- missing-memory.mir
+--- |
+  define void @missing_memory() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_memory
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+
+#--- store-only.mir
+--- |
+  define void @store_only() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: store_only
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile store (s32))
+    PseudoRET
+...
+
+
+#--- format.mir
+--- |
+  define void @format() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: format
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+
+#--- wh-addrmod.mir
+--- |
+  define void @wh_addrmod() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: wh_addrmod
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 4, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...

@@ -766,6 +766,7 @@ void RISCVPassConfig::addPreRegAlloc() {
 
 void RISCVPassConfig::addFastRegAlloc() {
   addPass(&InitUndefID);
+  addPass(&ProcessImplicitDefsID);
   TargetPassConfig::addFastRegAlloc();
 }
 

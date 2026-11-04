@@ -1,0 +1,427 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.wh.mir
+# RUN: FileCheck %s --check-prefix=WH < %t.wh.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t.wh.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.bh.mir
+# RUN: FileCheck %s --check-prefix=BH < %t.bh.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t.bh.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNREPAIRED
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNREPAIRED
+# UNREPAIRED: unresolved Tensix SFPU MAD to IADD destination hazard
+#
+# MAD results are real reads of both tied old VD and distinct VC. WH needs
+# a next-cycle gap even for immediate forms (disabled lanes preserve old VD).
+# Native descriptors keep CC/config/issue effects. BH SFPMAD.md documents
+# a reversed ARG_IMM interlock: vector old VD is missed, while VC reads are
+# interlocked. Immediate forms do not need a software gap for old VD.
+# When VC aliases VD, the VC interlock already covers that register.
+# Per-case adjacency requires only the real missing gaps, not a global fence.
+# WH-LABEL: name: setexp_vector_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_vector_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: TTSFPNOP
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_vector_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_vector_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_immediate_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_immediate_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_immediate_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_immediate_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setman_vector_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setman_vector_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: TTSFPNOP
+# BH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setman_vector_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setman_vector_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setman_immediate_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 4095, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setman_immediate_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 4095, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setman_immediate_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 4095, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setman_immediate_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 4095, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setsgn_vector_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setsgn_vector_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: TTSFPNOP
+# BH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setsgn_vector_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setsgn_vector_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setsgn_immediate_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setsgn_immediate_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setsgn_immediate_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setsgn_immediate_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+
+# WH-LABEL: name: setexp_vector_exponent_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_vector_exponent_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: TTSFPNOP
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_vector_exponent_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_vector_exponent_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_immediate_mode3_mad_old
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_immediate_mode3_mad_old
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_immediate_mode3_mad_source
+# WH: $tt_l1 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_immediate_mode3_mad_source
+# BH: $tt_l1 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+
+# WH-LABEL: name: setexp_vector_mad_alias
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_vector_mad_alias
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setexp_vector_exponent_mad_alias
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l0, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setexp_vector_exponent_mad_alias
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l0, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setman_vector_mad_alias
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setman_vector_mad_alias
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# WH-LABEL: name: setsgn_vector_mad_alias
+# WH: $tt_l0 = TTSFPMAD
+# WH-NEXT: TTSFPNOP
+# WH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+# BH-LABEL: name: setsgn_vector_mad_alias
+# BH: $tt_l0 = TTSFPMAD
+# BH-NEXT: $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+
+--- |
+  define void @setexp_vector_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_vector_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_immediate_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_immediate_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setman_vector_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setman_vector_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setman_immediate_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setman_immediate_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setsgn_vector_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setsgn_vector_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setsgn_immediate_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setsgn_immediate_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_vector_exponent_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_vector_exponent_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_immediate_mode3_mad_old() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_immediate_mode3_mad_source() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_vector_mad_alias() "tensix-executor"="trisc1" { ret void }
+  define void @setexp_vector_exponent_mad_alias() "tensix-executor"="trisc1" { ret void }
+  define void @setman_vector_mad_alias() "tensix-executor"="trisc1" { ret void }
+  define void @setsgn_vector_mad_alias() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: setexp_vector_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_vector_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_immediate_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_immediate_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setman_vector_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setman_vector_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setman_immediate_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 4095, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setman_immediate_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l1, 4095, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setsgn_vector_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setsgn_vector_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setsgn_immediate_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setsgn_immediate_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l1, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+
+---
+name: setexp_vector_exponent_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_vector_exponent_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_immediate_mode3_mad_old
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_immediate_mode3_mad_source
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l1 = TTSFPMAD $tt_l1, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l1, 255, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+
+---
+name: setexp_vector_mad_alias
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setexp_vector_exponent_mad_alias
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETEXP $tt_l0, $tt_l0, 0, 2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setman_vector_mad_alias
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETMAN $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+---
+name: setsgn_vector_mad_alias
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_l2, $tt_l3, $tt_l4, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPSETSGN $tt_l0, $tt_l0, 0, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

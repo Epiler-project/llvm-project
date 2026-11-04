@@ -1,0 +1,96 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/positive.mir -o - | FileCheck %s --check-prefix=FINAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/destination.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DESTINATION
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/source.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SOURCE
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/positive.mir -o - | FileCheck %s --check-prefix=FINAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/destination.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DESTINATION
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/source.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SOURCE
+# FINAL-LABEL: name:{{ *}}record_multiple_roles
+# FINAL: PseudoTTContentsSFPUReplay 1, 0,
+# FINAL: PseudoTTSFPURecordWord
+# FINAL: PseudoTTReplayRecordEnd
+# FINAL: PseudoTTContentsSFPUReplay 0, 0,
+# FINAL-SAME: implicit $tt_l2
+# FINAL-SAME: implicit $tt_l5
+# FINAL-SAME: implicit $tt_l7
+# FINAL-SAME: implicit-def $tt_l2
+# FINAL-SAME: implicit-def $tt_l5
+# DESTINATION: contents replay recipe destination requires a declared mutable role
+# SOURCE: contents replay recipe source requires a declared contents role
+#
+# This direct physical ingress deliberately uses L2/L5/L7. Recipe role
+# indices must not become hardware register numbers or default L0/L1.
+#--- positive.mir
+--- |
+  target triple = "riscv32"
+  define void @record_multiple_roles() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_multiple_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c10, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l5 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l7 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 162, 0, 0, 0, 2, $tt_l2, $tt_l5, $tt_l7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 162, 0, 2, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordXor 162, 1, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 162, $tt_l2, $tt_l5, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l2, early-clobber $tt_l5 = PseudoTTContentsReplayTemplateExecute2 162, 2, $tt_l2, $tt_l5, $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- destination.mir
+--- |
+  target triple = "riscv32"
+  define void @record_multiple_roles() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_multiple_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c10, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l5 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l7 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 162, 0, 0, 0, 2, $tt_l2, $tt_l5, $tt_l7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 162, 2, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordXor 162, 1, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 162, $tt_l2, $tt_l5, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l2, early-clobber $tt_l5 = PseudoTTContentsReplayTemplateExecute2 162, 2, $tt_l2, $tt_l5, $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- source.mir
+--- |
+  target triple = "riscv32"
+  define void @record_multiple_roles() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_multiple_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c10, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l2 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l5 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l7 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 162, 0, 0, 0, 2, $tt_l2, $tt_l5, $tt_l7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 162, 0, 3, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordXor 162, 1, 0, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 162, $tt_l2, $tt_l5, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l2, early-clobber $tt_l5 = PseudoTTContentsReplayTemplateExecute2 162, 2, $tt_l2, $tt_l5, $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

@@ -4,6 +4,7 @@
 
 #include "RISCVTensixReplaySelection.h"
 #include "RISCVTensixReplay.h"
+#include "RISCVTensixMacro.h"
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
@@ -181,7 +182,8 @@ bool llvm::selectTensixReplay(MachineFunction &MF) {
   const auto &ST = MF.getSubtarget<RISCVSubtarget>();
   const auto Options = static_cast<const RISCVTargetMachine &>(MF.getTarget())
                            .getTensixOptimizationOptions();
-  if (!Options.ReplaySelection || !ST.hasVendorXTTTensixBH() ||
+  if (!Options.ReplaySelection ||
+      (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH()) ||
       MF.getInfo<RISCVMachineFunctionInfo>()->hasTensixCodegenFailed() ||
       MF.getProperties().hasFailedRegAlloc())
     return false;
@@ -199,12 +201,15 @@ bool llvm::selectTensixReplay(MachineFunction &MF) {
       HasSFPU |= (RISCV::getTensixEncoding(MI.getOpcode()) &&
                   !RISCV::getTensixMachineInfo(MI.getOpcode())) ||
                  MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+                 MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
                  MI.getOpcode() == RISCV::PseudoTTSFPSTORE;
-      if (MI.isCall() || MI.isInlineAsm() || Port ||
+      if (isTensixMacroInstruction(MI.getOpcode()) ||
+          MI.isCall() || MI.isInlineAsm() || Port ||
           RISCV::getTensixMachineInfoByMop(MI.getOpcode()) ||
           MI.getOpcode() == RISCV::TTREPLAY ||
           MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
           MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay ||
           MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
           MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord ||
           MI.getOpcode() == RISCV::TTMOP ||
@@ -215,6 +220,12 @@ bool llvm::selectTensixReplay(MachineFunction &MF) {
           MI.getOpcode() == RISCV::PseudoTTReplayRecordEnd)
         return false;
     }
+  // WH receives allocated contents arithmetic only. Do not open ordinary
+  // engine mining or the legacy bound physical ABI with this architecture gate.
+  if (ST.hasVendorXTTTensixWH() &&
+      (!HasSFPU ||
+       MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU()))
+    return false;
   Candidate Best;
   for (auto &BB : MF) {
     SmallVector<MachineInstr *> Run;

@@ -7,10 +7,12 @@
 #include "RISCVTargetMachine.h"
 #include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixContentsGroup.h"
+#include "RISCVTensixMacro.h"
 #include "RISCVTensixLowering.h"
 #include "RISCVTensixReplay.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/LazyValueInfo.h"
@@ -37,6 +39,7 @@
 #include "llvm/Support/ModRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
+#include <array>
 #include <functional>
 #include <initializer_list>
 #include <optional>
@@ -50,11 +53,17 @@ bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
 bool llvm::isTensixContentsIntrinsic(Intrinsic::ID ID) {
   switch (ID) {
   case Intrinsic::riscv_tt_contents_read_constant:
+  case Intrinsic::riscv_tt_contents_read_creg:
   case Intrinsic::riscv_tt_contents_load:
+  case Intrinsic::riscv_tt_contents_load_full:
   case Intrinsic::riscv_tt_contents_add:
   case Intrinsic::riscv_tt_contents_mul:
   case Intrinsic::riscv_tt_contents_store:
   case Intrinsic::riscv_tt_contents_load_immediate:
+  case Intrinsic::riscv_tt_contents_divp2:
+  case Intrinsic::riscv_tt_contents_add_immediate:
+  case Intrinsic::riscv_tt_contents_mul_immediate:
+  case Intrinsic::riscv_tt_contents_mul23:
   case Intrinsic::riscv_tt_contents_mad:
   case Intrinsic::riscv_tt_contents_iadd:
   case Intrinsic::riscv_tt_contents_mov:
@@ -91,9 +100,19 @@ bool llvm::isTensixContentsIntrinsic(Intrinsic::ID ID) {
   case Intrinsic::riscv_tt_contents_compc:
   case Intrinsic::riscv_tt_contents_nop:
   case Intrinsic::riscv_tt_contents_config_reset:
+  case Intrinsic::riscv_tt_contents_replay_template_begin:
+  case Intrinsic::riscv_tt_contents_replay_template_end:
+  case Intrinsic::riscv_tt_contents_replay_template_mop:
+  case Intrinsic::riscv_tt_contents_replay_template_mop_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+  case Intrinsic::riscv_tt_contents_replay_template_record_and:
+  case Intrinsic::riscv_tt_contents_replay_template_record_or:
+  case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+  case Intrinsic::riscv_tt_contents_replay_template_record_not:
     return true;
   default:
-    return isTensixContentsGroupIntrinsic(ID);
+    return isTensixContentsGroupIntrinsic(ID) || isTensixMacroIntrinsic(ID);
   }
 }
 
@@ -114,6 +133,7 @@ bool llvm::isRetiredTensixSFPUIntrinsicName(StringRef Name) {
 bool llvm::RISCV::isTensixIntrinsic(Intrinsic::ID ID) {
   return isTensixSFPUIntrinsic(ID) || getTensixInstructionByIntrinsic(ID) ||
          ID == Intrinsic::riscv_tt_dependent_use ||
+         ID == Intrinsic::riscv_tt_coprocessor_wait ||
          ID == Intrinsic::riscv_tt_mop_clear ||
          ID == Intrinsic::riscv_tt_mop_control_write ||
          ID == Intrinsic::riscv_tt_replay_template_begin ||
@@ -145,25 +165,34 @@ Error invalid(const Function &F, const Twine &Detail) {
                            "': " + Detail);
 }
 
-// This scalar handoff is available to RV32 roles without a Tensix issue
-// extension. Keep its call and width contract independent of issue admission.
-Error verifyScalarReadResponse(Function &F, bool IsRV32) {
+// read.response is available to RV32 roles without a Tensix issue extension.
+// coprocessor.wait additionally requires a supported TRISC issue owner below.
+Error verifyScalarTensixSynchronization(Function &F, bool IsRV32) {
   for (Instruction &I : instructions(F)) {
     auto *Call = dyn_cast<CallBase>(&I);
     const Function *Callee = Call ? Call->getCalledFunction() : nullptr;
-    if (!Callee ||
-        Callee->getIntrinsicID() != Intrinsic::riscv_tt_read_response)
+    if (!Callee)
       continue;
+    Intrinsic::ID ID = Callee->getIntrinsicID();
+    bool Wait = ID == Intrinsic::riscv_tt_coprocessor_wait;
+    if (!Wait && ID != Intrinsic::riscv_tt_read_response)
+      continue;
+    StringRef Name = Wait ? "coprocessor wait" : "scalar device read response";
     if (!isa<CallInst>(Call) || Call->hasOperandBundles() ||
         Call->getCallingConv() != CallingConv::C)
-      return invalid(F, "scalar device read response requires a direct C call "
-                        "without operand bundles");
+      return invalid(
+          F, Name + " requires a direct C call without operand bundles");
     if (Callee->getMemoryEffects() != MemoryEffects::unknown() ||
         Call->getMemoryEffects() != MemoryEffects::unknown())
-      return invalid(
-          F, "scalar device read response requires full memory effects");
+      return invalid(F, Name + " requires full memory effects");
+    if (Wait && (!Callee->isConvergent() || !Call->isConvergent() ||
+                 !Callee->cannotDuplicate() || !Call->cannotDuplicate() ||
+                 Callee->hasFnAttribute(Attribute::NoSync) ||
+                 Call->hasFnAttr(Attribute::NoSync)))
+      return invalid(F, "coprocessor wait requires convergent nonduplicable "
+                        "synchronization");
     if (!IsRV32)
-      return invalid(F, "scalar device read response requires RV32");
+      return invalid(F, Name + " requires RV32");
   }
   return Error::success();
 }
@@ -500,7 +529,365 @@ ConstantRange refineWithScalarExpressions(Value *Root, ConstantRange Bounds,
   return Bounds.intersectWith(Visit(Root), ConstantRange::Unsigned);
 }
 
+// Receive transport of one recorded value without requiring its backedge
+// producer to dominate the header PHI. All reachable nodes must be permitted
+// transport and must reach the actual seed. In particular, discovering a grey
+// node or one seeded input must not admit a separate unseeded cycle.
+bool isRecordedContents(const Value *Root, const Value *Seed,
+                        const Value *ExecuteIdentity, unsigned MutableIndex = 0) {
+  SmallPtrSet<const Value *, 32> Visited, Seeded;
+  DenseMap<const Value *, SmallVector<const Value *, 4>> Users;
+  SmallVector<const Value *, 16> Pending{Root};
+  while (!Pending.empty()) {
+    const Value *V = Pending.pop_back_val();
+    if (!Visited.insert(V).second || V == Seed)
+      continue;
+    SmallVector<const Value *, 4> Inputs;
+    if (const auto *Phi = dyn_cast<PHINode>(V)) {
+      for (const Value *Incoming : Phi->incoming_values())
+        Inputs.push_back(Incoming);
+    } else if (const auto *Extract = dyn_cast<ExtractValueInst>(V);
+               ExecuteIdentity && Extract && Extract->getNumIndices() == 1 &&
+               Extract->getIndices()[0] == MutableIndex) {
+      const auto *II =
+          dyn_cast<IntrinsicInst>(Extract->getAggregateOperand());
+      if (!II || (II->getIntrinsicID() !=
+                      Intrinsic::riscv_tt_contents_replay_template_execute &&
+                  II->getIntrinsicID() !=
+                      Intrinsic::riscv_tt_contents_replay_template_mop_execute) ||
+          II->arg_size() < 2 || II->getArgOperand(0) != ExecuteIdentity)
+        return false;
+      const auto *Count = dyn_cast<ConstantInt>(II->getArgOperand(1));
+      if (!Count || Count->getZExtValue() <= MutableIndex ||
+          Count->getZExtValue() > 8 ||
+          II->arg_size() < 2 + Count->getZExtValue())
+        return false;
+      Inputs.push_back(II->getArgOperand(2 + MutableIndex));
+    } else {
+      return false;
+    }
+    if (Inputs.empty())
+      return false;
+    for (const Value *Input : Inputs) {
+      Users[Input].push_back(V);
+      Pending.push_back(Input);
+    }
+  }
+  if (!Visited.contains(Seed))
+    return false;
+  Pending.push_back(Seed);
+  while (!Pending.empty()) {
+    const Value *V = Pending.pop_back_val();
+    if (!Seeded.insert(V).second)
+      continue;
+    auto Found = Users.find(V);
+    if (Found != Users.end())
+      append_range(Pending, Found->second);
+  }
+  return Seeded.size() == Visited.size();
+}
+
+bool isContentsReplayRecipe(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+  case Intrinsic::riscv_tt_contents_replay_template_record_and:
+  case Intrinsic::riscv_tt_contents_replay_template_record_or:
+  case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+  case Intrinsic::riscv_tt_contents_replay_template_record_not:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// A Replay tuple only packs independent SFPR results. It is not a fixed
+// hardware group, an aggregate input, or permission for aggregate transport.
+bool isContentsReplayTuple(const IntrinsicInst &II) {
+  if ((II.getIntrinsicID() !=
+           Intrinsic::riscv_tt_contents_replay_template_execute &&
+       II.getIntrinsicID() !=
+           Intrinsic::riscv_tt_contents_replay_template_mop_execute) ||
+      II.arg_size() < 3)
+    return false;
+  const auto *Count = dyn_cast<ConstantInt>(II.getArgOperand(1));
+  const auto *Tuple = dyn_cast<StructType>(II.getType());
+  if (!Count || Count->getZExtValue() < 1 || Count->getZExtValue() > 8 ||
+      !Tuple || !Tuple->isLiteral() || Tuple->isPacked() ||
+      Tuple->getNumElements() != Count->getZExtValue())
+    return false;
+  return all_of(Tuple->elements(), [](Type *Ty) { return isCarrier(Ty); });
+}
+
+Error verifyContentsReplayTemplates(Function &F, DominatorTree &DT) {
+  struct Template {
+    const IntrinsicInst *Begin;
+    const IntrinsicInst *End = nullptr;
+    SmallVector<const Value *, 8> Mutables;
+    SmallVector<const Value *, 8> Captures;
+    unsigned Words = 0;
+    bool RecordOnly = false;
+  };
+  DenseMap<uint32_t, Template> Templates;
+  SmallVector<const IntrinsicInst *, 4> Executions, MOPBindings;
+  for (const BasicBlock &BB : F) {
+    Template *Active = nullptr;
+    uint32_t ActiveID = 0;
+    for (const Instruction &I : BB) {
+      if (I.isDebugOrPseudoInst())
+        continue;
+      const auto *II = dyn_cast<IntrinsicInst>(&I);
+      auto Kind = II ? II->getIntrinsicID() : Intrinsic::not_intrinsic;
+      if (Kind == Intrinsic::riscv_tt_contents_replay_template_begin) {
+        if (II->arg_size() < 6 || II->arg_size() > 13)
+          return invalid(F,
+              "contents replay begin requires one to eight flat contents roles");
+        auto ID = immediate(*II, 0);
+        if (!ID)
+          return ID.takeError();
+        if (Active || Templates.contains(*ID))
+          return invalid(F, "contents replay requires one non-nested producer");
+        if (Error E = range(*II, 1, 0, 1))
+          return E;
+        if (Error E = range(*II, 2, 0, 1))
+          return E;
+        if (Error E = range(*II, 3, 0, 31))
+          return E;
+        auto Placement = immediate(*II, 2);
+        auto Start = immediate(*II, 3);
+        if (!Placement || !Start)
+          return invalid(F, "contents replay requires static placement");
+        if (!*Placement && *Start)
+          return invalid(F,
+              "contents replay automatic placement requires zero start");
+        auto Count = immediate(*II, 4);
+        if (!Count)
+          return Count.takeError();
+        if (!*Count || *Count > II->arg_size() - 5)
+          return invalid(F,
+              "contents replay mutable count differs from its flat roles");
+        bool RecordOnly = cast<ConstantInt>(II->getArgOperand(1))->isZero();
+        SmallPtrSet<const Value *, 8> Roles;
+        for (unsigned R = 5; R < II->arg_size(); ++R) {
+          if (!isCarrier(II->getArgOperand(R)->getType()))
+            return invalid(F,
+                "contents replay roles require flat full contents values");
+          if (!Roles.insert(II->getArgOperand(R)).second)
+            return invalid(F,
+                "contents replay capture and mutable roles must be distinct");
+        }
+        ActiveID = *ID;
+        Active = &Templates.try_emplace(*ID, Template{II}).first->second;
+        for (unsigned R = 5; R < II->arg_size(); ++R)
+          (R < 5 + *Count ? Active->Mutables : Active->Captures)
+              .push_back(II->getArgOperand(R));
+        Active->RecordOnly = RecordOnly;
+        continue;
+      }
+      if (Kind == Intrinsic::riscv_tt_contents_replay_template_end) {
+        if (II->arg_size() < 2)
+          return invalid(F,
+              "contents replay end requires its actual final contents");
+        auto ID = immediate(*II, 0);
+        if (!ID)
+          return ID.takeError();
+        if (!Active || *ID != ActiveID || !Active->Words ||
+            II->arg_size() != 1 + Active->Mutables.size())
+          return invalid(F,
+              "contents replay end requires its actual final contents");
+        for (auto [R, Final] : enumerate(Active->Mutables))
+          if (II->getArgOperand(1 + R) != Final)
+            return invalid(F,
+                "contents replay end requires its actual final contents");
+        Active->End = II;
+        Active = nullptr;
+        continue;
+      }
+      if (Kind == Intrinsic::riscv_tt_contents_replay_template_mop && !Active) {
+        auto Slot = immediate(*II, 1);
+        if (!Slot)
+          return Slot.takeError();
+        if (*Slot != 5 && *Slot != 7 && *Slot != 8)
+          return invalid(F, "contents MOP binding requires slot5, slot7 or slot8");
+        MOPBindings.push_back(II);
+        continue;
+      }
+      if ((Kind == Intrinsic::riscv_tt_contents_replay_template_execute ||
+           Kind == Intrinsic::riscv_tt_contents_replay_template_mop_execute) &&
+          !Active) {
+        if (!isContentsReplayTuple(*II))
+          return invalid(F,
+              "contents replay execute requires an unpacked literal tuple matching mutable count");
+        Executions.push_back(II);
+        continue;
+      }
+      if (isContentsReplayRecipe(Kind)) {
+        auto ID = immediate(*II, 0);
+        if (!ID)
+          return ID.takeError();
+        if (!Active || !Active->RecordOnly || *ID != ActiveID)
+          return invalid(F,
+              "contents replay recipe requires its active record-only owner");
+        auto Mutable = immediate(*II, 1);
+        if (!Mutable)
+          return Mutable.takeError();
+        if (*Mutable >= Active->Mutables.size())
+          return invalid(F,
+              "contents replay recipe destination requires a declared mutable role");
+        if (Kind != Intrinsic::riscv_tt_contents_replay_template_record_not) {
+          auto Source = immediate(*II, 2);
+          if (!Source)
+            return Source.takeError();
+          if (*Source >= Active->Mutables.size() + Active->Captures.size())
+            return invalid(F,
+                "contents replay recipe source requires a declared contents role");
+        }
+        if (++Active->Words > TensixReplaySlotCount)
+          return invalid(F, "contents replay body exceeds replay capacity");
+        continue;
+      }
+      if (!Active)
+        continue;
+      if (Active->RecordOnly)
+        return invalid(F,
+            "contents record-only body requires a non-executing recipe");
+      // The first operand is the destructive old destination. Other contents
+      // operands read current mutable roles or declared captures; native
+      // instruction projection checks every immediate and its effects.
+      unsigned Sources = 0;
+      if (Kind == Intrinsic::riscv_tt_contents_iadd ||
+          Kind == Intrinsic::riscv_tt_contents_mov ||
+          Kind == Intrinsic::riscv_tt_contents_and ||
+          Kind == Intrinsic::riscv_tt_contents_or ||
+          Kind == Intrinsic::riscv_tt_contents_xor ||
+          Kind == Intrinsic::riscv_tt_contents_divp2)
+        Sources = 1;
+      else if (Kind == Intrinsic::riscv_tt_contents_add ||
+               Kind == Intrinsic::riscv_tt_contents_mul)
+        Sources = 2;
+      else if (Kind == Intrinsic::riscv_tt_contents_mad)
+        Sources = 3;
+      else if (Kind != Intrinsic::riscv_tt_contents_not &&
+               Kind != Intrinsic::riscv_tt_contents_add_immediate &&
+               Kind != Intrinsic::riscv_tt_contents_mul_immediate &&
+               Kind != Intrinsic::riscv_tt_contents_load_immediate)
+        return invalid(F,
+            "contents replay requires current mutable contents and declared read-only captures");
+      auto Mutable = find(Active->Mutables, II->getArgOperand(0));
+      if (Mutable == Active->Mutables.end())
+        return invalid(F,
+            "contents replay requires current mutable contents and declared read-only captures");
+      for (unsigned R = 1; R <= Sources; ++R)
+        if (!is_contained(Active->Mutables, II->getArgOperand(R)) &&
+            !is_contained(Active->Captures, II->getArgOperand(R)))
+          return invalid(F,
+              "contents replay requires current mutable contents and declared read-only captures");
+      *Mutable = II;
+      if (++Active->Words > TensixReplaySlotCount)
+        return invalid(F, "contents replay body exceeds replay capacity");
+    }
+    if (Active)
+      return invalid(F, "contents replay requires an end in its basic block");
+  }
+  for (const IntrinsicInst *Bind : MOPBindings) {
+    auto ID = immediate(*Bind, 0);
+    if (!ID)
+      return ID.takeError();
+    auto Found = Templates.find(*ID);
+    if (Found == Templates.end() || !Found->second.End ||
+        !DT.dominates(Found->second.End, Bind))
+      return invalid(F, "contents MOP binding requires a dominating record");
+  }
+  for (const IntrinsicInst *Execute : Executions) {
+    auto ID = immediate(*Execute, 0);
+    if (!ID)
+      return ID.takeError();
+    auto Found = Templates.find(*ID);
+    if (Found == Templates.end() || !Found->second.End ||
+        !DT.dominates(Found->second.End, Execute))
+      return invalid(F, "contents replay execute requires a dominating record");
+    const Template &T = Found->second;
+    unsigned First = 2;
+    if (Execute->arg_size() != First + T.Mutables.size() + T.Captures.size())
+      return invalid(F,
+          "contents replay execute arity differs from its recorded roles");
+    auto Count = immediate(*Execute, 1);
+    if (!Count)
+      return Count.takeError();
+    if (*Count != T.Mutables.size())
+      return invalid(F,
+          "contents replay execute mutable count differs from its record");
+    for (unsigned R = First; R < Execute->arg_size(); ++R)
+      if (!isCarrier(Execute->getArgOperand(R)->getType()))
+        return invalid(F,
+            "contents replay roles require flat full contents values");
+    for (auto [R, Capture] : enumerate(T.Captures))
+      if (!isRecordedContents(
+              Execute->getArgOperand(First + T.Mutables.size() + R), Capture,
+              nullptr))
+        return invalid(F,
+            "contents replay execute requires its recorded read-only capture");
+    for (auto [R, Mutable] : enumerate(T.Mutables))
+      if (!isRecordedContents(Execute->getArgOperand(First + R), Mutable,
+                              Execute->getArgOperand(0), R))
+        return invalid(F,
+            "contents replay execute requires its current mutable contents");
+  }
+  return Error::success();
+}
+
+Error verifyFullLoadsOutsideRecording(Function &F) {
+  for (const BasicBlock &BB : F) {
+    bool TemplateActive = false;
+    unsigned RawRemaining = 0;
+    for (const Instruction &I : BB) {
+      const auto *II = dyn_cast<IntrinsicInst>(&I);
+      if (!II)
+        continue;
+      Intrinsic::ID ID = II->getIntrinsicID();
+      if (ID == Intrinsic::riscv_tt_contents_replay_template_begin ||
+          ID == Intrinsic::riscv_tt_replay_template_begin) {
+        TemplateActive = true;
+        continue;
+      }
+      if (ID == Intrinsic::riscv_tt_contents_replay_template_end ||
+          ID == Intrinsic::riscv_tt_replay_template_end) {
+        TemplateActive = false;
+        continue;
+      }
+      if (ID == Intrinsic::riscv_tt_replay ||
+          ID == Intrinsic::riscv_tt_replay_port) {
+        unsigned First = ID == Intrinsic::riscv_tt_replay_port ? 1 : 0;
+        const auto *Port =
+            First ? dyn_cast<ConstantInt>(II->getArgOperand(0)) : nullptr;
+        const auto *Record = dyn_cast<ConstantInt>(II->getArgOperand(First));
+        const auto *Length =
+            dyn_cast<ConstantInt>(II->getArgOperand(First + 2));
+        // Full LOAD issues on the current thread's local port. Other port
+        // recordings do not capture it; malformed fields retain their normal
+        // verifier rather than becoming a guessed recording boundary.
+        if ((!First || (Port && Port->isZero())) && Record && Record->isOne() &&
+            Length && Length->getZExtValue() <= 32)
+          RawRemaining = Length->getZExtValue();
+        continue;
+      }
+      if (ID == Intrinsic::riscv_tt_contents_load_full &&
+          (TemplateActive || RawRemaining))
+        return invalid(
+            F, "contents full LOAD is not supported in replay recording");
+      const auto *Issue = RISCV::getTensixInstructionByIntrinsic(ID);
+      if (RawRemaining && (isTensixContentsIntrinsic(ID) ||
+                           (Issue && ID != Issue->MopIntrinsicID)))
+        --RawRemaining;
+    }
+  }
+  return Error::success();
+}
+
 Error verifyReplayTemplates(Function &F, DominatorTree &DT) {
+  if (Error E = verifyFullLoadsOutsideRecording(F))
+    return E;
+  if (Error E = verifyContentsReplayTemplates(F, DT))
+    return E;
   DenseMap<uint32_t, const IntrinsicInst *> Producers, Ends;
   SmallVector<std::pair<uint32_t, const IntrinsicInst *>, 4> Executions;
   for (const BasicBlock &BB : F) {
@@ -576,8 +963,12 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !RISCV::isTensixIntrinsic(II->getIntrinsicID()))
       continue;
-    if (!HasFeature)
+    if (!HasFeature) {
+      if (II->getIntrinsicID() == Intrinsic::riscv_tt_coprocessor_wait)
+        return invalid(
+            F, "coprocessor wait requires +xtttensixbh or +xtttensixwh");
       return invalid(F, "Tensix intrinsic requires +xtttensixbh");
+    }
     // The scalar readback dependency uses ordinary RISC-V instructions rather
     // than a model-specific Tensix instruction encoding.
     if (Wormhole && isTensixContentsIntrinsic(II->getIntrinsicID())) {
@@ -585,7 +976,13 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
         return invalid(F, toString(std::move(E)));
     } else if (Wormhole &&
                II->getIntrinsicID() != Intrinsic::riscv_tt_dependent_use &&
-               !RISCV::isTensixWormholeIntrinsic(II->getIntrinsicID())) {
+               II->getIntrinsicID() != Intrinsic::riscv_tt_coprocessor_wait &&
+               (II->getIntrinsicID() == Intrinsic::riscv_tt_replay ||
+                II->getIntrinsicID() == Intrinsic::riscv_tt_mop ||
+                (II->getIntrinsicID() !=
+                     Intrinsic::riscv_tt_mop_control_write &&
+                 II->getIntrinsicID() != Intrinsic::riscv_tt_mop_clear &&
+                 !RISCV::isTensixWormholeIntrinsic(II->getIntrinsicID())))) {
       return invalid(F, "Tensix intrinsic is not supported on Wormhole");
     }
     if (Executor.empty())
@@ -601,6 +998,11 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     Intrinsic::ID ID = II->getIntrinsicID();
     if (ID == Intrinsic::riscv_tt_dependent_use)
       continue;
+    if (ID == Intrinsic::riscv_tt_coprocessor_wait) {
+      if (Executor != "trisc0" && Executor != "trisc1" && Executor != "trisc2")
+        return invalid(F, "coprocessor wait requires a TRISC executor");
+      continue;
+    }
     if (Executor == "ncrisc")
       return invalid(F, "ncrisc cannot issue Tensix instructions");
     if (isTensixSFPUIntrinsic(ID)) {
@@ -756,30 +1158,61 @@ Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
                       AssumptionCache &AC, DominatorTree &DT) {
   if (isTensixContentsIntrinsic(II.getIntrinsicID())) {
     switch (II.getIntrinsicID()) {
+    case Intrinsic::riscv_tt_contents_replay_template_begin:
+    case Intrinsic::riscv_tt_contents_replay_template_end:
+    case Intrinsic::riscv_tt_contents_replay_template_mop:
+    case Intrinsic::riscv_tt_contents_replay_template_mop_execute:
+    case Intrinsic::riscv_tt_contents_replay_template_execute:
+    case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+    case Intrinsic::riscv_tt_contents_replay_template_record_and:
+    case Intrinsic::riscv_tt_contents_replay_template_record_or:
+    case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+    case Intrinsic::riscv_tt_contents_replay_template_record_not:
+      return verifyTensixContentsIntrinsicFields(II);
+    case Intrinsic::riscv_tt_contents_read_creg:
     case Intrinsic::riscv_tt_contents_read_constant: {
       auto Selector = immediate(II, 0);
       if (!Selector)
         return Selector.takeError();
-      if (*Selector != 8 && *Selector != 9 && *Selector != 10 &&
-          *Selector != 15)
-        return invalid(
-            *II.getFunction(),
-            "contents constant read requires immutable C8/C9/C10/C15");
+      if (Error E = verifyTensixContentsIntrinsicFields(II))
+        return invalid(*II.getFunction(), toString(std::move(E)));
       return Error::success();
     }
     case Intrinsic::riscv_tt_contents_add:
     case Intrinsic::riscv_tt_contents_mul:
       return range(II, 3, 0, 3);
+    case Intrinsic::riscv_tt_contents_load_index: {
+      if (Error E = verifyTensixContentsIntrinsicFields(II))
+        return E;
+      Value *OffsetValue = II.getArgOperand(2);
+      if (!isDefinedOffset(OffsetValue, II, SE, AC, DT))
+        return invalid(
+            *II.getFunction(),
+            "contents paired LOAD Dst offset must be defined and non-poison");
+      const SCEV *Offset = SE.getSCEV(OffsetValue);
+      if (SE.getUnsignedRange(Offset).getUnsignedMax().ugt(1023))
+        return invalid(
+            *II.getFunction(),
+            "contents paired LOAD Dst offset must be proven in [0, 1023]");
+      return Error::success();
+    }
+    case Intrinsic::riscv_tt_contents_load_full:
     case Intrinsic::riscv_tt_contents_load:
     case Intrinsic::riscv_tt_contents_store: {
-      if (Error E = range(II, 2, 0, 7))
-        return E;
-      auto Format = immediate(II, 3);
-      if (!Format)
-        return Format.takeError();
-      if (*Format > 15 || !(0xc17fu & (1u << *Format)))
-        return invalid(*II.getFunction(), "unsupported contents Dst format");
-      Value *OffsetValue = II.getArgOperand(1);
+      bool Full = II.getIntrinsicID() == Intrinsic::riscv_tt_contents_load_full;
+      if (Full) {
+        if (Error E = verifyTensixContentsIntrinsicFields(II))
+          return E;
+      } else {
+        if (Error E = range(II, 2, 0, 7))
+          return E;
+        auto Format = immediate(II, 3);
+        if (!Format)
+          return Format.takeError();
+        if (*Format > 15 || !(0xc17fu & (1u << *Format)))
+          return invalid(*II.getFunction(), "unsupported contents Dst format");
+      }
+      Value *OffsetValue = II.getArgOperand(Full ? 0 : 1);
       if (!isDefinedOffset(OffsetValue, II, SE, AC, DT))
         return invalid(*II.getFunction(),
                        "contents Dst offset must be defined and non-poison");
@@ -811,24 +1244,41 @@ Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
   return Error::success();
 }
 
-// The single-result contents ABI cannot hide SFPLOAD's paired destination
-// capture or TEN-2932 writes to L4..7. Placement is still virtual here, so a
-// numerical result may use either half of SFPR. SFPLOADI is the architectural
-// exception: it has one explicit destination and is exempt from TEN-2932.
+// Scalar numerical results may occupy either half of SFPR, so they cannot
+// hide SFPLOAD's paired destination capture or TEN-2932 writes to L4..7.
+// SFPLOADI has one explicit destination and is exempt from TEN-2932.
+// Transpose is also architecturally exempt: Transpose8 receives every old
+// contents value/result in L0..7; Transpose4 exposes L4..7 as machine scratch
+// clobbers. Indexing cannot add a hidden write to either form.
+// The paired LOAD view likewise explicitly receives the conditional L4
+// companion and its old contents instead of hiding that second write.
+// SWAPIndex similarly receives both values and both companion indices.
 bool requiresDisabledDestIndex(const IntrinsicInst &II) {
   return containsCarrier(II.getType()) &&
-         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate;
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose4 &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose8 &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_index &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_swap_index;
 }
 
 struct ContentsLaneConfig {
   std::optional<bool> Enable;
   std::optional<bool> Flags;
   bool DestIndexDisabled = false;
+  bool RowsUnmasked = false;
+  bool DstReadUnblocked = false;
+  std::array<uint8_t, 4> CRegColumns = {};
+  SmallPtrSet<const Value *, 8> IndexBitZeroValues;
 
   bool allColumnsEnabled() const { return Enable == false || Flags == true; }
   bool operator==(const ContentsLaneConfig &Other) const {
     return Enable == Other.Enable && Flags == Other.Flags &&
-           DestIndexDisabled == Other.DestIndexDisabled;
+           DestIndexDisabled == Other.DestIndexDisabled &&
+           RowsUnmasked == Other.RowsUnmasked &&
+           DstReadUnblocked == Other.DstReadUnblocked &&
+           CRegColumns == Other.CRegColumns &&
+           IndexBitZeroValues == Other.IndexBitZeroValues;
   }
   bool operator!=(const ContentsLaneConfig &Other) const {
     return !(*this == Other);
@@ -839,6 +1289,15 @@ struct ContentsLaneConfig {
     if (Flags != Other.Flags)
       Flags.reset();
     DestIndexDisabled &= Other.DestIndexDisabled;
+    RowsUnmasked &= Other.RowsUnmasked;
+    DstReadUnblocked &= Other.DstReadUnblocked;
+    for (unsigned I = 0; I != CRegColumns.size(); ++I)
+      CRegColumns[I] &= Other.CRegColumns[I];
+    SmallPtrSet<const Value *, 8> Common;
+    for (const Value *V : IndexBitZeroValues)
+      if (Other.IndexBitZeroValues.contains(V))
+        Common.insert(V);
+    IndexBitZeroValues = std::move(Common);
   }
 };
 
@@ -956,15 +1415,62 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
   if (ID == Intrinsic::riscv_tt_contents_config_reset) {
     // SFPCONFIG reads the first eight columns' effective CC, independently
     // of ROW_MASK, and broadcasts the selected configuration vertically.
-    // A masked reset cannot enable an already-disabled indexing field.
+    // Clearing selected low bits preserves already-known zero configuration,
+    // but only a full broadcast establishes every lane from unknown state.
     State.DestIndexDisabled |= State.allColumnsEnabled();
+    State.RowsUnmasked |= State.allColumnsEnabled();
+    State.DstReadUnblocked |= State.allColumnsEnabled();
     return;
   }
   switch (ID) {
+  case Intrinsic::riscv_tt_contents_read_constant: {
+    unsigned Selector = cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
+    // MOVAll snapshots every lane independently of CC and ROW_MASK. The zero
+    // and one constants both have bit 2 clear; C15's lane indices do not.
+    if (Selector == 9 || Selector == 10)
+      State.IndexBitZeroValues.insert(II);
+    return;
+  }
+  case Intrinsic::riscv_tt_contents_load_immediate: {
+    if (!State.IndexBitZeroValues.contains(II->getArgOperand(0)))
+      return;
+    unsigned Value = cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
+    unsigned Mode = cast<ConstantInt>(II->getArgOperand(2))->getZExtValue();
+    // Both inactive old contents and the written value must have bit 2 clear.
+    // This deliberately does not infer full overwrite from the current CC:
+    // numerical writes also observe ROW_MASK, unlike SFPCONFIG's broadcast.
+    if (Mode == 0 || Mode == 1 || Mode == 8 ||
+        ((Mode == 2 || Mode == 4 || Mode == 10) && !(Value & 4)))
+      State.IndexBitZeroValues.insert(II);
+    return;
+  }
+  case Intrinsic::riscv_tt_contents_config_creg: {
+    if (!State.allColumnsEnabled())
+      return;
+    unsigned Selector = cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
+    unsigned Mask = cast<ConstantInt>(II->getArgOperand(2))->getZExtValue();
+    unsigned Mode = cast<ConstantInt>(II->getArgOperand(3))->getZExtValue();
+    // Mode 8 uses only even Imm16 bits, one for each of the first eight
+    // columns. SFPCONFIG broadcasts these columns vertically, ignoring ROW_MASK.
+    uint8_t Columns = 0xff;
+    if (Mode == 8) {
+      Columns = 0;
+      for (unsigned I = 0; I != 8; ++I)
+        Columns |= ((Mask >> (2 * I)) & 1) << I;
+    }
+    State.CRegColumns[Selector - 11] |= Columns;
+    return;
+  }
   case Intrinsic::riscv_tt_contents_config_lane:
-    // The actual L0 contents may enable destination indexing. Only a later
-    // effective all-column reset can establish the disabled-index contract.
-    State.DestIndexDisabled = false;
+    // Admitted mode 8 assigns the selected columns from L0. A known-zero bit
+    // cannot enable indexing in any selected/effective column. Keep unknown
+    // incoming hardware state unknown; this is preservation, not initialization.
+    State.DestIndexDisabled &=
+        State.IndexBitZeroValues.contains(II->getArgOperand(0));
+    // This source may independently set ROW_MASK and Dst read-block bits.
+    // An index-bit proof does not establish either separate write condition.
+    State.RowsUnmasked = false;
+    State.DstReadUnblocked = false;
     return;
   case Intrinsic::riscv_tt_contents_setcc:
   case Intrinsic::riscv_tt_contents_gt:
@@ -996,6 +1502,7 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
       RISCV::getTensixInstructionByIntrinsic(ID) ||
       ID == Intrinsic::riscv_tt_dependent_use ||
       ID == Intrinsic::riscv_tt_read_response ||
+      ID == Intrinsic::riscv_tt_coprocessor_wait ||
       ID == Intrinsic::riscv_tt_replay_record_end ||
       ID == Intrinsic::riscv_tt_replay_template_mop ||
       ID == Intrinsic::riscv_tt_mop_clear ||
@@ -1063,10 +1570,25 @@ Error verifyContentsLaneConfig(Function &F) {
     unsigned RawRecordRemaining = 0;
     for (const Instruction &I : BB) {
       const auto *II = dyn_cast<IntrinsicInst>(&I);
+      if (II &&
+          II->getIntrinsicID() == Intrinsic::riscv_tt_contents_load_full &&
+          (!State.allColumnsEnabled() || !State.DestIndexDisabled ||
+           !State.RowsUnmasked || !State.DstReadUnblocked))
+        return invalid(
+            F, "contents full LOAD requires all lanes writable with unmasked "
+               "rows, unblocked Dst reads and disabled destination indexing");
       if (II && isTensixContentsIntrinsic(II->getIntrinsicID()) &&
           requiresDisabledDestIndex(*II) && !State.DestIndexDisabled)
         return invalid(F, "contents SFPU requires ENABLE_DEST_INDEX known "
                           "disabled before a potentially affected write");
+      if (II && II->getIntrinsicID() == Intrinsic::riscv_tt_contents_read_creg) {
+        unsigned Selector =
+            cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
+        // MOV mode 2 snapshots every column, even when effective CC is off.
+        if (State.CRegColumns[Selector - 11] != 0xff)
+          return invalid(F, "contents CReg snapshot requires all eight columns "
+                            "initialized");
+      }
       updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining);
     }
   }
@@ -1103,15 +1625,22 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
   for (Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
     bool SFPU = II && isTensixSFPUIntrinsic(II->getIntrinsicID());
+    if (II && II->getIntrinsicID() ==
+                  Intrinsic::riscv_tt_contents_replay_template_execute &&
+        !isContentsReplayTuple(*II))
+      return invalid(F,
+          "contents replay execute requires an unpacked literal tuple matching mutable count");
     bool GroupTuple =
-        II && getTensixContentsGroupResultCount(II->getIntrinsicID()) > 1;
+        II && (getTensixContentsGroupResultCount(II->getIntrinsicID()) > 1 ||
+               isContentsReplayTuple(*II));
     auto *Extract = dyn_cast<ExtractValueInst>(&I);
     auto *Tuple = Extract
                       ? dyn_cast<IntrinsicInst>(Extract->getAggregateOperand())
                       : nullptr;
     bool GroupExtract =
         Tuple &&
-        getTensixContentsGroupResultCount(Tuple->getIntrinsicID()) > 1 &&
+        (getTensixContentsGroupResultCount(Tuple->getIntrinsicID()) > 1 ||
+         isContentsReplayTuple(*Tuple)) &&
         Extract->getNumIndices() == 1 && isCarrier(I.getType());
     Facts.UsesSFPU |= SFPU;
     bool Carrier = containsCarrier(I.getType());
@@ -1205,7 +1734,8 @@ Error llvm::RISCV::verifyTensixModule(Module &M) {
   for (Function &F : M) {
     if (F.isDeclaration())
       continue;
-    if (Error E = verifyScalarReadResponse(F, M.getTargetTriple().isRISCV32()))
+    if (Error E = verifyScalarTensixSynchronization(
+            F, M.getTargetTriple().isRISCV32()))
       return E;
     bool Uses = llvm::any_of(instructions(F), [](const Instruction &I) {
       const auto *II = dyn_cast<IntrinsicInst>(&I);
@@ -1259,7 +1789,7 @@ public:
   bool runOnFunction(Function &F) override {
     auto &TM = getAnalysis<TargetPassConfig>().getTM<RISCVTargetMachine>();
     const auto &ST = TM.getSubtarget<RISCVSubtarget>(F);
-    if (Error E = verifyScalarReadResponse(F, !ST.is64Bit()))
+    if (Error E = verifyScalarTensixSynchronization(F, !ST.is64Bit()))
       reportFatalUsageError(Twine(toString(std::move(E))));
     bool UsesSFPU = llvm::any_of(instructions(F), [](const Instruction &I) {
       auto *II = dyn_cast<IntrinsicInst>(&I);
@@ -1311,7 +1841,7 @@ PreservedAnalyses RISCVTensixNewPMGate::run(Function &F,
     return II && isTensixSFPUIntrinsic(II->getIntrinsicID());
   });
   const auto &ST = TM->getSubtarget<RISCVSubtarget>(F);
-  if (Error E = verifyScalarReadResponse(F, !ST.is64Bit()))
+  if (Error E = verifyScalarTensixSynchronization(F, !ST.is64Bit()))
     reportFatalUsageError(Twine(toString(std::move(E))));
   bool UsesTensix = llvm::any_of(instructions(F), [](const Instruction &I) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);

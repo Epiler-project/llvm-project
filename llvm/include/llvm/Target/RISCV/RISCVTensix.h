@@ -19,6 +19,12 @@ namespace llvm {
 class Module;
 class TargetMachine;
 class Triple;
+
+// Exact numerical-contents family classifier, including state-only forms and
+// macro/replay. Membership does not prove ABI, fields or local-query support.
+// Safe for unknown IDs; no name-prefix classification is performed.
+bool isTensixContentsIntrinsic(Intrinsic::ID ID);
+
 namespace RISCV {
 
 /// Optional optimizations only. Disabling them never disables mandatory
@@ -34,7 +40,7 @@ struct TensixOptimizationOptions {
 /// Independently configured machines may be used concurrently. Foreign target
 /// machines are rejected, even if their triple names RISC-V.
 Error setTensixOptimizationOptions(TargetMachine &TM,
-                                  TensixOptimizationOptions Options);
+                                   TensixOptimizationOptions Options);
 
 /// Return this machine's effective options: its explicit override, or the
 /// command-line defaults when no override has been supplied.
@@ -146,6 +152,17 @@ struct TensixSFPUArchitecturalEffect {
   TensixSFPUAccess Access;
 };
 
+// Local numerical-contents ABI/field/effect projection. Architectural state
+// remains explicit; ordinary numerical operands/results never acquire a
+// physical register identity through this query.
+enum class TensixSFPUArchitecture : uint8_t { Wormhole, Blackhole };
+enum class TensixContentsValueKind : uint8_t { Contents, Scalar };
+struct TensixContentsValue {
+  TensixContentsValueKind Kind;
+  // Actual i32 bits, absent for scalar SSA. Contents must have no constant.
+  std::optional<uint32_t> Constant;
+};
+
 enum class TensixSFPUTransferKind : uint8_t {
   Unsupported,
   Identity,
@@ -179,15 +196,17 @@ struct TensixSFPUTransferFacts {
   // physical LLVM state register.
   bool RequiresConditionState = true;
   bool RequiresRowMaskState = true;
-  // Each entry retains one actual bound ABI argument. LaneWise results are
+  // Each entry retains one value in the owning query namespace. Bound queries
+  // use actual bound ABI arguments; contents queries use TransferValues.
+  // LaneWise results are
   // known only when every demanded input bit in that active lane is known.
   SmallVector<TensixSFPUTransferInput, 3> Inputs;
   // For LanePermutation only: destination lane -> source lane. This complete
   // permutation is owned by the native instruction semantics. Inactive
   // destinations preserve their own old lane, not the mapped source lane.
   SmallVector<uint32_t, 0> SourceLanes;
-  // Explicit bound ABI identities; consumers never infer these from the
-  // descriptor's register order. SourceArgument applies only to transfers
+  // Explicit owning-query value identities; consumers never infer these from
+  // the descriptor's register order. SourceArgument applies only to transfers
   // with one bit-preserving source; numerical dependencies remain in Inputs.
   unsigned DestinationArgument = 0;
   std::optional<unsigned> SourceArgument;
@@ -250,6 +269,40 @@ struct TensixSFPUConfigurationFacts {
   // Registers. The named field must be disabled in every native lane.
   SmallVector<TensixSFPUConfigurationRequirement, 2> Requirements;
 };
+
+struct TensixContentsResultRef {
+  unsigned Result;
+};
+struct TensixContentsArgumentRef {
+  unsigned Argument;
+};
+using TensixContentsTransferValue =
+    std::variant<TensixContentsResultRef, TensixContentsArgumentRef,
+                 TensixFixedRegisterRef>;
+struct TensixContentsIntrinsicInfo {
+  // Zero means void, one means v32i32, and larger values name the generated
+  // intrinsic's exact flat literal tuple of v32i32 results.
+  unsigned NumResults;
+  SmallVector<TensixSFPUArchitecturalEffect, 16> Effects;
+  // Transfer/configuration indices address this typed value map, never an
+  // inferred physical register or a mixed result/argument integer namespace.
+  SmallVector<TensixContentsTransferValue, 12> TransferValues;
+  SmallVector<TensixSFPUTransferFacts, 4> Transfers;
+  TensixSFPULaneControl LaneControl;
+  std::optional<TensixSFPUConfigurationFacts> Configuration;
+};
+
+// Accepts exact scalar/group contents forms and their actual fields. Dynamic
+// i32 operands are accepted only at Dst-coordinate positions. Macro/replay,
+// bound, ordinary and unknown intrinsic IDs are not local contracts.
+// The generated intrinsic signature owns all operand/result kinds and ImmArg
+// positions. This query constructs no IR or target machine, chooses no SFPRs,
+// and proves neither dynamic-offset definedness/range, lane entry state,
+// initialization, execution ownership, completion nor allocation legality.
+Expected<TensixContentsIntrinsicInfo>
+getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
+                               ArrayRef<TensixContentsValue> Arguments,
+                               TensixSFPUArchitecture Architecture);
 
 class TensixBoundSFPUContract final {
 public:

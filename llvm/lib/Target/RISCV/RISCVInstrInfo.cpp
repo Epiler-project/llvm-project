@@ -19,6 +19,7 @@
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTensixContentsGroup.h"
+#include "RISCVTensixMacro.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -540,12 +541,16 @@ static StringRef getContentsCopyError(const MachineFunction &MF,
        RISCVRegisterInfo::isRVVRegClass(TRI.getMinimalPhysRegClass(SrcReg))))
     return "BOSC register contents cannot synthesize a vector register copy";
   if (RISCV::SFPRReadRegClass.contains(DstReg) ||
-      RISCV::SFPRReadRegClass.contains(SrcReg))
+      RISCV::SFPRReadRegClass.contains(SrcReg) ||
+      RISCV::SFPRIndexPairRegClass.contains(DstReg) ||
+      RISCV::SFPRIndexPairRegClass.contains(SrcReg))
     return "Tensix SFPU cannot synthesize a register copy";
   return {};
 }
 
 bool RISCVInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
+  if (expandTensixMacroPseudo(MI, STI))
+    return true;
   if (expandTensixContentsGroupPseudo(MI, STI))
     return true;
   if (!MI.isCopy() || MI.allDefsAreDead() || MI.getOperand(1).isUndef() ||
@@ -756,7 +761,8 @@ void RISCVInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
         F, "BOSC register contents cannot spill or reload"));
     return;
   }
-  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
+  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC) ||
+      RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC)) {
     auto &MF = *MBB.getParent();
     MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
     MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
@@ -863,7 +869,8 @@ void RISCVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
         F, "BOSC register contents cannot spill or reload"));
     return;
   }
-  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
+  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC) ||
+      RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC)) {
     auto &MF = *MBB.getParent();
     MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
     MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
@@ -3374,9 +3381,12 @@ bool RISCVInstrInfo::verifyInstruction(const MachineInstr &MI,
       return false;
     }
     if (Op.isReg() && Op.getReg().isValid()) {
-      const MachineRegisterInfo &MRI = MI.getParent()->getParent()->getRegInfo();
-      auto *RC = MRI.getRegClass(Op.getReg());
-      if (!RISCV::GPRNoX0RegClass.hasSubClassEq(RC)) {
+      Register Reg = Op.getReg();
+      bool IsGPRNoX0 = Reg.isPhysical()
+                           ? RISCV::GPRNoX0RegClass.contains(Reg)
+                           : RISCV::GPRNoX0RegClass.hasSubClassEq(
+                                 MI.getParent()->getParent()->getRegInfo().getRegClass(Reg));
+      if (!IsGPRNoX0) {
         ErrInfo = "Invalid register class for VL operand";
         return false;
       }

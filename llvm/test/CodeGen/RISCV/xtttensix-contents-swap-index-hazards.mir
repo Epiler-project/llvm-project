@@ -1,0 +1,64 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/swap-cooldown.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=GAP
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/swap-cooldown.mir -o %t/bh-swap-cooldown.mir
+# RUN: FileCheck %s --check-prefix=SWAP_COOLDOWN < %t/bh-swap-cooldown.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/bh-swap-cooldown.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/compare-input.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=GAP
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/compare-input.mir -o %t/bh-compare-input.mir
+# RUN: FileCheck %s --check-prefix=COMPARE_INPUT < %t/bh-compare-input.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/bh-compare-input.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/swap-cooldown.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=GAP
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/swap-cooldown.mir -o %t/wh-swap-cooldown.mir
+# RUN: FileCheck %s --check-prefix=SWAP_COOLDOWN < %t/wh-swap-cooldown.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/wh-swap-cooldown.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/compare-input.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=GAP
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/compare-input.mir -o %t/wh-compare-input.mir
+# RUN: FileCheck %s --check-prefix=COMPARE_INPUT < %t/wh-compare-input.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/wh-compare-input.mir -o /dev/null
+
+# Complete companion def/use does not remove the original SFPSWAP pipeline
+# rules: comparing a pending MAD value needs a gap, and a following SFPU
+# instruction needs the swap cooldown even when it reads a companion.
+# GAP: unresolved Tensix SFPU MAD to IADD destination hazard
+# SWAP_COOLDOWN: TTSFPSWAPIndex
+# SWAP_COOLDOWN-NEXT: TTSFPNOP
+# SWAP_COOLDOWN-NEXT: TTSFPSTORE
+# COMPARE_INPUT: TTSFPMAD
+# COMPARE_INPUT-NEXT: TTSFPNOP
+# COMPARE_INPUT-NEXT: {{.*}}TTSFPSWAPIndex
+# COMPARE_INPUT-NEXT: TTSFPNOP
+# COMPARE_INPUT-NEXT: TTSFPSTORE
+
+#--- swap-cooldown.mir
+--- |
+  define void @swap_cooldown() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: swap_cooldown
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l1, $tt_l4, $tt_l5 = TTSFPSWAPIndex $tt_l0, $tt_l1, $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l4, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- compare-input.mir
+--- |
+  define void @compare_input() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: compare_input
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0, $tt_l1, $tt_l4, $tt_l5 = TTSFPSWAPIndex $tt_l0, $tt_l1, $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l4, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

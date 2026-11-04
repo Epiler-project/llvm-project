@@ -36,7 +36,7 @@ class TensixRegisterGeometry<RegisterClass RC> {
   string ClassID = "RISCV::" # !cast<string>(RC) # "RegClassID";
   string ValueType = "MVT::" # !cast<string>(!head(RC.RegTypes));
 }
-foreach RC = [SFPR, SFPCR, SFPRRead] in
+foreach RC = [SFPR, SFPRLow, SFPCR, SFPRRead] in
   def : TensixRegisterGeometry<RC>;
 def RISCVTensixRegisterGeometryTable : GenericTable {
   let FilterClass = "TensixRegisterGeometry";
@@ -198,6 +198,9 @@ class TensixIAdd<bits<4> Mode, string Suffix>
     : TensixPhysicalInst<0x79, (outs SFPR:$dst),
                     (ins SFPR:$old, SFPRRead:$c),
                     "ttsfpiadd"#Suffix, "$dst, $c"> {
+  // The published WH/BH SFPIADD encoding and lane/CC behavior are identical.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<4> dst;
   bits<4> c;
   let RawWord{11-8} = c;
@@ -214,8 +217,12 @@ def TTSFPIADDCCGE : TensixIAdd<8, ".ge0">;
 def TTSFPISUBCCGE : TensixIAdd<10, ".sub.ge0">;
 
 // Stack actions have distinct descriptors so depth-preserving modes cannot
-// enter the plain push/pop nodes with hidden mode integers.
+// enter the plain push/pop nodes with hidden mode integers. WH shares only
+// plain PUSHC; its nonzero PUSHC modes are NonContractualBehavior. The
+// replacement descriptor deliberately retains the Blackhole-only predicate.
 def TTSFPPUSHC : TensixPhysicalInst<0x87, (outs), (ins), "ttsfppushc", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CCSTACK, TT_ISSUE];
 }
@@ -226,23 +233,31 @@ def TTSFPPUSHCReplaceTop : TensixPhysicalInst<0x87, (outs), (ins),
   let Defs = [TT_CCSTACK, TT_ISSUE];
 }
 def TTSFPPOPC : TensixPhysicalInst<0x88, (outs), (ins), "ttsfppopc", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Uses = [TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_CCSTACK, TT_ISSUE];
 }
 def TTSFPPOPCPeek : TensixPhysicalInst<0x88, (outs), (ins),
     "ttsfppopc.peek", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let RawWord{3-0} = 1;
   let Uses = [TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_ISSUE];
 }
 def TTSFPPOPCAndTop : TensixPhysicalInst<0x88, (outs), (ins),
     "ttsfppopc.and_top", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let RawWord{3-0} = 3;
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_ISSUE];
 }
 def TTSFPPOPCOrTop : TensixPhysicalInst<0x88, (outs), (ins),
     "ttsfppopc.or_top", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let RawWord{3-0} = 4;
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_ISSUE];
@@ -254,6 +269,8 @@ def TTSFPNOP : TensixPhysicalInst<0x8f, (outs), (ins), "ttsfpnop", ""> {
 }
 
 def TTSFPCOMPC : TensixPhysicalInst<0x8b, (outs), (ins), "ttsfpcompc", ""> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   let Uses = [TT_CC, TT_CCSTACK, TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CC, TT_ISSUE];
 }
@@ -265,6 +282,8 @@ class TensixConfigCReg<bits<4> Dest, Register CReg, string Suffix>
     : TensixPhysicalInst<0x91, (outs),
                     (ins uimm16:$mask, uimm4:$mode),
                     "ttsfpconfig."#Suffix, "$mask, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<16> mask;
   bits<4> mode;
   let RawWord{23-8} = mask;
@@ -284,6 +303,8 @@ def TTSFPCONFIGC14 : TensixConfigCReg<14, TT_C14, "c14">;
 // effective CC also predicates each column. No LReg or CReg is written.
 def TTSFPCONFIGLane : TensixPhysicalInst<0x91, (outs),
     (ins uimm16:$mask, uimm4:$mode), "ttsfpconfig.lane", "$mask, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<16> mask;
   bits<4> mode;
   let RawWord{23-8} = mask;
@@ -320,6 +341,8 @@ def TTSFPENCC : TensixPhysicalInst<0x8a, (outs), (ins uimm2:$value, uimm4:$mode)
 class TensixSetCC<bits<4> Mode, string Suffix>
     : TensixPhysicalInst<0x7b, (outs), (ins SFPRRead:$c),
                     "ttsfpsetcc."#Suffix, "$c"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<4> c;
   let RawWord{11-8} = c;
   let RawWord{3-0} = Mode;
@@ -420,6 +443,23 @@ def TTSFPLOAD : TensixDst<0x70, (outs SFPR:$reg),
   // 14/15 move one opaque Dst16 cell to/from the low/high LReg half.
   let AllowedModes = 0xc17f;
 }
+// The exact same word defines every bit when the verified reaching lane and
+// read configuration permits a full write. Allocation receives no invented old
+// use or tie; decoding remains owned by ordinary TTSFPLOAD.
+def TTSFPLOADFullBlackholeEncoding : TensixDstBlackholeEncoding<0x70>;
+def TTSFPLOADFullWormholeEncoding : TensixDstWormholeEncoding<0x70>;
+def TTSFPLOADFull : TensixDst<0x70, (outs SFPR:$reg),
+    (ins tensix_dst_offset:$offset, uimm3:$addrmode, uimm4:$format),
+    "ttsfpload", "$reg, $offset, $addrmode, $format"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, 3];
+  let isCodeGenOnly = 1;
+  let mayLoad = 1;
+  let ModeOperandIndex = 3;
+  // Received whole-word conversions only; LOAD14/15 retain actual old bits.
+  let AllowedModes = 0x017f;
+}
 def TTSFPSTORE : TensixDst<0x72, (outs),
     (ins SFPR:$reg, tensix_dst_offset:$offset, uimm3:$addrmode, uimm4:$format),
     "ttsfpstore", "$reg, $offset, $addrmode, $format"> {
@@ -435,7 +475,7 @@ def TTSFPSTORE : TensixDst<0x72, (outs),
 }
 // Scalar offset issue keeps SFPU SSA and all scalar scratch registers visible
 // until final MC emission. Word/address never overlap any live input.
-let Predicates = [HasVendorXTTTensixBH], hasSideEffects = 1,
+let Predicates = [HasVendorXTTTensix], hasSideEffects = 1,
     isNotDuplicable = 1, hasNoSchedulingInfo = 1,
     Uses = [TT_CC, TT_CONFIG, TT_DST, TT_ISSUE],
     Defs = [TT_DST, TT_ISSUE], Size = 16 in {
@@ -443,6 +483,14 @@ def PseudoTTSFPLOAD : Pseudo<
     (outs SFPR:$reg, GPR:$word, GPR:$address),
     (ins SFPR:$old, GPR:$offset, uimm3:$addrmode, uimm4:$format), []> {
   let Constraints = "$reg = $old,@earlyclobber $word,@earlyclobber $address";
+  let mayLoad = 1;
+  let mayStore = 1;
+}
+def PseudoTTSFPLOADFull : Pseudo<
+    (outs SFPR:$reg, GPR:$word, GPR:$address),
+    (ins GPR:$offset, uimm3:$addrmode, uimm4:$format), []> {
+  let Constraints = "@earlyclobber $word,@earlyclobber $address";
+  let isConvergent = 1;
   let mayLoad = 1;
   let mayStore = 1;
 }
@@ -455,6 +503,7 @@ def PseudoTTSFPSTORE : Pseudo<(outs GPR:$word, GPR:$address),
 }
 
 include "RISCVInstrInfoTensixSFPU.td"
+include "RISCVInstrInfoTensixMacro.td"
 
 include "RISCVInstrInfoTensixBound.td"
 

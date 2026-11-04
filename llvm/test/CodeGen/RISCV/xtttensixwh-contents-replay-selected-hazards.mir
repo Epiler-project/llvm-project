@@ -1,0 +1,67 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/unsafe.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/unsafe.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/safe.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/safe.mir -o /dev/null
+# CHECK: explicit SFPU replay template requires an authored hazard gap
+#
+# Both original record-and-execute bodies are individually legal on WH/BH.
+# The later one-word record replaces only slot1. Executing slots0..1 then
+# composes ADD,ADD in unsafe.mir or ADD,NOP in safe.mir. Only WH needs an
+# internal gap for ADD's ordinary register consumer. No actual recorded body
+# contains adjacent ADDs, so ordinary executing-body checks cannot cover this.
+# This tests final physical receiver legality; current contents source IR
+# does not produce partial-overwrite templates or admit authored ADD bodies.
+# It does not relax any raw/bound/MOP ingress.
+
+#--- unsafe.mir
+# Final physical contents receiver; no raw/bound/MOP control ingress.
+# Each original recording executes legally; the final selected range may differ.
+--- |
+  define void @overlap_unsafe() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: overlap_unsafe
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTContentsSFPUReplay 1, 1, 2, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsSFPUReplay 1, 1, 1, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsSFPUReplay 0, 0, 2, 0, implicit $tt_config, implicit $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_c10, implicit $tt_cc, implicit-def $tt_issue, implicit-def $tt_l0
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- safe.mir
+# Final physical contents receiver; no raw/bound/MOP control ingress.
+# Each original recording executes legally; the final selected range may differ.
+--- |
+  define void @overlap_safe() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: overlap_safe
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTContentsSFPUReplay 1, 1, 2, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsSFPUReplay 1, 1, 1, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsSFPUReplay 0, 0, 2, 0, implicit $tt_config, implicit $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_c10, implicit $tt_cc, implicit-def $tt_issue, implicit-def $tt_l0
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

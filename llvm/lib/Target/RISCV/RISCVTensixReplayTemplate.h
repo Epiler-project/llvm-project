@@ -45,8 +45,9 @@ getTensixReplayTemplateStorage(const MachineFunction &MF, bool RequirePrepared);
 /// normalizing instructions, repairing hazards, or assigning physical slots.
 Error verifyTensixReplayTemplates(MachineFunction &MF);
 
-/// Normalize record-time versus execute-time physical effects immediately
-/// after instruction selection, without assigning a length or physical slots.
+/// Normalize bound record-time versus execute-time effects after selection.
+/// Contents templates instead retain their explicit numerical vreg dependencies;
+/// no native word, length or physical slot is selected before allocation.
 FunctionPass *createRISCVTensixReplayTemplatePreparePass();
 void initializeRISCVTensixReplayTemplatePreparePass(PassRegistry &);
 

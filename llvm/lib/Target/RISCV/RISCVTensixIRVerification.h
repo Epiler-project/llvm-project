@@ -4,9 +4,10 @@
 #ifndef LLVM_LIB_TARGET_RISCV_RISCVTENSIXIRVERIFICATION_H
 #define LLVM_LIB_TARGET_RISCV_RISCVTENSIXIRVERIFICATION_H
 
-#include "llvm/Support/Error.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Target/RISCV/RISCVTensix.h"
 #include <cstdint>
 
 namespace llvm {
@@ -15,7 +16,6 @@ class ScalarEvolution;
 class AssumptionCache;
 class DominatorTree;
 bool isTensixSFPUIntrinsic(Intrinsic::ID ID);
-bool isTensixContentsIntrinsic(Intrinsic::ID ID);
 
 /// Return true for the pre-bound LLVM ABI names retired by the physical
 /// ingress cutover.  This name-based check remains available while old

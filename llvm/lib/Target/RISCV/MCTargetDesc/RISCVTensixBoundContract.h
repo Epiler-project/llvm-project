@@ -41,7 +41,31 @@ struct TensixBoundNativeInstruction {
 Expected<TensixBoundNativeInstruction>
 getTensixBoundNativeInstruction(Intrinsic::ID ID,
                                 ArrayRef<TensixBoundValue> Arguments);
+// Native semantics are evaluated once, after each actual ABI has validated
+// its native fields. Value indices name explicit MC operands or genuine fixed
+// group registers. Each ABI reprojects those identities through its real map.
+struct TensixSFPUInstructionOperandRef {
+  unsigned Operand;
+};
+using TensixSFPUInstructionValue =
+    std::variant<TensixSFPUInstructionOperandRef, TensixFixedRegisterRef>;
+struct TensixSFPUInstructionSemantics {
+  SmallVector<TensixSFPUInstructionValue, 12> Values;
+  SmallVector<TensixSFPUTransferFacts, 4> Transfers;
+  TensixSFPULaneControl LaneControl;
+  std::optional<TensixSFPUConfigurationFacts> Configuration;
+};
+Expected<TensixSFPUInstructionSemantics> getTensixSFPUInstructionSemantics(
+    unsigned Opcode, ArrayRef<std::optional<int64_t>> NativeFields);
+
 MCRegister getTensixSFPURegister(uint32_t Number);
+// Pure architectural descriptor projection shared by bound and contents ABI.
+// Neither helper chooses registers or constructs a bound operand tuple.
+Expected<TensixSFPUResource>
+getTensixSFPUArchitecturalResource(MCRegister Register);
+void appendTensixSFPUArchitecturalEffect(
+    SmallVectorImpl<TensixSFPUArchitecturalEffect> &Effects,
+    TensixSFPUResource Resource, TensixSFPUAccess Access);
 } // namespace RISCV
 } // namespace llvm
 

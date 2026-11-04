@@ -42,6 +42,10 @@ bool isDirectSFPUArithmetic(unsigned Opcode) {
   case RISCV::TTSFPADD:
   case RISCV::TTSFPMUL:
   case RISCV::TTSFPMAD:
+  case RISCV::TTSFPDIVP2:
+  case RISCV::TTSFPADDI:
+  case RISCV::TTSFPMULI:
+  case RISCV::TTSFPMUL24:
   case RISCV::TTSFPIADD:
   case RISCV::TTSFPISUB:
   case RISCV::TTSFPAND:
@@ -65,6 +69,10 @@ bool isDirectSFPURecordedOpcode(unsigned Opcode) {
   // separate; MOP and CC-stack words are not admitted. Dynamic Dst captures
   // use their scalar-aware receiver and project to these same native effects.
   switch (Opcode) {
+  case RISCV::TTSFPIADDCCLT:
+  case RISCV::TTSFPISUBCCLT:
+  case RISCV::TTSFPIADDCCGE:
+  case RISCV::TTSFPISUBCCGE:
   case RISCV::TTSFPSHFT2Copy4:
   case RISCV::TTSFPSHFT2Rotate4:
   case RISCV::TTSFPSHFT2:
@@ -178,10 +186,10 @@ bool llvm::isTensixSFPUReplayCandidate(const MachineInstr &MI) {
 
 namespace {
 void composeSFPUReplayWord(const MachineInstr &MI,
-                           const TargetRegisterInfo &TRI,
+                           const RISCVSubtarget &ST,
                            TensixSFPUReplayEffects &Effects) {
   Effects.PendingSFPU = advanceTensixReplayHazard(
-      MI, TRI, {Effects.PendingSFPU, 0}).SFPU;
+      MI, ST, {Effects.PendingSFPU, 0}).SFPU;
   // Reads precede writes, including destructive old-value ties and implicit
   // native state. Word identity never captures the runtime register value.
   for (const MachineOperand &MO : MI.operands())
@@ -207,7 +215,8 @@ llvm::getTensixSFPUReplayEffects(ArrayRef<const MachineInstr *> Body) {
     if (!isTensixSFPUReplayCandidate(*MI))
       return createStringError(
           "automatic SFPU replay body has unsupported physical effects");
-    composeSFPUReplayWord(*MI, *MI->getMF()->getSubtarget().getRegisterInfo(), Effects);
+    composeSFPUReplayWord(
+        *MI, MI->getMF()->getSubtarget<RISCVSubtarget>(), Effects);
     for (const MachineOperand &MO : MI->operands())
       if (MO.isReg() && MO.isDef())
         HasValue |= RISCV::SFPRRegClass.contains(MO.getReg());
@@ -413,6 +422,13 @@ MachineInstrBuilder llvm::insertTensixRecordedPayload(
 
 Expected<TensixRecordedWord>
 llvm::getTensixRecordedWord(const MachineInstr &MI, const MachineFunction &MF) {
+  if (MI.getOpcode() == RISCV::TTSFPLOADFull ||
+      MI.getOpcode() == RISCV::PseudoTTSFPLOADFull)
+    return createStringError(
+        "contents full LOAD is not supported in replay recording");
+  if (MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex)
+    return createStringError(
+        "contents paired LOAD scalar issue has no replay capture receiver");
   if (MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
       MI.getOpcode() == RISCV::PseudoTTSFPSTORE || isDstPayload(MI.getOpcode()))
     return readDstCapture(MI, MF);
@@ -513,7 +529,7 @@ llvm::getTensixExplicitReplayEffects(ArrayRef<TensixRecordedWord> Words,
     auto MI = createTensixRecordedInstruction(Word, Allocator);
     if (!MI)
       return MI.takeError();
-    composeSFPUReplayWord(**MI, *MF.getSubtarget().getRegisterInfo(), Effects);
+    composeSFPUReplayWord(**MI, MF.getSubtarget<RISCVSubtarget>(), Effects);
     Allocator.deleteMachineInstr(*MI);
   }
   // The control itself reads configuration/issue state, even a one-word NOP
@@ -538,7 +554,8 @@ struct Issue {
 
 std::optional<Issue> getIssue(const MachineInstr &MI) {
   if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
-      MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay)
+      MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+      MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay)
     return Issue{RISCV::TTREPLAY, 0, 0};
   if (MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
       MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord)
@@ -552,6 +569,8 @@ std::optional<Issue> getIssue(const MachineInstr &MI) {
                  PortIndex + 1};
   }
   if (MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+      MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
+      MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex ||
       MI.getOpcode() == RISCV::PseudoTTSFPSTORE)
     return Issue{MI.getOpcode(), 0, 0};
   return std::nullopt;
@@ -671,6 +690,7 @@ Error verifyAutomaticOwner(const MachineFunction &MF) {
                           RISCV::getTensixMachineInfoByMop(MI.getOpcode()) ||
                           MI.getOpcode() == RISCV::TTREPLAY ||
                           MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+                          MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay ||
                           MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
                           MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord ||
                           MI.getOpcode() == RISCV::TTMOP ||
@@ -720,17 +740,29 @@ Expected<Inventory> findRecords(const MachineFunction &MF,
           AutomaticEffects = std::move(*Effects);
         } else if (Active->HasSFPU ||
                    Active->Header->getOpcode() ==
-                       RISCV::PseudoTTExplicitSFPUReplay) {
+                       RISCV::PseudoTTExplicitSFPUReplay ||
+                   Active->Header->getOpcode() ==
+                       RISCV::PseudoTTContentsSFPUReplay) {
+          bool Contents = Active->Header->getOpcode() ==
+                          RISCV::PseudoTTContentsSFPUReplay;
+          if (Contents && !Active->ExecuteWhileLoading &&
+              any_of(Active->Body, [](const MachineInstr *Body) {
+                return Body->getOpcode() != RISCV::PseudoTTSFPURecordWord &&
+                       Body->getOpcode() != RISCV::PseudoTTSFPUDstRecordWord;
+              }))
+            return createStringError(
+                "contents record-only body requires nonexecuting native payload words");
           if (Active->Stream != 0 ||
               (Active->Header->getOpcode() != RISCV::TTREPLAY &&
                Active->Header->getOpcode() !=
-                   RISCV::PseudoTTExplicitSFPUReplay) ||
-              (Active->HasSFPU &&
+                   RISCV::PseudoTTExplicitSFPUReplay && !Contents) ||
+              (Active->HasSFPU && !Contents &&
                !MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU()))
             return createStringError(
                 "SFPU replay recording requires the local bound physical ABI");
           if (RequireNormalized &&
-              Active->Header->getOpcode() != RISCV::PseudoTTExplicitSFPUReplay)
+              Active->Header->getOpcode() != RISCV::PseudoTTExplicitSFPUReplay &&
+              !Contents)
             return createStringError("explicit SFPU replay recording was not "
                                      "normalized before machine optimization");
           if (Active->Header->getOperand(1).getImm() < 0 ||
@@ -754,7 +786,7 @@ Expected<Inventory> findRecords(const MachineFunction &MF,
             Public.Words.push_back(Result.Words[*Word]);
           }
           if (Active->Header->getOpcode() ==
-              RISCV::PseudoTTExplicitSFPUReplay) {
+                  RISCV::PseudoTTExplicitSFPUReplay || Contents) {
             SmallVector<MCRegister, 2> Uses{RISCV::TT_CONFIG, RISCV::TT_ISSUE};
             SmallVector<MCRegister, 1> Defs{RISCV::TT_ISSUE};
             llvm::sort(Uses);
@@ -865,21 +897,25 @@ Expected<Inventory> findRecords(const MachineFunction &MF,
       }
       if (Issued->Opcode == RISCV::TTMOP)
         return createStringError("Tensix replay recording cannot contain MOP");
-      bool IsSFPU =
-                    (RISCV::getTensixEncoding(Issued->Opcode) &&
+      bool IsSFPU = (RISCV::getTensixEncoding(Issued->Opcode) &&
                      !RISCV::getTensixMachineInfo(Issued->Opcode)) ||
                     MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+                    MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
+                    MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex ||
                     MI.getOpcode() == RISCV::PseudoTTSFPSTORE;
       Active->Body.push_back(&MI);
       bool Received = IsPayload || IsSFPU || isOrdinaryRecordedCandidate(MI) ||
                       Active->Header->getOpcode() ==
-                          RISCV::PseudoTTExplicitSFPUReplay;
+                          RISCV::PseudoTTExplicitSFPUReplay ||
+                      Active->Header->getOpcode() ==
+                          RISCV::PseudoTTContentsSFPUReplay;
       if (Received) {
         auto Word = getTensixRecordedWord(MI, MF);
         if (!Word)
           return Word.takeError();
         IsSFPU = !isOrdinaryRecordedOpcode(Word->Opcode);
-        if (IsSFPU &&
+        if (IsSFPU && Active->Header->getOpcode() !=
+                          RISCV::PseudoTTContentsSFPUReplay &&
             !MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU())
           return createStringError(
               "SFPU replay recording requires a typed SSA preservation ABI");
@@ -1240,12 +1276,12 @@ Expected<MOPSummary> summarizeMOPWord(const TensixRecordedWord &Word,
         Set.push_back(Reg);
     }
   Result.MustDef = Result.MayDef;
-  const auto &TRI = *MF.getSubtarget<RISCVSubtarget>().getRegisterInfo();
+  const auto &ST = MF.getSubtarget<RISCVSubtarget>();
   for (unsigned I = 0; I != Result.Hazards.Inputs.size(); ++I) {
     TensixReplayHazardState Input = hazardBasis(I);
     Result.Hazards.Inputs[I] = {
-        advanceTensixReplayHazard(**Native, TRI, Input),
-        needsTensixReplayHazardGap(**Native, TRI, Input)};
+        advanceTensixReplayHazard(**Native, ST, Input),
+        needsTensixReplayHazardGap(**Native, ST, Input)};
   }
   MF.deleteMachineInstr(*Native);
   return Result;
@@ -1390,9 +1426,10 @@ Expected<TensixMOPExecutionEffects>
 summarizeMOPExecution(const MachineInstr &MI, const State &S,
                        Inventory &Records) {
   if (MI.getOpcode() != RISCV::TTMOP ||
-      !MI.getMF()->getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU())
-    return createStringError("SFPU MOP execution requires the local bound ABI "
-                             "and known native MOP control fields");
+      !MI.getMF()->getInfo<RISCVMachineFunctionInfo>()->usesTensixSFPU())
+    return createStringError(
+        "SFPU MOP execution requires the local contents/bound ABI "
+        "and known native MOP control fields");
   for (unsigned I = 0; I != 3; ++I)
     if (!MI.getOperand(I).isImm())
       return createStringError("SFPU MOP execution requires native control fields");
@@ -1577,14 +1614,16 @@ Error transfer(const MachineBasicBlock &BB, State &S, Inventory &Records,
                                  "recorded on every incoming path");
       if (!Check || MI.getOpcode() == RISCV::PseudoTTSFPUReplay)
         continue;
-      bool IsExplicit = MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay;
+      bool Contents = MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay;
+      bool IsExplicit =
+          MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay || Contents;
       bool HasSFPU = mayContainSFPU(S, Issued->Stream, *Mask);
       if (!HasSFPU && !IsExplicit) {
         continue;
       }
       if (Issued->Stream != 0 ||
           (MI.getOpcode() != RISCV::TTREPLAY && !IsExplicit) ||
-          (HasSFPU && !MI.getMF()
+          (HasSFPU && !Contents && !MI.getMF()
                ->getInfo<RISCVMachineFunctionInfo>()
                ->usesBoundTensixSFPU()))
         return createStringError(

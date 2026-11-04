@@ -13941,6 +13941,18 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
   switch (IntNo) {
   default:
     break;
+  case Intrinsic::riscv_tt_coprocessor_wait: {
+    if (Subtarget.is64Bit() || (!Subtarget.hasVendorXTTTensixBH() &&
+                                !Subtarget.hasVendorXTTTensixWH()))
+      reportFatalUsageError(
+          "coprocessor wait requires RV32 +xtttensixbh or +xtttensixwh");
+    // The two scalar results are scratch defs, not source values. Keep the
+    // unknown memory chain and the TT_ISSUE dependence intact until emission.
+    SDVTList Results = DAG.getVTList(MVT::i32, MVT::i32, MVT::Other);
+    return SDValue(DAG.getMachineNode(RISCV::PseudoTTCoprocessorWait, SDLoc(Op),
+                                      Results, Op.getOperand(0)),
+                   2);
+  }
   case Intrinsic::riscv_tt_read_response:
     return SDValue(DAG.getMachineNode(RISCV::PseudoTTReadResponse, SDLoc(Op),
                                      MVT::Other, Op.getOperand(2),

@@ -86,6 +86,24 @@ class TensixFieldPort<dag Inputs>
   let Defs = [TT_CONFIG, TT_DST, TT_ISSUE];
 }
 
+// One indivisible synchronization owner until AsmPrinter. The ordinary GPR
+// allocator owns both scratch registers; no fixed register is reserved. Unknown
+// memory effects retain the full barrier, rather than a disjoint MMIO-only MMO.
+def PseudoTTCoprocessorWait
+    : Pseudo<(outs GPR:$address, GPR:$response), (ins), []> {
+  let Constraints = "@earlyclobber $address,@earlyclobber $response";
+  let Size = 16;
+  let Predicates = [HasVendorXTTTensix];
+  let isConvergent = 1;
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
+
 // MOP slots hold unrotated instruction words. The two GPRs belong to the
 // scalar allocator and survive until MC is the sole encoding authority.
 class TensixOrdinaryMop<dag Inputs>
@@ -101,9 +119,13 @@ class TensixOrdinaryMop<dag Inputs>
   let Uses = [TT_CONFIG, TT_ISSUE];
   let Defs = [TT_CONFIG, TT_ISSUE];
 }
-def PseudoTTMOPClear : TensixOrdinaryMop<(ins uimm8:$slot)>;
+def PseudoTTMOPClear : TensixOrdinaryMop<(ins uimm8:$slot)> {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTMOPControlWriteImm
-    : TensixOrdinaryMop<(ins uimm8:$cell, uimm32:$value)>;
+    : TensixOrdinaryMop<(ins uimm8:$cell, uimm32:$value)> {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTMOPControlWrite
     : Pseudo<(outs GPR:$address), (ins uimm8:$cell, GPR:$value), []> {
   let Constraints = "@earlyclobber $address";
@@ -124,7 +146,7 @@ def PseudoTTSFPUReplay : Pseudo<(outs),
     (ins uimm32:$load_mode, uimm32:$execute_while_loading,
          uimm32:$len, uimm32:$start_idx), []> {
   let Size = 4;
-  let Predicates = [HasVendorXTTTensixBH];
+  let Predicates = [HasVendorXTTTensix];
   let hasSideEffects = 1;
   let isNotDuplicable = 1;
   let mayLoad = 0;
@@ -149,12 +171,27 @@ def PseudoTTExplicitSFPUReplay : Pseudo<(outs),
   let Uses = [TT_CONFIG, TT_ISSUE];
   let Defs = [TT_ISSUE];
 }
+// Only the contents template finalizer produces this allocated receiver.
+// Keep it distinct from raw/bound recordings, whose ingress remains unchanged.
+def PseudoTTContentsSFPUReplay : Pseudo<(outs),
+    (ins uimm32:$load_mode, uimm32:$execute_while_loading,
+         uimm32:$len, uimm32:$start_idx), []> {
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensix];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
 // Record-only words carry native opcode/operand fields as immediates. Recording
 // these fields does not execute their numerical register reads or writes.
 def PseudoTTSFPURecordWord : Pseudo<(outs),
     (ins uimm32:$opcode, variable_ops), []> {
   let Size = 4;
-  let Predicates = [HasVendorXTTTensixBH];
+  let Predicates = [HasVendorXTTTensix];
   let hasSideEffects = 1;
   let isNotDuplicable = 1;
   let mayLoad = 0;
@@ -165,7 +202,7 @@ def PseudoTTSFPURecordWord : Pseudo<(outs),
 }
 def PseudoTTReplayRecordEnd : Pseudo<(outs), (ins), []> {
   let Size = 0;
-  let Predicates = [HasVendorXTTTensixBH];
+  let Predicates = [HasVendorXTTTensix];
   let hasSideEffects = 1;
   let isNotDuplicable = 1;
   let mayLoad = 0;
@@ -200,8 +237,123 @@ def PseudoTTReplayTemplateEnd : TensixReplayTemplateControl<
 }
 def PseudoTTReplayTemplateExecute : TensixReplayTemplateControl<
     (ins uimm32:$identity), 4>;
+def PseudoTTContentsReplayTemplateBegin : TensixReplayTemplateControl<
+    (ins variable_ops), 4> {
+  let Predicates = [HasVendorXTTTensix];
+}
+def PseudoTTContentsReplayTemplateEnd : TensixReplayTemplateControl<
+    (ins variable_ops), 0> {
+  let Predicates = [HasVendorXTTTensix];
+  let mayLoad = 0;
+  let mayStore = 0;
+  let Uses = [TT_ISSUE];
+}
+// The result arity is bounded by the eight allocatable SFPR roles. Use normal
+// static defs: variadicOpsAreDefs is not an instruction-emitter contract for
+// targets that allocate physical registers. Captures alone remain variadic.
+class TensixContentsReplayExecute<int Count> : Pseudo<
+    !dag(outs, !listsplat(SFPR, Count),
+         !foreach(I, !range(Count), "dst" # I)),
+    !con((ins uimm32:$identity, uimm32:$mutable_count),
+         !dag(ins, !listsplat(SFPR, Count),
+              !foreach(I, !range(Count), "old" # I)),
+         (ins variable_ops)), []> {
+  Instruction Opcode = !cast<Instruction>(NAME);
+  bits<8> MutableCount = Count;
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensix];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CC, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_ISSUE];
+  // A body can write one role before consuming another. Every independent
+  // input must survive all early definitions, while each old value is tied.
+  let Constraints = !interleave(!foreach(I, !range(Count),
+      "$dst" # I # " = $old" # I # ",@earlyclobber $dst" # I), ",");
+}
+foreach Count = 1-8 in
+  def PseudoTTContentsReplayTemplateExecute # Count
+      : TensixContentsReplayExecute<Count>;
+
+def RISCVTensixContentsReplayExecuteTable : GenericTable {
+  let FilterClass = "TensixContentsReplayExecute";
+  let CppTypeName = "TensixContentsReplayExecuteInfo";
+  let Fields = ["Opcode", "MutableCount"];
+  let PrimaryKey = ["Opcode"];
+  let PrimaryKeyName = "getTensixContentsReplayExecuteInfo";
+}
+def getTensixContentsReplayExecuteInfoByCount : SearchIndex {
+  let Table = RISCVTensixContentsReplayExecuteTable;
+  let Key = ["MutableCount"];
+}
+// These instructions record an operation over begin's allocation roles.
+// Role indices survive to final physical encoding; they are not register IDs.
+// They do not execute that operation and carry no SFPR/CC/Dst effects.
+class TensixContentsReplayRecipe<bit Binary> : Pseudo<(outs),
+    !if(Binary, (ins uimm32:$identity, uimm32:$mutable_role,
+                    uimm32:$source_role),
+                (ins uimm32:$identity, uimm32:$mutable_role)), []> {
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensix];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_ISSUE];
+  let Defs = [TT_ISSUE];
+}
+def PseudoTTContentsReplayTemplateRecordIAdd : TensixContentsReplayRecipe<1>;
+def PseudoTTContentsReplayTemplateRecordAnd : TensixContentsReplayRecipe<1>;
+def PseudoTTContentsReplayTemplateRecordOr : TensixContentsReplayRecipe<1>;
+def PseudoTTContentsReplayTemplateRecordXor : TensixContentsReplayRecipe<1>;
+def PseudoTTContentsReplayTemplateRecordNot : TensixContentsReplayRecipe<0>;
+// MOP executes the same flat mutable/capture roles as ordinary replay. Its
+// additional native configuration and Dst effects remain explicit until the
+// final MOP receiver replaces this symbolic execution with actual effects.
+class TensixContentsMOPExecute<int Count> : Pseudo<
+    !dag(outs, !listsplat(SFPR, Count),
+         !foreach(I, !range(Count), "dst" # I)),
+    !con((ins uimm32:$identity, uimm32:$mutable_count),
+         !dag(ins, !listsplat(SFPR, Count),
+              !foreach(I, !range(Count), "old" # I)),
+         (ins variable_ops)), []> {
+  Instruction Opcode = !cast<Instruction>(NAME);
+  bits<8> MutableCount = Count;
+  let Size = 4;
+  let Predicates = [HasVendorXTTTensix];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasNoSchedulingInfo = 1;
+  let Uses = [TT_CC, TT_CONFIG, TT_DST, TT_ISSUE];
+  let Defs = [TT_CONFIG, TT_DST, TT_ISSUE];
+  let Constraints = !interleave(!foreach(I, !range(Count),
+      "$dst" # I # " = $old" # I # ",@earlyclobber $dst" # I), ",");
+}
+foreach Count = 1-8 in
+  def PseudoTTContentsReplayTemplateMopExecute # Count
+      : TensixContentsMOPExecute<Count>;
+
+def RISCVTensixContentsMOPExecuteTable : GenericTable {
+  let FilterClass = "TensixContentsMOPExecute";
+  let CppTypeName = "TensixContentsMOPExecuteInfo";
+  let Fields = ["Opcode", "MutableCount"];
+  let PrimaryKey = ["Opcode"];
+  let PrimaryKeyName = "getTensixContentsMOPExecuteInfo";
+}
+def getTensixContentsMOPExecuteInfoByCount : SearchIndex {
+  let Table = RISCVTensixContentsMOPExecuteTable;
+  let Key = ["MutableCount"];
+}
 def PseudoTTReplayTemplateMop : TensixOrdinaryMop<
-    (ins uimm32:$identity, uimm8:$slot)>;
+    (ins uimm32:$identity, uimm8:$slot)> {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTReplayTemplateWord : Pseudo<(outs),
     (ins uimm32:$identity, uimm32:$opcode, variable_ops), []> {
   let Size = 4;
@@ -847,6 +999,11 @@ def TTMOP : TensixOrdinaryInst<"MOP", 0x01,
     "$zmask_lo16_or_loop_count, $loop_count, $mop_type",
     ["zmask_lo16_or_loop_count", "loop_count", "mop_type"],
     [65535, 127, 1]> {
+  // WH's native encoding is shared for this received MOP1 form. Keep
+  // legacy raw LLVM ingress separate from finalized contents execution.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeLogicalForms = [[0, 0, 1]];
   bits<16> zmask_lo16_or_loop_count;
   bits<7> loop_count;
   bits<1> mop_type;
@@ -1060,14 +1217,20 @@ def TTMULDMAREG : TensixOrdinaryInst<"MULDMAREG", 0x5a,
   let RawWord{23} = opbisconst;
 }
 
-def PseudoTTMVMULPort : TensixOrdinaryPort;
-def PseudoTTMVMULMop : TensixOrdinaryMop<
-    (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid)>;
-def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
-    (ins uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid),
-    "$dst, $addr_mode, $instr_mod19, $clear_dvalid",
-    ["dst", "addr_mode", "instr_mod19", "clear_dvalid"],
-    [16383, 31, 7, 3]> {
+// Keep the formal logical ABI shared. WH MVMUL.md places its two-bit AddrMod
+// at raw bits 16:15, whereas the existing BH encoding starts at bit14. Narrow
+// WH fields leave its reserved bits fixed to zero, including during decoding.
+class TensixMvmulEncoding : InstructionEncoding {
+  let Size = 4;
+  let DecoderNamespace = "Tensix";
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0;
+  let RawWord{31-24} = 0x26;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+def TTMVMULBlackholeEncoding : TensixMvmulEncoding {
   bits<14> dst;
   bits<5> addr_mode;
   bits<3> instr_mod19;
@@ -1076,6 +1239,32 @@ def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
   let RawWord{18-14} = addr_mode;
   let RawWord{21-19} = instr_mod19;
   let RawWord{23-22} = clear_dvalid;
+}
+def TTMVMULWormholeEncoding : TensixMvmulEncoding {
+  bits<10> dst;
+  bits<2> addr_mode;
+  bits<1> instr_mod19;
+  bits<2> clear_dvalid;
+  let RawWord{9-0} = dst;
+  let RawWord{16-15} = addr_mode;
+  let RawWord{19} = instr_mod19;
+  let RawWord{23-22} = clear_dvalid;
+}
+
+def PseudoTTMVMULPort : TensixOrdinaryPort;
+def PseudoTTMVMULMop : TensixOrdinaryMop<
+    (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid)>;
+def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
+    (ins uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid),
+    "$dst, $addr_mode, $instr_mod19, $clear_dvalid",
+    ["dst", "addr_mode", "instr_mod19", "clear_dvalid"],
+    [16383, 31, 7, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 3, 1, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [TTMVMULBlackholeEncoding, TTMVMULWormholeEncoding]>;
 }
 
 def PseudoTTNOPPort : TensixOrdinaryPort;
@@ -1215,12 +1404,23 @@ def TTREG2FLOP : TensixOrdinaryInst<"REG2FLOP", 0x48,
 def PseudoTTREPLAYPort : TensixFieldPort<
     (ins uimm8:$port, uimm32:$load_mode, uimm32:$execute_while_loading, uimm32:$len, uimm32:$start_idx)>;
 def PseudoTTREPLAYMop : TensixOrdinaryMop<
-    (ins uimm8:$slot, uimm32:$load_mode, uimm32:$execute_while_loading, uimm32:$len, uimm32:$start_idx)>;
+    (ins uimm8:$slot, uimm32:$load_mode, uimm32:$execute_while_loading, uimm32:$len, uimm32:$start_idx)> {
+  let Predicates = [HasVendorXTTTensix];
+}
 def TTREPLAY : TensixOrdinaryInst<"REPLAY", 0x04,
     (ins uimm32:$load_mode, uimm32:$execute_while_loading, uimm32:$len, uimm32:$start_idx),
     "$load_mode, $execute_while_loading, $len, $start_idx",
     ["load_mode", "execute_while_loading", "len", "start_idx"],
     [1, 7, 1023, 1023]> {
+  // WH REPLAY.md admits a nonwrapping 32-word bank and no reserved bits.
+  // This native instruction also serializes finalized contents receivers;
+  // the legacy raw LLVM intrinsic retains its separate WH ingress guard.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [0, 0, 1, 0];
+  let WormholeFieldMaxima = [1, 1, 32, 31];
+  let WormholeLogicalForms = [[0, 0, -1, -1], [1, 0, -1, -1],
+                              [1, 1, -1, -1]];
   bits<1> load_mode;
   bits<3> execute_while_loading;
   bits<10> len;
@@ -1255,6 +1455,12 @@ def TTRMWCIB0 : TensixOrdinaryInst<"RMWCIB0", 0xb3,
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
     [223, 255, 255]> {
+  // WH RMWCIB.md and cfg_defines.h: first profile only clears the
+  // documented DEST_REGW_BASE bytes through actual in-band config issue.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [187, 255, 255];
+  let WormholeLogicalForms = [[6, 0, 255]];
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1271,6 +1477,12 @@ def TTRMWCIB1 : TensixOrdinaryInst<"RMWCIB1", 0xb4,
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
     [223, 255, 255]> {
+  // WH RMWCIB.md and cfg_defines.h: first profile only clears the
+  // documented DEST_REGW_BASE bytes through actual in-band config issue.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [187, 255, 255];
+  let WormholeLogicalForms = [[6, 0, 255]];
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1838,6 +2050,14 @@ def TTUNPACR : TensixOrdinaryInst<"UNPACR", 0x42,
     "$last, $searchcacheflush, $rowsearch, $autoinccontextid, $zerowrite2, $srcb_bcast, $setdatvalid, $ovrdthreadid, $addrcntcontextid, $cfgcontextid, $cfgcontextcntinc, $addrmode, $unpack_block_selection",
     ["last", "searchcacheflush", "rowsearch", "autoinccontextid", "zerowrite2", "srcb_bcast", "setdatvalid", "ovrdthreadid", "addrcntcontextid", "cfgcontextid", "cfgcontextcntinc", "addrmode", "unpack_block_selection"],
     [1, 1, 1, 1, 1, 1, 1, 1, 3, 7, 3, 255, 1]> {
+  // WH UNPACR_Regular.md and LLK llk_unpack_AB_matmul.h agree on this
+  // regular multi-context subset. Receive its actual zero context selectors,
+  // not the poorly characterized legacy/row-search/cache/counter modes.
+  // LLK uses Last=1; the ISA's regular syntax also specifies Last=0.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+  let WormholeFieldMaxima = [1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 255, 1];
   bits<1> last;
   bits<1> searchcacheflush;
   bits<1> rowsearch;
@@ -2034,6 +2254,11 @@ def TTZEROSRC : TensixOrdinaryInst<"ZEROSRC", 0x11,
     "$src_mask, $bank_mask, $write_mode, $zero_val",
     ["src_mask", "bank_mask", "write_mode", "zero_val"],
     [3, 1, 1, 1048575]> {
+  // WH ZEROSRC.md: zero_val is NegativeInfSrcA at raw bit4; raw bits23:5
+  // are reserved. BH retains its independently declared 20-bit value field.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [3, 1, 1, 1];
   bits<2> src_mask;
   bits<1> bank_mask;
   bits<1> write_mode;

@@ -1,0 +1,347 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/mutable-phi.mir -o - | FileCheck %s --check-prefix=ACCEPT
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/capture-phi.mir -o - | FileCheck %s --check-prefix=ACCEPT
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/capture-copy.mir -o - | FileCheck %s --check-prefix=ACCEPT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/foreign-seed.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PROVENANCE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/pre-record-old.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PROVENANCE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/unseeded-phi-cycle.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PROVENANCE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/changed-capture.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PROVENANCE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/physical-capture-mismatch.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PHYSICAL
+#
+# Pass-local MIR ingress independently verifies semantic contents ancestry.
+# COPY/PHI acceptance before allocation never permits a physical repair move.
+# Exact physical record-role identity remains required after allocation.
+# ACCEPT: :sfpr = PHI
+# ACCEPT: PseudoTTContentsReplayTemplateExecute1 41,
+# PROVENANCE: contents replay execution lost its recorded SSA contents
+# PHYSICAL: contents replay allocation differs from its recorded register roles
+
+#--- mutable-phi.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1
+
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %3, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- capture-phi.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1
+    %8:sfpr = PHI %1, %bb.0, %8, %bb.1
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %3, %8, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- capture-copy.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %8:sfpr = COPY %1
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1
+
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %3, %8, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- foreign-seed.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_c14, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %8:sfpr = TTSFPMOVAll $tt_c14, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1
+
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %8, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- pre-record-old.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1
+
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- unseeded-phi-cycle.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1, %10, %bb.3
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1, %11, %bb.3
+
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %3, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.3:
+    successors: %bb.3, %bb.1
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %10:sfpr = PHI %10, %bb.3
+    %11:gpr = ADDI $x0, 0
+    BLT $x0, $x0, %bb.3
+    PseudoBR %bb.1
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- changed-capture.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_replay_loop(i32 %limit) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_replay_loop
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE %2, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    %8:sfpr = TTSFPIADD %1, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %5:gpr = ADDI $x0, 0
+    %9:gpr = COPY $x10
+    PseudoBR %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    %3:sfpr = PHI %2, %bb.0, %4, %bb.1
+    %6:gpr = PHI %5, %bb.0, %7, %bb.1
+
+    early-clobber %4:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %3, %8, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %7:gpr = ADDI %6, 1
+    BLT %7, %9, %bb.1
+    PseudoBR %bb.2
+
+  bb.2:
+    liveins: $tt_config, $tt_issue, $tt_cc, $tt_dst
+    TTSFPSTORE %4, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- physical-capture-mismatch.mir
+--- |
+  target triple = "riscv32"
+  define void @physical_roles() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: physical_roles
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l0, 8, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

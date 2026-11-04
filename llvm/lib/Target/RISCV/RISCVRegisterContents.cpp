@@ -21,6 +21,7 @@ bool llvm::isRISCVRegisterContentsClass(const MachineFunction &MF,
                                         const TargetRegisterClass &RC) {
   const Function &F = MF.getFunction();
   return RISCV::SFPRReadRegClass.hasSubClassEq(&RC) ||
+         RISCV::SFPRIndexPairRegClass.hasSubClassEq(&RC) ||
          (isBOSCContentsRVVFunction(F) &&
           RISCVRegisterInfo::isRVVRegClass(&RC)) ||
          (isBOSCContentsAMEFunction(F) &&

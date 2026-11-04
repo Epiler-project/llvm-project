@@ -9,13 +9,18 @@
 #include "RISCVSubtarget.h"
 #include "RISCVTensixContentsGroup.h"
 #include "RISCVTensixIRVerification.h"
+#include "RISCVTensixMacro.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 using namespace llvm;
 
 namespace {
@@ -61,8 +66,23 @@ contentsInstruction(Intrinsic::ID ID,
                                                    : RISCV::TTSFPSTORE,
            {0, 1, 2, 3});
     break;
+  case Intrinsic::riscv_tt_contents_load_full:
+    Select(RISCV::TTSFPLOADFull, {0, 1, 2});
+    break;
   case Intrinsic::riscv_tt_contents_load_immediate:
     Select(RISCV::TTSFPLOADI, {0, 1, 2});
+    break;
+  case Intrinsic::riscv_tt_contents_divp2:
+    Select(RISCV::TTSFPDIVP2, {0, 1, 2, 3});
+    break;
+  case Intrinsic::riscv_tt_contents_add_immediate:
+  case Intrinsic::riscv_tt_contents_mul_immediate:
+    Select(ID == Intrinsic::riscv_tt_contents_add_immediate ? RISCV::TTSFPADDI
+                                                            : RISCV::TTSFPMULI,
+           {0, 1, 2});
+    break;
+  case Intrinsic::riscv_tt_contents_mul23:
+    Select(RISCV::TTSFPMUL24, {0, 1, 2, 3});
     break;
   case Intrinsic::riscv_tt_contents_mad:
     Select(RISCV::TTSFPMAD, {0, 1, 2, 3, 4});
@@ -236,6 +256,82 @@ contentsInstruction(Intrinsic::ID ID,
   return Result;
 }
 
+Expected<MCRegister> contentsSnapshotRegister(Intrinsic::ID ID,
+                                              uint32_t Selector) {
+  if (ID == Intrinsic::riscv_tt_contents_read_creg) {
+    if (Selector < 11 || Selector > 14)
+      return createStringError("contents CReg read requires mutable C11-C14");
+  } else if (ID == Intrinsic::riscv_tt_contents_read_constant) {
+    if (Selector != 8 && Selector != 9 && Selector != 10 && Selector != 15)
+      return createStringError(
+          "contents constant read requires immutable C8/C9/C10/C15");
+  } else {
+    return createStringError("unknown contents snapshot intrinsic");
+  }
+  return RISCV::getTensixSFPURegister(Selector);
+}
+
+Error verifyContentsInstructionFields(
+    Intrinsic::ID ID, ArrayRef<std::optional<int64_t>> Arguments,
+    bool Wormhole) {
+  if (ID == Intrinsic::riscv_tt_contents_load_full && Arguments[2] &&
+      (*Arguments[2] == 14 || *Arguments[2] == 15))
+    return createStringError(
+        "contents full LOAD requires a complete-word format");
+  static const auto Instructions = RISCV::createTensixBoundMCInstrInfo();
+  auto Verify = [&](const MCInst &Native) {
+    return Wormhole
+               ? RISCV::verifyTensixWormholeInstruction(Native, *Instructions)
+               : RISCV::verifyTensixMCInstructionFields(Native, *Instructions);
+  };
+  if (ID == Intrinsic::riscv_tt_contents_read_constant ||
+      ID == Intrinsic::riscv_tt_contents_read_creg) {
+    if (!Arguments[0])
+      return createStringError("contents snapshot selector must be immediate");
+    auto Register =
+        contentsSnapshotRegister(ID, static_cast<uint32_t>(*Arguments[0]));
+    if (!Register)
+      return Register.takeError();
+    MCInst Native;
+    Native.setOpcode(RISCV::TTSFPMOVAll);
+    Native.addOperand(MCOperand());
+    Native.addOperand(MCOperand());
+    return Verify(Native);
+  }
+  SmallVector<std::optional<int64_t>, 6> Fields(Arguments);
+  // This checks only the static native tuple. A dynamic coordinate remains
+  // actual scalar SSA and still needs the independent IR definedness/range
+  // receiver at its eventual use.
+  std::optional<unsigned> DstOffset;
+  if (ID == Intrinsic::riscv_tt_contents_load_full)
+    DstOffset = 0;
+  else if (ID == Intrinsic::riscv_tt_contents_load ||
+           ID == Intrinsic::riscv_tt_contents_store)
+    DstOffset = 1;
+  if (DstOffset && !Fields[*DstOffset])
+    Fields[*DstOffset] = 0;
+  auto Projection = contentsInstruction(ID, Fields);
+  if (!Projection)
+    return Projection.takeError();
+  const MCInstrDesc &Desc = Instructions->get(Projection->Opcode);
+  MCInst Native;
+  Native.setOpcode(Projection->Opcode);
+  for (unsigned I = 0; I != Desc.getNumDefs(); ++I)
+    Native.addOperand(MCOperand());
+  for (const ContentsOperand &Operand : Projection->Operands) {
+    if (Desc.operands()[Native.getNumOperands()].RegClass >= 0) {
+      Native.addOperand(MCOperand());
+    } else if (!Operand.Argument) {
+      Native.addOperand(MCOperand::createImm(Operand.Immediate));
+    } else if (auto Immediate = Fields[*Operand.Argument]) {
+      Native.addOperand(MCOperand::createImm(*Immediate));
+    } else {
+      return createStringError("contents native field must be immediate");
+    }
+  }
+  return Verify(Native);
+}
+
 void attachIssueMemory(MachineSDNode *Node, SelectionDAG &DAG,
                        MachineMemOperand::Flags Access) {
   MachineMemOperand *MMO = DAG.getMachineFunction().getMachineMemOperand(
@@ -245,63 +341,259 @@ void attachIssueMemory(MachineSDNode *Node, SelectionDAG &DAG,
 }
 } // namespace
 
+Expected<RISCV::TensixContentsIntrinsicInfo>
+RISCV::getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
+                                      ArrayRef<TensixContentsValue> Arguments,
+                                      TensixSFPUArchitecture Architecture) {
+  if (Architecture != TensixSFPUArchitecture::Wormhole &&
+      Architecture != TensixSFPUArchitecture::Blackhole)
+    return createStringError("unknown contents SFPU architecture");
+  // Classification is exact and safe even for an arbitrary numeric ID.
+  // Membership alone grants no local ABI/field/effect admission.
+  if (!isTensixContentsIntrinsic(ID) || isTensixMacroIntrinsic(ID))
+    return createStringError("intrinsic has no local contents contract");
+  if (Intrinsic::isOverloaded(ID))
+    return createStringError(
+        "contents contract requires a fixed intrinsic ABI");
+
+  // Read the generated ABI and ImmArg positions directly. No LLVM Module or
+  // temporary intrinsic call is constructed, and no caller context is mutated.
+  LLVMContext Context;
+  FunctionType *Signature = Intrinsic::getType(Context, ID);
+  AttributeList Attributes = Intrinsic::getAttributes(Context, ID, Signature);
+  if (Signature->isVarArg() || Arguments.size() != Signature->getNumParams())
+    return createStringError("incorrect number of contents intrinsic operands");
+  auto IsContents = [](Type *Ty) {
+    const auto *Vector = dyn_cast<FixedVectorType>(Ty);
+    return Vector && Vector->getNumElements() == 32 &&
+           Vector->getElementType()->isIntegerTy(32);
+  };
+  SmallVector<std::optional<int64_t>, 10> NativeArguments;
+  for (unsigned I = 0; I != Arguments.size(); ++I) {
+    Type *Ty = Signature->getParamType(I);
+    const TensixContentsValue &Argument = Arguments[I];
+    if (IsContents(Ty)) {
+      if (Argument.Kind != TensixContentsValueKind::Contents ||
+          Argument.Constant)
+        return createStringError(
+            "contents operand requires numerical v32i32 SSA");
+    } else if (Ty->isIntegerTy(32)) {
+      if (Argument.Kind != TensixContentsValueKind::Scalar)
+        return createStringError("contents scalar operand requires actual i32");
+      if (Attributes.hasParamAttr(I, Attribute::ImmArg) && !Argument.Constant)
+        return createStringError("contents immediate operand must be constant");
+    } else {
+      return createStringError("intrinsic has no local contents operand ABI");
+    }
+    NativeArguments.push_back(
+        Argument.Constant ? std::optional<int64_t>(SignExtend64<32>(
+                                static_cast<uint64_t>(*Argument.Constant)))
+                          : std::nullopt);
+  }
+  TensixContentsIntrinsicInfo Info;
+  Type *Return = Signature->getReturnType();
+  if (Return->isVoidTy()) {
+    Info.NumResults = 0;
+  } else if (IsContents(Return)) {
+    Info.NumResults = 1;
+  } else if (const auto *Tuple = dyn_cast<StructType>(Return)) {
+    if (!Tuple->isLiteral() || Tuple->isPacked() ||
+        Tuple->getNumElements() < 2 || !all_of(Tuple->elements(), IsContents))
+      return createStringError(
+          "contents result requires its exact literal tuple");
+    Info.NumResults = Tuple->getNumElements();
+  } else {
+    return createStringError("intrinsic has no local contents result ABI");
+  }
+
+  const bool Wormhole = Architecture == TensixSFPUArchitecture::Wormhole;
+  unsigned Opcode;
+  std::optional<ContentsInstruction> Projection;
+  const bool Snapshot = ID == Intrinsic::riscv_tt_contents_read_constant ||
+                        ID == Intrinsic::riscv_tt_contents_read_creg;
+  if (isTensixContentsGroupIntrinsic(ID)) {
+    if (Error E =
+            verifyTensixContentsGroupFields(ID, NativeArguments, Wormhole))
+      return std::move(E);
+    auto Selected = getTensixContentsGroupOpcode(ID, NativeArguments);
+    if (!Selected)
+      return Selected.takeError();
+    Opcode = *Selected;
+  } else {
+    if (Error E =
+            verifyContentsInstructionFields(ID, NativeArguments, Wormhole))
+      return std::move(E);
+    if (ID == Intrinsic::riscv_tt_contents_read_constant ||
+        ID == Intrinsic::riscv_tt_contents_read_creg) {
+      Opcode = RISCV::TTSFPMOVAll;
+      auto Resource = getTensixSFPUArchitecturalResource(
+          getTensixSFPURegister(*Arguments[0].Constant));
+      if (!Resource)
+        return Resource.takeError();
+      appendTensixSFPUArchitecturalEffect(Info.Effects, *Resource,
+                                          TensixSFPUAccess::Read);
+    } else {
+      auto Selected = contentsInstruction(ID, NativeArguments);
+      if (!Selected)
+        return Selected.takeError();
+      Opcode = Selected->Opcode;
+      Projection = std::move(*Selected);
+    }
+  }
+  static const auto Instructions = createTensixBoundMCInstrInfo();
+  const MCInstrDesc &Descriptor = Instructions->get(Opcode);
+  for (MCPhysReg Register : Descriptor.implicit_uses()) {
+    auto Resource = getTensixSFPUArchitecturalResource(Register);
+    if (!Resource)
+      return Resource.takeError();
+    appendTensixSFPUArchitecturalEffect(Info.Effects, *Resource,
+                                        TensixSFPUAccess::Read);
+  }
+  for (MCPhysReg Register : Descriptor.implicit_defs()) {
+    auto Resource = getTensixSFPUArchitecturalResource(Register);
+    if (!Resource)
+      return Resource.takeError();
+    // Numerical results are explicit descriptor operands. An implicit SFPR
+    // definition is real scratch clobber; mutable CRegs/state remain writes.
+    const auto *Fixed = std::get_if<TensixFixedRegisterRef>(&*Resource);
+    TensixSFPUAccess Access = Fixed && Fixed->Number < 8
+                                  ? TensixSFPUAccess::Clobber
+                                  : TensixSFPUAccess::Write;
+    appendTensixSFPUArchitecturalEffect(Info.Effects, *Resource, Access);
+  }
+  // The selected native evaluator is the same owner used by bound forms.
+  // Actual ABI mappings only translate its value indices; they own no second
+  // opcode transfer, predication, lane or configuration table.
+  SmallVector<std::optional<int64_t>, 12> NativeFields(
+      Descriptor.getNumOperands(), std::nullopt);
+  if (Projection) {
+    if (Projection->Operands.size() + Descriptor.getNumDefs() !=
+        Descriptor.getNumOperands())
+      return createStringError(
+          "contents native mapping differs from descriptor");
+    for (auto [Index, Operand] : enumerate(Projection->Operands))
+      NativeFields[Descriptor.getNumDefs() + Index] =
+          Operand.Argument ? NativeArguments[*Operand.Argument]
+                           : std::optional<int64_t>(Operand.Immediate);
+  }
+  auto Semantics = getTensixSFPUInstructionSemantics(Opcode, NativeFields);
+  if (!Semantics)
+    return Semantics.takeError();
+  auto Publish = [&](unsigned Index) -> Expected<unsigned> {
+    if (Index >= Semantics->Values.size())
+      return createStringError("contents semantic value is out of range");
+    TensixContentsTransferValue Value;
+    if (const auto *Fixed =
+            std::get_if<TensixFixedRegisterRef>(&Semantics->Values[Index])) {
+      Value = *Fixed;
+    } else {
+      unsigned Operand =
+          std::get<TensixSFPUInstructionOperandRef>(Semantics->Values[Index])
+              .Operand;
+      if (Operand < Descriptor.getNumDefs()) {
+        if (Operand >= Info.NumResults)
+          return createStringError("native definition has no contents result");
+        Value = TensixContentsResultRef{Operand};
+      } else if (Snapshot && Operand == Descriptor.getNumDefs()) {
+        Value = TensixFixedRegisterRef{*Arguments[0].Constant};
+      } else {
+        unsigned Use = Operand - Descriptor.getNumDefs();
+        if (!Projection || Use >= Projection->Operands.size() ||
+            !Projection->Operands[Use].Argument)
+          return createStringError(
+              "native transfer has no actual contents SSA");
+        unsigned Argument = *Projection->Operands[Use].Argument;
+        if (Argument >= Arguments.size() ||
+            Arguments[Argument].Kind != TensixContentsValueKind::Contents)
+          return createStringError("native transfer input is not contents SSA");
+        Value = TensixContentsArgumentRef{Argument};
+      }
+    }
+    unsigned Published = Info.TransferValues.size();
+    Info.TransferValues.push_back(std::move(Value));
+    return Published;
+  };
+  for (auto Transfer : Semantics->Transfers) {
+    auto Destination = Publish(Transfer.DestinationArgument);
+    if (!Destination)
+      return Destination.takeError();
+    Transfer.DestinationArgument = *Destination;
+    auto Read = [&](std::optional<unsigned> &Index) -> Error {
+      if (!Index)
+        return Error::success();
+      auto Published = Publish(*Index);
+      if (!Published)
+        return Published.takeError();
+      Index = *Published;
+      return Error::success();
+    };
+    if (Error E = Read(Transfer.SourceArgument))
+      return std::move(E);
+    if (Error E = Read(Transfer.OldArgument))
+      return std::move(E);
+    for (auto &Input : Transfer.Inputs) {
+      auto Published = Publish(Input.Argument);
+      if (!Published)
+        return Published.takeError();
+      Input.Argument = *Published;
+    }
+    for (auto &Source : Transfer.LaneSources) {
+      auto Published = Publish(Source.Argument);
+      if (!Published)
+        return Published.takeError();
+      Source.Argument = *Published;
+    }
+    Info.Transfers.push_back(std::move(Transfer));
+  }
+  Info.LaneControl = Semantics->LaneControl;
+  if (Semantics->Configuration) {
+    Info.Configuration = *Semantics->Configuration;
+    for (auto &Requirement : Info.Configuration->Requirements) {
+      auto Published = Publish(Requirement.Argument);
+      if (!Published)
+        return Published.takeError();
+      Requirement.Argument = *Published;
+    }
+  }
+  return Info;
+}
+
 Error llvm::verifyTensixContentsIntrinsicFields(const IntrinsicInst &II,
                                                 bool Wormhole) {
+  switch (II.getIntrinsicID()) {
+  case Intrinsic::riscv_tt_contents_replay_template_begin:
+  case Intrinsic::riscv_tt_contents_replay_template_end:
+  case Intrinsic::riscv_tt_contents_replay_template_mop:
+  case Intrinsic::riscv_tt_contents_replay_template_mop_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+  case Intrinsic::riscv_tt_contents_replay_template_record_and:
+  case Intrinsic::riscv_tt_contents_replay_template_record_or:
+  case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+  case Intrinsic::riscv_tt_contents_replay_template_record_not:
+    return Error::success();
+  default:
+    break;
+  }
+  if (isTensixMacroIntrinsic(II.getIntrinsicID()))
+    return verifyTensixMacroIntrinsicFields(II);
   if (isTensixContentsGroupIntrinsic(II.getIntrinsicID())) {
-    if (Wormhole)
-      return createStringError(
-          "contents SFPU group is not supported on Wormhole");
-    return verifyTensixContentsGroupIntrinsicFields(II);
+    return verifyTensixContentsGroupIntrinsicFields(II, Wormhole);
   }
-  static const auto Instructions = RISCV::createTensixBoundMCInstrInfo();
-  auto Verify = [&](const MCInst &Native) {
-    return Wormhole
-               ? RISCV::verifyTensixWormholeInstruction(Native, *Instructions)
-               : RISCV::verifyTensixMCInstructionFields(Native, *Instructions);
-  };
-  if (II.getIntrinsicID() == Intrinsic::riscv_tt_contents_read_constant) {
-    MCInst Native;
-    Native.setOpcode(RISCV::TTSFPMOVAll);
-    Native.addOperand(MCOperand::createReg(RISCV::TT_L0));
-    Native.addOperand(MCOperand::createReg(RISCV::TT_C9));
-    return Verify(Native);
-  }
-  if (Wormhole &&
-      (II.getIntrinsicID() == Intrinsic::riscv_tt_contents_load ||
-       II.getIntrinsicID() == Intrinsic::riscv_tt_contents_store) &&
-      !isa<ConstantInt>(II.getArgOperand(1)))
-    return createStringError(
-        "Wormhole contents Dst offset currently requires a static immediate");
   SmallVector<std::optional<int64_t>, 6> Arguments;
   for (const Value *Argument : II.args()) {
     const auto *CI = dyn_cast<ConstantInt>(Argument);
     Arguments.push_back(CI ? std::optional<int64_t>(CI->getSExtValue())
                            : std::nullopt);
   }
-  auto Projection = contentsInstruction(II.getIntrinsicID(), Arguments);
-  if (!Projection)
-    return Projection.takeError();
-  const MCInstrDesc &Desc = Instructions->get(Projection->Opcode);
-  MCInst Native;
-  Native.setOpcode(Projection->Opcode);
-  // Placeholders are only for the field verifier: it deliberately skips all
-  // register operands. No selector, allocation or register binding is inferred.
-  for (unsigned I = 0; I != Desc.getNumDefs(); ++I)
-    Native.addOperand(MCOperand::createReg(RISCV::TT_L0));
-  for (const ContentsOperand &Operand : Projection->Operands) {
-    if (!Operand.Argument) {
-      Native.addOperand(MCOperand::createImm(Operand.Immediate));
-    } else if (auto Immediate = Arguments[*Operand.Argument]) {
-      Native.addOperand(MCOperand::createImm(*Immediate));
-    } else {
-      Native.addOperand(MCOperand::createReg(RISCV::TT_L0));
-    }
-  }
-  return Verify(Native);
+  return verifyContentsInstructionFields(II.getIntrinsicID(), Arguments,
+                                         Wormhole);
 }
 
 SDValue llvm::lowerTensixContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
                                            const RISCVSubtarget &ST) {
+  if (SDValue Macro = lowerTensixMacroIntrinsic(Op, DAG, ST))
+    return Macro;
   if (SDValue Group = lowerTensixContentsGroupIntrinsic(Op, DAG, ST))
     return Group;
   auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
@@ -322,11 +614,96 @@ SDValue llvm::lowerTensixContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
   };
   SmallVector<SDValue, 6> Operands;
   unsigned Opcode = 0;
-  bool Load = ID == Intrinsic::riscv_tt_contents_load;
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_replay_template_mop: {
+    // The ordinary slot emitter owns both GPR scratch definitions and MMIO.
+    auto *Node =
+        DAG.getMachineNode(RISCV::PseudoTTReplayTemplateMop, DL,
+                           DAG.getVTList(MVT::i32, MVT::i32, MVT::Other),
+                           {Immediate(2), Immediate(3), Op.getOperand(0)});
+    attachIssueMemory(Node, DAG, MachineMemOperand::MOStore);
+    return SDValue(Node, 2);
+  }
+  case Intrinsic::riscv_tt_contents_replay_template_mop_execute:
+    if (const auto *Info = RISCV::getTensixContentsMOPExecuteInfoByCount(
+            Op.getConstantOperandVal(3)))
+      Opcode = Info->Opcode;
+    else
+      reportFatalUsageError("contents MOP execute requires 1..8 mutable roles");
+    Operands.append({Immediate(2), Immediate(3)});
+    for (unsigned I = 4, E = Op.getNumOperands(); I != E; ++I)
+      Operands.push_back(Op.getOperand(I));
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_begin:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateBegin;
+    Operands.append(
+        {Immediate(2), Immediate(3), Immediate(4), Immediate(5), Immediate(6)});
+    for (unsigned I = 7, E = Op.getNumOperands(); I != E; ++I)
+      Operands.push_back(Op.getOperand(I));
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_end:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateEnd;
+    Operands.push_back(Immediate(2));
+    for (unsigned I = 3, E = Op.getNumOperands(); I != E; ++I)
+      Operands.push_back(Op.getOperand(I));
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_execute:
+    if (const auto *Info = RISCV::getTensixContentsReplayExecuteInfoByCount(
+            Op.getConstantOperandVal(3)))
+      Opcode = Info->Opcode;
+    else
+      reportFatalUsageError(
+          "contents replay execute requires 1..8 mutable roles");
+    Operands.append({Immediate(2), Immediate(3)});
+    for (unsigned I = 4, E = Op.getNumOperands(); I != E; ++I)
+      Operands.push_back(Op.getOperand(I));
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateRecordIAdd;
+    Operands.append({Immediate(2), Immediate(3), Immediate(4)});
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_record_and:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateRecordAnd;
+    Operands.append({Immediate(2), Immediate(3), Immediate(4)});
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_record_or:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateRecordOr;
+    Operands.append({Immediate(2), Immediate(3), Immediate(4)});
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateRecordXor;
+    Operands.append({Immediate(2), Immediate(3), Immediate(4)});
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_record_not:
+    Opcode = RISCV::PseudoTTContentsReplayTemplateRecordNot;
+    Operands.append({Immediate(2), Immediate(3)});
+    break;
+  default:
+    break;
+  }
+  if (Opcode) {
+    bool Execute =
+        ID == Intrinsic::riscv_tt_contents_replay_template_execute ||
+        ID == Intrinsic::riscv_tt_contents_replay_template_mop_execute;
+    Operands.push_back(Op.getOperand(0));
+    MachineSDNode *Node = DAG.getMachineNode(
+        Opcode, DL,
+        Execute ? Op.getNode()->getVTList() : DAG.getVTList(MVT::Other),
+        Operands);
+    if (ID == Intrinsic::riscv_tt_contents_replay_template_begin || Execute)
+      attachIssueMemory(Node, DAG,
+                        MachineMemOperand::MOLoad | MachineMemOperand::MOStore);
+    return SDValue(Node, 0);
+  }
+  bool FullLoad = ID == Intrinsic::riscv_tt_contents_load_full;
+  bool Load = FullLoad || ID == Intrinsic::riscv_tt_contents_load;
   bool Store = ID == Intrinsic::riscv_tt_contents_store;
-  bool Dynamic = (Load || Store) && !isa<ConstantSDNode>(Op.getOperand(3));
+  unsigned DstOffset = FullLoad ? 2 : 3;
+  bool Dynamic =
+      (Load || Store) && !isa<ConstantSDNode>(Op.getOperand(DstOffset));
   switch (ID) {
   case Intrinsic::riscv_tt_contents_read_constant:
+  case Intrinsic::riscv_tt_contents_read_creg:
     Opcode = RISCV::TTSFPMOVAll;
     Operands.push_back(DAG.getRegister(
         RISCV::getTensixSFPURegister(Op.getConstantOperandVal(2)),
@@ -346,6 +723,11 @@ SDValue llvm::lowerTensixContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
     Operands.append({Op.getOperand(2),
                      Dynamic ? Op.getOperand(3) : Immediate(3), Immediate(4),
                      Immediate(5)});
+    break;
+  case Intrinsic::riscv_tt_contents_load_full:
+    Opcode = Dynamic ? RISCV::PseudoTTSFPLOADFull : RISCV::TTSFPLOADFull;
+    Operands.append({Dynamic ? Op.getOperand(2) : Immediate(2), Immediate(3),
+                     Immediate(4)});
     break;
   default:
     SmallVector<std::optional<int64_t>, 6> Arguments;
@@ -420,7 +802,13 @@ SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
     return SDValue();
   if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH())
     reportFatalUsageError("Tensix intrinsic requires +xtttensixbh");
-  if (ST.hasVendorXTTTensixWH() && !RISCV::isTensixWormholeIntrinsic(ID))
+  // Native REPLAY supports allocated contents receivers on WH. This does not
+  // admit the legacy raw intrinsic or its bound/template/MOP ingress.
+  if (ST.hasVendorXTTTensixWH() &&
+      (ID == Intrinsic::riscv_tt_replay || ID == Intrinsic::riscv_tt_mop ||
+       (ID != Intrinsic::riscv_tt_mop_control_write &&
+        ID != Intrinsic::riscv_tt_mop_clear &&
+        !RISCV::isTensixWormholeIntrinsic(ID))))
     reportFatalUsageError("Tensix intrinsic is not supported on Wormhole");
   SDLoc DL(Op);
   if (Word) {

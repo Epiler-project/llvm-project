@@ -1622,6 +1622,8 @@ std::string RISCVAsmParser::getCustomOperandDiag(unsigned MatchError) {
     return Range(0, (1 << 10) - 1);
   case Match_InvalidUImm11:
     return Range(0, (1 << 11) - 1);
+  case Match_InvalidUImm12:
+    return Range(0, (1 << 12) - 1);
   case Match_InvalidUImm14Lsb00:
     return Range(0, (1 << 14) - 4,
                  "immediate must be a multiple of 4 bytes in the range");

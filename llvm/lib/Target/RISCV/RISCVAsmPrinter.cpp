@@ -22,6 +22,8 @@
 #include "RISCVConstantPoolValue.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVRegisterInfo.h"
+#include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixContentsGroup.h"
 #include "RISCVTensixReplay.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/ADT/APInt.h"
@@ -498,7 +500,8 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
   }
 
   if (MI->getOpcode() == RISCV::PseudoTTSFPUReplay ||
-      MI->getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) {
+      MI->getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+      MI->getOpcode() == RISCV::PseudoTTContentsSFPUReplay) {
     MCInst Replay;
     Replay.setOpcode(RISCV::TTREPLAY);
     for (unsigned I = 0; I != 4; ++I)
@@ -730,8 +733,28 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
 
   switch (MI->getOpcode()) {
   case RISCV::PseudoTTSFPLOAD:
+  case RISCV::PseudoTTSFPLOADFull:
+  case RISCV::PseudoTTSFPLOADIndex:
   case RISCV::PseudoTTSFPSTORE:
   case RISCV::PseudoTTSFPUDstRecordWord: {
+    bool Paired = MI->getOpcode() == RISCV::PseudoTTSFPLOADIndex;
+    bool Full = MI->getOpcode() == RISCV::PseudoTTSFPLOADFull;
+    if (Full) {
+      if (Error E = verifyTensixMachineEffects(*MI)) {
+        OutContext.reportError(SMLoc(), toString(std::move(E)));
+        return;
+      }
+      if (Error E = verifyTensixMachineOperands(*MI, MI->getMF()->getRegInfo(),
+                                                *STI->getRegisterInfo())) {
+        OutContext.reportError(SMLoc(), toString(std::move(E)));
+        return;
+      }
+    }
+    if (Paired)
+      if (Error E = verifyTensixContentsIndexNative(*MI, *STI)) {
+        OutContext.reportError(SMLoc(), toString(std::move(E)));
+        return;
+      }
     bool Payload = MI->getOpcode() == RISCV::PseudoTTSFPUDstRecordWord;
     if (Payload) {
       auto Recorded = getTensixRecordedWord(*MI, *MI->getMF());
@@ -740,13 +763,15 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
         return;
       }
     }
-    bool IsLoad = Payload ? MI->getOperand(2).getImm() == RISCV::TTSFPLOAD
-                          : MI->getOpcode() == RISCV::PseudoTTSFPLOAD;
+    bool IsLoad =
+        Payload ? MI->getOperand(2).getImm() == RISCV::TTSFPLOAD
+                : Full || Paired || MI->getOpcode() == RISCV::PseudoTTSFPLOAD;
     MCRegister Reg = Payload ? MCRegister(unsigned(MI->getOperand(3).getImm()))
                             : MCRegister(MI->getOperand(IsLoad ? 0 : 2).getReg());
-    MCRegister Word = MI->getOperand(!Payload && IsLoad ? 1 : 0).getReg();
-    MCRegister Address = MI->getOperand(!Payload && IsLoad ? 2 : 1).getReg();
-    unsigned OffsetIndex = Payload ? 5 : IsLoad ? 4 : 3;
+    unsigned WordIndex = Paired ? 2 : !Payload && IsLoad ? 1 : 0;
+    MCRegister Word = MI->getOperand(WordIndex).getReg();
+    MCRegister Address = MI->getOperand(WordIndex + 1).getReg();
+    unsigned OffsetIndex = Paired ? 6 : Payload ? 5 : Full ? 3 : IsLoad ? 4 : 3;
     MCRegister Offset = MI->getOperand(OffsetIndex).getReg();
     if (Word == Address || Word == Offset || Address == Offset ||
         Word == RISCV::X0 || Address == RISCV::X0) {
@@ -756,14 +781,33 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
       return;
     }
 
-    MCInstBuilder Static(IsLoad ? RISCV::TTSFPLOAD : RISCV::TTSFPSTORE);
+    MCInstBuilder Static(Full     ? RISCV::TTSFPLOADFull
+                         : Paired ? RISCV::TTSFPLOADIndex
+                         : IsLoad ? RISCV::TTSFPLOAD
+                                  : RISCV::TTSFPSTORE);
     Static.addReg(Reg);
-    if (IsLoad)
+    if (Paired) {
+      Static.addReg(MI->getOperand(1).getReg())
+          .addReg(MI->getOperand(4).getReg())
+          .addReg(MI->getOperand(5).getReg());
+    } else if (IsLoad && !Full) {
       Static.addReg(Payload ? MCRegister(unsigned(MI->getOperand(4).getImm()))
                             : MCRegister(MI->getOperand(3).getReg()));
+    }
     Static.addImm(0)
         .addImm(MI->getOperand(OffsetIndex + 1).getImm())
         .addImm(MI->getOperand(OffsetIndex + 2).getImm());
+    if (Full) {
+      Error Fields = STI->hasVendorXTTTensixWH()
+                         ? RISCV::verifyTensixWormholeInstruction(
+                               Static, *TM.getMCInstrInfo())
+                         : RISCV::verifyTensixMCInstructionFields(
+                               Static, *TM.getMCInstrInfo());
+      if (Fields) {
+        OutContext.reportError(SMLoc(), toString(std::move(Fields)));
+        return;
+      }
+    }
     std::unique_ptr<MCCodeEmitter> Encoder(
         createRISCVMCCodeEmitter(*TM.getMCInstrInfo(), OutContext));
     SmallVector<char, 4> Bytes;
@@ -798,6 +842,35 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(
         *OutStreamer,
         MCInstBuilder(RISCV::SW).addReg(Word).addReg(Address).addImm(0));
+    return;
+  }
+  case RISCV::PseudoTTCoprocessorWait: {
+    if (Error E = verifyTensixCoprocessorWait(*MI, *STI)) {
+      OutContext.reportError(SMLoc(), toString(std::move(E)));
+      return;
+    }
+    Register Address = MI->getOperand(0).getReg();
+    Register Response = MI->getOperand(1).getReg();
+    if (!Address.isPhysical() || !Response.isPhysical()) {
+      OutContext.reportError(SMLoc(),
+                             "coprocessor wait requires allocated GPR scratch");
+      return;
+    }
+    // DoneCheck discards the store's data. The store orders prior issue,
+    // the load waits for execution, and its immediate ALU consumer blocks
+    // subsequent independent memory actions and avoids the PCBuf load bug.
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::LUI).addReg(Address).addImm(0xffe80));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::SW).addReg(RISCV::X0).addReg(Address).addImm(4));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::LW).addReg(Response).addReg(Address).addImm(4));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
+                                     .addReg(RISCV::X0)
+                                     .addReg(Response)
+                                     .addImm(0));
     return;
   }
   case RISCV::PseudoTTReadResponse:

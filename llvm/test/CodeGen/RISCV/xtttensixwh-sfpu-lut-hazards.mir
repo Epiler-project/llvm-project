@@ -1,0 +1,106 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ERROR
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.mir
+# RUN: FileCheck %s --check-prefix=REPAIRED < %t.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t.mir -o /dev/null
+# The WH one-cycle RAW restriction includes fixed table inputs and every
+# possible lane-selected output. Scalar instructions do not provide SFPU cycles.
+# ERROR: unresolved Tensix SFPU MAD to IADD destination hazard
+# REPAIRED-LABEL: name: lut_store
+# REPAIRED: $tt_l4 = TTSFPLUT $tt_l4, 4
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSTORE $tt_l4, 0, 0, 4
+# REPAIRED-LABEL: name: six_store
+# REPAIRED: $tt_l7 = TTSFPLUTFP32Six $tt_l7, 6
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSTORE $tt_l7, 0, 0, 4
+# REPAIRED-LABEL: name: three_store
+# REPAIRED: TTSFPLUTFP32Three 1
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSTORE $tt_l7, 0, 0, 4
+# REPAIRED-LABEL: name: mad_lut_fixed_input
+# REPAIRED: $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l4 = TTSFPLUT $tt_l4, 4
+# REPAIRED-LABEL: name: mad_six_fixed_input
+# REPAIRED: $tt_l6 = TTSFPMAD $tt_l6, $tt_c10, $tt_c9, $tt_c9, 0
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l7 = TTSFPLUTFP32Six $tt_l7, 6
+# REPAIRED-LABEL: name: mad_three_old_group
+# REPAIRED: $tt_l7 = TTSFPMAD $tt_l7, $tt_c10, $tt_c9, $tt_c9, 0
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPLUTFP32Three 1
+
+--- |
+  define void @lut_store() "tensix-executor"="trisc1" { ret void }
+  define void @six_store() "tensix-executor"="trisc1" { ret void }
+  define void @three_store() "tensix-executor"="trisc1" { ret void }
+  define void @mad_lut_fixed_input() "tensix-executor"="trisc1" { ret void }
+  define void @mad_six_fixed_input() "tensix-executor"="trisc1" { ret void }
+  define void @mad_three_old_group() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: lut_store
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l4 = TTSFPLUT $tt_l4, 4, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l4, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: six_store
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l7 = TTSFPLUTFP32Six $tt_l7, 6, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_l4, implicit $tt_l5, implicit $tt_l6, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l7, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: three_store
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPLUTFP32Three 1, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_l4, implicit $tt_l5, implicit $tt_l6, implicit $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l7, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mad_lut_fixed_input
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l4 = TTSFPLUT $tt_l4, 4, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mad_six_fixed_input
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l6 = TTSFPMAD $tt_l6, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l7 = TTSFPLUTFP32Six $tt_l7, 6, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_l4, implicit $tt_l5, implicit $tt_l6, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mad_three_old_group
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l7 = TTSFPMAD $tt_l7, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPLUTFP32Three 1, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_l4, implicit $tt_l5, implicit $tt_l6, implicit $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

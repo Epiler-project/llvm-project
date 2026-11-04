@@ -27,6 +27,11 @@ bool hasExternalIssueOwner(const MachineFunction &MF) {
           MI.getOpcode() == RISCV::TTREPLAY ||
           MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
           MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTContentsReplayTemplateBegin ||
+          MI.getOpcode() == RISCV::PseudoTTContentsReplayTemplateEnd ||
+          RISCV::getTensixContentsReplayExecuteInfo(MI.getOpcode()) ||
+          RISCV::getTensixContentsMOPExecuteInfo(MI.getOpcode()) ||
           MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
           MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord ||
           MI.getOpcode() == RISCV::PseudoTTReplayTemplateBegin ||

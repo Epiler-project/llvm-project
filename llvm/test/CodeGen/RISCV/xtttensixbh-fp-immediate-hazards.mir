@@ -1,0 +1,60 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t
+# RUN: FileCheck %s < %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -x mir -run-pass=riscv-tensix-hazards %t -o /dev/null
+--- |
+  define void @ttsfpaddi_iadd() "tensix-executor"="trisc1" { ret void }
+  define void @ttsfpmuli_iadd() "tensix-executor"="trisc1" { ret void }
+  define void @ttsfpmul24_iadd() "tensix-executor"="trisc1" { ret void }
+  define void @divp2_simple() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: ttsfpaddi_iadd
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPADDI $tt_l0, 16256, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: ttsfpaddi_iadd
+# CHECK: $tt_l0 = TTSFPADDI
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPIADD
+---
+name: ttsfpmuli_iadd
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMULI $tt_l0, 16256, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: ttsfpmuli_iadd
+# CHECK: $tt_l0 = TTSFPMULI
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPIADD
+---
+name: ttsfpmul24_iadd
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMUL24 $tt_l0, $tt_l0, $tt_c10, 0, implicit $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: ttsfpmul24_iadd
+# CHECK: $tt_l0 = TTSFPMUL24
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPIADD
+---
+name: divp2_simple
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPDIVP2 $tt_l0, $tt_l0, 1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: divp2_simple
+# CHECK: $tt_l0 = TTSFPDIVP2
+# CHECK-NEXT: $tt_l0 = TTSFPIADD

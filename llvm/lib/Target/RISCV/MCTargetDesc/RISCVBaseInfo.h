@@ -1022,6 +1022,19 @@ Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
 #define GET_RISCVVLXTable_DECL
 #define GET_RISCVVSXTable_DECL
 #define GET_RISCVNDSVLNTable_DECL
+// Static result arity and opcode selection share one TableGen owner.
+struct TensixContentsReplayExecuteInfo {
+  unsigned Opcode;
+  uint8_t MutableCount;
+};
+
+#define GET_RISCVTensixContentsReplayExecuteTable_DECL
+struct TensixContentsMOPExecuteInfo {
+  unsigned Opcode;
+  uint8_t MutableCount;
+};
+
+#define GET_RISCVTensixContentsMOPExecuteTable_DECL
 #define GET_RISCVTensixEncodingTable_DECL
 #define GET_RISCVTensixInstructionTable_DECL
 #define GET_RISCVTensixMachineTable_DECL

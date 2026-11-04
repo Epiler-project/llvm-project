@@ -1,0 +1,467 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/safe.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/short.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DRAIN
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/wait.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DRAIN
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/math.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/base.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/sequence.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CONFIG
+# RUN: not --crash llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/high.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=REGISTER
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/spoof.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/fixed-stack.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/unknown-store.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ACTIVE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/bad-wait.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WAIT_FIELD
+
+# A normal SFPU wait cannot drain instruction-driven delayed macro queues.
+# Final reception independently checks real setup, template words, low-half
+# allocation, declared effects and the actual emitted finite drain.
+# ADDRESS: actual zero Dst address setup on every incoming path
+# CONFIG: actual ADDI template, sequence and FP32 misc configuration
+# DRAIN: four actual consecutive SFPNOP load-unit drain issues
+# Missing native implicit state is rejected by the MIR parser itself.
+# EFFECT: missing implicit register operand 'implicit $tt_dst'
+# The native descriptor rejects the high-half register at MIR ingress.
+# REGISTER: $tt_l5 is not a SFPRLow register.
+# ACTIVE: all-active zero LaneConfig
+# WAIT_FIELD: Wormhole STALLWAIT field wait_res must be in [0, 32767]
+
+#--- safe.mir
+--- |
+  define void @safe() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: safe
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 511, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- short.mir
+--- |
+  define void @short() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: short
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- wait.mir
+--- |
+  define void @wait() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: wait
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 256, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- math.mir
+--- |
+  define void @math() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: math
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSETC16 1, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- base.mir
+--- |
+  define void @base() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: base
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- sequence.mir
+--- |
+  define void @sequence() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: sequence
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1280, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- high.mir
+--- |
+  define void @high() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: high
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l5 = TTSFPLOADMACROFP32Even $tt_l5, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- effects.mir
+--- |
+  define void @effects() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: effects
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- spoof.mir
+--- |
+  define void @spoof() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: spoof
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- fixed-stack.mir
+--- |
+  define void @fixed_stack() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: fixed_stack
+tracksRegLiveness: false
+fixedStack:
+  - { id: 0, type: default, offset: 0, size: 4, alignment: 4,
+      isImmutable: false, isAliased: false }
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    SW $x10, $x2, 0 :: (store (s32) into %fixed-stack.0)
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+
+#--- unknown-store.mir
+--- |
+  define void @unknown_store() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: unknown_store
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    SW $x10, $x2, 0
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- bad-wait.mir
+--- |
+  define void @bad_wait() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" "tensix-macro-address-ready"="true" { ret void }
+...
+---
+name: bad_wait
+tracksRegLiveness: false
+body: |
+  bb.0:
+    TTSETC16 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 1, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 27, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 30015, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 32768, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroTemplate 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI undef $tt_l0, 4864, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPLOADI $tt_l0, 1024, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroSequence 0, implicit $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGMacroMisc 3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 32768, 511, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l1 = TTSFPLOADMACROFP32Even $tt_l1, 8, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

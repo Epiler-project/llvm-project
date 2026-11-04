@@ -1,0 +1,265 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/none.mir -o - | FileCheck %s --check-prefix=NONE
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/canonical.mir -o - | FileCheck %s --check-prefix=CANONICAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/begin-size.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/begin-pointer.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/execute-flags.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/execute-load.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/execute-duplicate.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/execute-atomic.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/execute-align.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/none.mir -o - | FileCheck %s --check-prefix=NONE
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/canonical.mir -o - | FileCheck %s --check-prefix=CANONICAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/begin-size.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/begin-pointer.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/execute-flags.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/execute-load.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/execute-duplicate.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/execute-atomic.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/execute-align.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-replay-template-finalize %t/mop-execute-flags.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-replay-template-finalize %t/mop-execute-flags.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ISSUE
+#
+# An absent MMO remains legal for direct MIR ingress: descriptor side effects
+# and exact implicit issue/config/CC dependencies still apply. If present, only
+# the one exact MMO emitted by formal contents lowering is admitted. No MMO is
+# synthesized, dropped or weakened by reception or final control replacement.
+# NONE: PseudoTTContentsSFPUReplay 1, 1,
+# NONE-NOT: ::
+# NONE: PseudoTTContentsSFPUReplay 0, 0,
+# NONE-NOT: ::
+# CANONICAL: PseudoTTContentsSFPUReplay 1, 1,
+# CANONICAL-SAME: :: (volatile load store (s32))
+# CANONICAL: PseudoTTContentsSFPUReplay 0, 0,
+# CANONICAL-SAME: :: (volatile load store (s32))
+# ISSUE: contents replay issue memory differs from formal lowering
+
+#--- none.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- canonical.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- begin-size.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s64))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- begin-pointer.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32) on %ir.p)
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- execute-flags.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (load store (s32))
+    PseudoRET
+...
+
+#--- execute-load.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load (s32))
+    PseudoRET
+...
+
+#--- execute-duplicate.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32)), (volatile load store (s32))
+    PseudoRET
+...
+
+#--- execute-atomic.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store seq_cst (s32))
+    PseudoRET
+...
+
+#--- execute-align.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32), align 8)
+    PseudoRET
+...
+
+#--- mop-execute-flags.mir
+--- |
+  target triple = "riscv32"
+  define void @issue_memory(ptr %p) "tensix-executor"="trisc1" { ret void }
+...
+---
+name: issue_memory
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (load store (s32))
+    PseudoRET
+...

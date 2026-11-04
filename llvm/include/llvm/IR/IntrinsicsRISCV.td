@@ -23,8 +23,19 @@ let TargetPrefix = "riscv" in {
 // Keep full memory effects: volatile readback alone only orders the request,
 // whereas consuming its actual returned register also orders the response.
 let TargetPrefix = "riscv" in {
-  def int_riscv_tt_read_response : Intrinsic<[], [llvm_i32_ty],
-      [IntrHasSideEffects, IntrConvergent, IntrNoDuplicate]>;
+  def int_riscv_tt_read_response
+      : Intrinsic<[], [llvm_i32_ty],
+                  [IntrHasSideEffects, IntrConvergent, IntrNoDuplicate]>;
+}
+
+// Complete this TRISC's coprocessor issue and consume the response before any
+// later scalar memory action. The PCBuf override policy remains caller-owned.
+// Unlike MOPExpanderDoneCheck, this observes execution, not only expansion.
+// Preserve full memory effects, convergence and nonduplication until emission.
+let TargetPrefix = "riscv" in {
+  def int_riscv_tt_coprocessor_wait
+      : Intrinsic<[], [],
+                  [IntrHasSideEffects, IntrConvergent, IntrNoDuplicate]>;
 }
 
 //===----------------------------------------------------------------------===//

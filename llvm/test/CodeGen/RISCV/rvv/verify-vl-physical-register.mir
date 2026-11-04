@@ -1,0 +1,25 @@
+# RUN: split-file %s %t
+# RUN: not --crash llc -mtriple=riscv64 -mattr=+v -run-pass=none -verify-machineinstrs %t/x0.mir -o - 2>&1 | FileCheck %s --check-prefix=BAD-VL
+# RUN: not --crash llc -mtriple=riscv64 -mattr=+v -run-pass=none -verify-machineinstrs %t/vector.mir -o - 2>&1 | FileCheck %s --check-prefix=BAD-VL
+# BAD-VL: Bad machine code: Invalid register class for VL operand
+
+# A post-RA VL operand must be a nonzero GPR, not just any physical register.
+#--- x0.mir
+---
+name: invalid_vl_x0
+tracksRegLiveness: true
+body: |
+  bb.0:
+    undef $v8m2 = PseudoVMV_V_I_M2 undef $v8m2, 0, $x0, 3, 0, implicit-def $v8m4
+    PseudoRET implicit $v8m4
+...
+
+#--- vector.mir
+---
+name: invalid_vl_vector
+tracksRegLiveness: true
+body: |
+  bb.0:
+    undef $v8m2 = PseudoVMV_V_I_M2 undef $v8m2, 0, $v10, 3, 0, implicit-def $v8m4
+    PseudoRET implicit $v8m4
+...

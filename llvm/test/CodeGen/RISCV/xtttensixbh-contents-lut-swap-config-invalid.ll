@@ -10,6 +10,9 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/nonzero-unmasked.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E8
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/odd-mask.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E9
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/lane-reaching.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=REACHING
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/lut-mode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E1
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/six-mode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E2
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/three-sign.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E3
 
 ; E0: contents swap mode must be in 0..9
 ; E1: contents LUT mode must be 0 or 4

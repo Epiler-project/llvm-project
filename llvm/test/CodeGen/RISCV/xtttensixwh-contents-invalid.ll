@@ -86,7 +86,7 @@ define void @bad_store() "tensix-executor"="trisc1" {
   ret void
 }
 
-; DYNAMIC_OFFSET: Wormhole contents Dst offset currently requires a static immediate
+; DYNAMIC_OFFSET: contents Dst offset must be defined and non-poison
 ;--- dynamic-offset.ll
 declare void @llvm.riscv.tt.contents.encc(i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.contents.config.reset()

@@ -76,6 +76,7 @@ add_llvm_target(RISCVCodeGen
   RISCVTargetObjectFile.cpp
   RISCVTargetTransformInfo.cpp
   RISCVTensixCopyCCCleanup.cpp
+  RISCVTensixMacro.cpp
   RISCVTensixContentsGroup.cpp
   RISCVTensixHazards.cpp
   RISCVTensixIRVerification.cpp

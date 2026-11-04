@@ -1,0 +1,60 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=postrapseudos -verify-machineinstrs %t/undef-input.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNDEF
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=postrapseudos -verify-machineinstrs %t/undef-input.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNDEF
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=none %t/missing-scratch.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=postrapseudos -filetype=obj %t/extra-use.mir -o %t/extra-use.o 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: test ! -e %t/extra-use.o
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -start-before=postrapseudos -filetype=obj %t/extra-use.mir -o %t/extra-use-wh.o 2>&1 | FileCheck %s --check-prefix=EXTRA
+# RUN: test ! -e %t/extra-use-wh.o
+
+# The four actual ties and all four scratch clobbers survive until expansion.
+# An extra high-register input must not turn scratch into hidden old contents.
+# UNDEF: contents group requires its actual fixed-register ties
+# MISSING: missing implicit register operand 'implicit-def $tt_l7'
+# EXTRA: bound Tensix SFPU physical effects differ from the native descriptor
+
+#--- undef-input.mir
+--- |
+  define void @undefined_input() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: undefined_input
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $tt_l0, $tt_l1, $tt_l2, $tt_cc, $tt_config, $tt_issue
+    $tt_l0, $tt_l1, $tt_l2, $tt_l3 = PseudoTTSFPContentsTranspose4 $tt_l0, $tt_l1, $tt_l2, undef $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit-def $tt_issue
+    PseudoRET implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3
+...
+
+#--- missing-scratch.mir
+--- |
+  define void @missing_scratch() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: missing_scratch
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l1, $tt_l2, $tt_l3 = PseudoTTSFPContentsTranspose4 $tt_l0, $tt_l1, $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- extra-use.mir
+--- |
+  define void @extra_use() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: extra_use
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0, $tt_l1, $tt_l2, $tt_l3 = PseudoTTSFPContentsTranspose4 $tt_l0, $tt_l1, $tt_l2, $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit $tt_l4, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit-def $tt_issue
+    PseudoRET
+...

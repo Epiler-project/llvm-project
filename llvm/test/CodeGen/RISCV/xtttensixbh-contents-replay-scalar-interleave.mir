@@ -1,0 +1,341 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/gpr-virtual.mir -o - 2>&1 | FileCheck %s --check-prefix=VIRTUAL
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/gpr-physical.mir -o - 2>&1 | FileCheck %s --check-prefix=PHYSICAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/sfpr-copy.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare %t/sfpr-copy-virtual.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/gpr-load.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/gpr-store.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/gpr-implicit-state.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/fence.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/sfpu-config.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/terminator.mir -o - 2>&1 | FileCheck %s --check-prefix=BODY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/call.mir -o - 2>&1 | FileCheck %s --check-prefix=CALL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/inline-asm.mir -o - 2>&1 | FileCheck %s --check-prefix=CALL
+#
+# Pure scalar scheduling does not add a recorded Tensix instruction.
+# The receiver still rejects numerical copies, memory/state/control and calls.
+# VIRTUAL: PseudoTTContentsReplayTemplateBegin 41,
+# VIRTUAL: :sfpr = TTSFPIADD
+# VIRTUAL-NEXT: {{%[0-9]+}}:gpr = ANDI
+# VIRTUAL-NEXT: {{%[0-9]+}}:gpr = COPY
+# VIRTUAL-NEXT: PseudoTTContentsReplayTemplateEnd 41,
+# PHYSICAL-NOT: PseudoTTContentsReplayTemplate
+# PHYSICAL: PseudoTTContentsSFPUReplay 1, 1, 1, 0
+# PHYSICAL: $tt_l0 = TTSFPIADD $tt_l0, $tt_l1
+# PHYSICAL-NEXT: $x10 = ANDI $x10, 1
+# PHYSICAL-NEXT: $x11 = COPY $x10
+# PHYSICAL: PseudoTTReplayRecordEnd
+# PHYSICAL-NEXT: PseudoTTContentsSFPUReplay 0, 0, 1, 0
+# PHYSICAL-NOT: PseudoTTContentsReplayTemplate
+# BODY: contents replay body lost its mutable chain or read-only capture
+# CALL: structured replay has no call or inline-asm preservation ABI
+
+#--- gpr-virtual.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+isSSA: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %3:gpr = COPY $x10
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %4:gpr = ANDI %3, 1
+    %5:gpr = COPY %4
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber %6:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %2, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- gpr-physical.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x10 = ANDI $x10, 1
+    $x11 = COPY $x10
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- sfpr-copy.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = COPY $tt_l1
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- sfpr-copy-virtual.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+isSSA: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    %0:sfpr = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %1:sfpr = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %3:gpr = COPY $x10
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, %0, %1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %2:sfpr = TTSFPIADD %0, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    %4:sfpr = COPY %1
+    PseudoTTContentsReplayTemplateEnd 41, %2, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber %6:sfpr = PseudoTTContentsReplayTemplateExecute1 41, 1, %2, %1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- gpr-load.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x11 = LW $x10, 0 :: (volatile load (s32))
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- gpr-store.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    SW $x10, $x10, 0 :: (volatile store (s32))
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- gpr-implicit-state.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x10 = ANDI $x10, 1, implicit $tt_config
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- fence.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    FENCE 15, 15
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- sfpu-config.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_config
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- terminator.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.1
+
+  bb.1:
+    liveins: $tt_l0, $tt_l1, $tt_config, $tt_issue, $tt_cc, $tt_dst
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- call.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoCALL target-flags(riscv-call) @external
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- inline-asm.mir
+--- |
+  target triple = "riscv32"
+  declare void @external()
+  define void @scalar_interleave() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: scalar_interleave
+tracksRegLiveness: true
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    liveins: $tt_c9, $tt_c15, $tt_config, $tt_issue, $tt_cc, $tt_dst, $x10
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 41, 1, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    INLINEASM &"", sideeffect attdialect
+    PseudoTTContentsReplayTemplateEnd 41, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateExecute1 41, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

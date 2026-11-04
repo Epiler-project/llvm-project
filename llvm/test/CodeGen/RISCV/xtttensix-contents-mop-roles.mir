@@ -1,0 +1,255 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/valid.mir -o - | FileCheck %s --check-prefix=VALID
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/brisc_executor.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=BRISC-EXECUTOR
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/mutable.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MUTABLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/capture.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CAPTURE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/extra_effect.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXTRA-EFFECT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/capture_def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CAPTURE-DEF
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/extra_binding.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXTRA-BINDING
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/valid.mir -o - | FileCheck %s --check-prefix=VALID
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/brisc_executor.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=BRISC-EXECUTOR
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/mutable.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MUTABLE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/capture.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CAPTURE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/extra_effect.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXTRA-EFFECT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/capture_def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CAPTURE-DEF
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-finalize %t/extra_binding.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXTRA-BINDING
+#
+# VALID-LABEL: name: contents_mop_physical
+# VALID: PseudoTTContentsSFPUReplay 1, 0, 1, 0,
+# VALID: PseudoTTREPLAYMop 5, 0, 0, 1, 0,
+# VALID: PseudoTTREPLAYMop 7, 0, 0, 1, 0,
+# VALID: TTMOP 0, 0, 1,
+# VALID-SAME: implicit $tt_l0
+# VALID-SAME: implicit $tt_l1
+# VALID-SAME: implicit-def $tt_l0
+# BRISC-EXECUTOR: contents MOP execution requires tensix-executor=trisc1
+# MUTABLE: contents replay allocation differs from its recorded register roles
+# CAPTURE: contents replay allocation differs from its recorded register roles
+# EXTRA-EFFECT: bound Tensix SFPU physical effects differ from the native descriptor
+# CAPTURE-DEF: bound Tensix SFPU physical effects differ from the native descriptor
+# EXTRA-BINDING: contents MOP profile requires unique setup
+
+#--- valid.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- brisc_executor.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="brisc" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- mutable.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l2 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l2, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- capture.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l0, $tt_l2, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- extra_effect.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue, implicit-def $tt_l7 :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- capture_def.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l0, $tt_l1, implicit-def $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- extra_binding.mir
+--- |
+  target triple = "riscv32"
+  define void @contents_mop_physical() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: contents_mop_physical
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_c15, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateBegin 71, 0, 0, 0, 1, $tt_l0, $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateRecordIAdd 71, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsReplayTemplateEnd 71, $tt_l0, implicit $tt_issue, implicit-def $tt_issue
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 0, 1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPControlWriteImm 1, 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 2, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 3, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 4, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 6, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 7, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTMOPClear 8, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateMop 71, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue :: (volatile store (s32))
+    early-clobber $tt_l0 = PseudoTTContentsReplayTemplateMopExecute1 71, 1, $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...

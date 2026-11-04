@@ -1,0 +1,29 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=WH
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-hazards %s -o /dev/null
+# WH: explicit SFPU replay template requires an authored hazard gap
+#
+# Replay execution's recorded ADD->ADD stream reads L0 one cycle after MAD.
+# BH interlocks ordinary reads; WH does not. The numerical source-IR authored
+# slice still excludes ADD/MAD. This directly exercises final physical
+# receiver validation, without broadening any source IR or legacy bound entry.
+# A plain predicate flip must not silently accept WH's missing internal NOP.
+# Both external boundaries already have real executing NOPs.
+--- |
+  define void @recorded_mad_dependency() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: recorded_mad_dependency
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTContentsSFPUReplay 1, 1, 2, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTContentsSFPUReplay 0, 0, 2, 0, implicit $tt_config, implicit $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_c10, implicit $tt_cc, implicit-def $tt_issue, implicit-def $tt_l0
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

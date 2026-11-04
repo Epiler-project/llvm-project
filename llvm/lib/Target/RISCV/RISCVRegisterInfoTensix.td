@@ -36,6 +36,35 @@ def SFPR : RISCVRegisterClass<[v32i32], 1024,
   let isAllocatable = 1;
   let DecoderMethod = "DecodeTensixLReg";
 }
+// SFPLOADMACRO encodes VDLo and derives VDHi from effective Dst parity.
+// The initial profile receives even addresses, so allocation uses L0..L3.
+def SFPRLow : RISCVRegisterClass<[v32i32], 1024,
+                                (add (sequence "TT_L%u", 0, 3))> {
+  let Size = 1024;
+  let isAllocatable = 1;
+  let DecoderMethod = "DecodeTensixLReg";
+}
+// The index companion is selected by hardware from a low primary. These
+// aggregate registers are allocation identities, not extra hardware capacity.
+// Their leaf regunits alias the same eight ordinary writable LRegs.
+def SFPRHigh : RISCVRegisterClass<[v32i32], 1024,
+                                 (add (sequence "TT_L%u", 4, 7))> {
+  let Size = 1024;
+  let isAllocatable = 1;
+}
+let Namespace = "RISCV" in {
+  def sub_sfpu_value : SubRegIndex<1024, 0>;
+  def sub_sfpu_index : SubRegIndex<1024, 1024>;
+}
+def SFPRIndexPairs : RegisterTuples<
+    [sub_sfpu_value, sub_sfpu_index],
+    [(add TT_L0, TT_L1, TT_L2, TT_L3),
+     (add TT_L4, TT_L5, TT_L6, TT_L7)]>;
+def SFPRIndexPair : RISCVRegisterClass<[untyped], 1024,
+                                      (add SFPRIndexPairs)> {
+  let Size = 2048;
+  let isAllocatable = 1;
+}
 foreach I = 0-7 in {
   def SFPR#I : RISCVRegisterClass<[v32i32], 1024,
                                   (add !cast<Register>("TT_L"#I))> {

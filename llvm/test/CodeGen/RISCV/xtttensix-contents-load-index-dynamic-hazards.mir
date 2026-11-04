@@ -1,0 +1,97 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/dst.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DST_ERROR
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/dst.mir -o %t/bh-dst.mir
+# RUN: FileCheck %s --check-prefix=DST < %t/bh-dst.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/bh-dst.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/dst.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DST_ERROR
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/dst.mir -o %t/wh-dst.mir
+# RUN: FileCheck %s --check-prefix=DST < %t/wh-dst.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/wh-dst.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/companion-mad.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MAD_ERROR
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -riscv-tensix-enable-latency-scheduling=false -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/companion-mad.mir -o %t/companion-mad-repaired.mir
+# RUN: FileCheck %s --check-prefix=MAD < %t/companion-mad-repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/companion-mad-repaired.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-explicit-replay %t/raw-record.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RECORD
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-replay-template-prepare %t/template.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RECORD
+
+# Scalar encoding work does not count as an SFPU pipeline gap. The primary
+# Dst dependency and WH's pending old companion retain their actual hazards.
+# Replay must not silently omit this issue or discard its companion effects.
+# DST_ERROR: unresolved Tensix matrix Dst write to SFPLOAD hazard
+# DST: TTMVMUL
+# DST-NEXT: TTSFPNOP
+# DST-NEXT: TTSFPNOP
+# DST-NEXT: TTSFPNOP
+# DST-NEXT: {{.*}}PseudoTTSFPLOADIndex
+# MAD_ERROR: unresolved Tensix SFPU MAD to IADD destination hazard
+# MAD: $tt_l4 = TTSFPMAD
+# MAD-NEXT: TTSFPNOP
+# MAD-NEXT: {{.*}}PseudoTTSFPLOADIndex
+# RECORD: contents paired LOAD scalar issue has no replay capture receiver
+
+#--- dst.mir
+--- |
+  define void @dst() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: dst
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- companion-mad.mir
+--- |
+  define void @companion_mad() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: companion_mad
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l4 = TTSFPMAD $tt_l4, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- raw-record.mir
+--- |
+  define void @raw_record() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: raw_record
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 1, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- template.mir
+--- |
+  define void @template() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: template
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTReplayTemplateBegin 704, 1, 1, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0, $tt_l4, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOADIndex $tt_l0, $tt_l4, $x10, 0, 3, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoTTReplayTemplateEnd 704, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 704, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

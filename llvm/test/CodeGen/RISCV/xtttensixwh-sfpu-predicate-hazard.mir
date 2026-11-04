@@ -1,0 +1,22 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.fixed.mir
+# RUN: FileCheck %s < %t.fixed.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t.fixed.mir -o /dev/null
+# INVALID: unresolved Tensix SFPU
+--- |
+  define void @mad_setcc() "target-features"="+xtttensixwh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: mad_setcc
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c10, $tt_c10, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSETCCGE $tt_l0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK: $tt_l0 = TTSFPMAD
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPSETCCGE $tt_l0

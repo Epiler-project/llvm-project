@@ -5,7 +5,9 @@
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTargetMachine.h"
+#include "RISCVTensixContentsGroup.h"
 #include "RISCVTensixReplay.h"
+#include "RISCVTensixMacro.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -23,14 +25,21 @@ namespace {
 constexpr unsigned SFPUCooldown = 1u << 16;
 bool isSFPU(const MachineInstr &MI) {
   if (MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+      MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
+      MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex ||
       MI.getOpcode() == RISCV::PseudoTTSFPSTORE)
     return true;
   return RISCV::getTensixEncoding(MI.getOpcode()) &&
          !RISCV::getTensixMachineInfo(MI.getOpcode());
 }
 bool readsMatrixDst(const MachineInstr &MI) {
-  return MI.getOpcode() == RISCV::TTSFPLOAD ||
-         MI.getOpcode() == RISCV::PseudoTTSFPLOAD;
+  return MI.getOpcode() == RISCV::TTSFPLOADMACROFP32Even ||
+         MI.getOpcode() == RISCV::TTSFPLOAD ||
+         MI.getOpcode() == RISCV::TTSFPLOADFull ||
+         MI.getOpcode() == RISCV::TTSFPLOADIndex ||
+         MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+         MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
+         MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex;
 }
 bool isIAdd(const MachineInstr &MI) {
   switch (MI.getOpcode()) {
@@ -62,7 +71,8 @@ unsigned lregBit(const MachineOperand &MO, const TargetRegisterInfo &TRI) {
 }
 bool isReplayExecution(const MachineInstr &MI) {
   if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
-      MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay)
+      MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+       MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay)
     return MI.getOperand(0).getImm() == 0;
   if (MI.getOpcode() == RISCV::TTREPLAY)
     return MI.getOperand(0).getImm() == 0;
@@ -79,7 +89,7 @@ unsigned readMask(const MachineInstr &MI, const TargetRegisterInfo &TRI) {
   return Mask;
 }
 bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
-                   unsigned Pending, bool Wormhole = false) {
+                   unsigned Pending, bool Wormhole) {
   // Wormhole does not interlock any next-cycle MAD consumer. Blackhole
   // interlocks ordinary reads and only needs the exceptional cases below.
   bool ReadsPendingMAD = Wormhole && ((Pending & 0xffu) & readMask(MI, TRI));
@@ -88,8 +98,21 @@ bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
       (Pending & lregBit(MI.getOperand(0), TRI));
   bool ReadsPendingShift = MI.getOpcode() == RISCV::TTSFPSHFT &&
       (Pending & lregBit(MI.getOperand(0), TRI));
-  bool ReadsPendingSwap = MI.getOpcode() == RISCV::TTSFPSWAP &&
-      MI.getOperand(4).getImm() != 0 &&
+  // BH reverses the ARG_IMM interlock for these setters: vector forms
+  // read old VD but hardware does not detect that dependency. Immediate
+  // forms and VC reads need no extra software gap on BH. WH's general
+  // readMask rule already includes this same old-VD dependency. When VD
+  // aliases VC, the VC interlock covers it without an extra software gap.
+  bool ReadsPendingSetField =
+      (MI.getOpcode() == RISCV::TTSFPSETEXP ||
+       MI.getOpcode() == RISCV::TTSFPSETMAN ||
+       MI.getOpcode() == RISCV::TTSFPSETSGN) &&
+      !(MI.getOperand(4).getImm() & 1) &&
+      MI.getOperand(1).getReg() != MI.getOperand(2).getReg() &&
+      (Pending & lregBit(MI.getOperand(1), TRI));
+  bool IsSwapIndex = MI.getOpcode() == RISCV::TTSFPSWAPIndex;
+  bool ReadsPendingSwap = (MI.getOpcode() == RISCV::TTSFPSWAP || IsSwapIndex) &&
+      MI.getOperand(IsSwapIndex ? 8 : 4).getImm() != 0 &&
       (Pending & (lregBit(MI.getOperand(0), TRI) |
                   lregBit(MI.getOperand(1), TRI)));
   bool ReadsPendingShuffle =
@@ -103,8 +126,8 @@ bool needsSFPUWait(const MachineInstr &MI, const TargetRegisterInfo &TRI,
   bool PipelineGap = (Pending & SFPUCooldown) && isSFPU(MI) &&
                      MI.getOpcode() != RISCV::TTSFPNOP;
   return ReadsPendingMAD || ReadsPendingL0 || ReadsPendingDest ||
-         ReadsPendingShift || ReadsPendingSwap || ReadsPendingShuffle ||
-         ReadsPendingLUT || ReplayBoundary || PipelineGap;
+         ReadsPendingShift || ReadsPendingSetField || ReadsPendingSwap ||
+         ReadsPendingShuffle || ReadsPendingLUT || ReplayBoundary || PipelineGap;
 }
 bool waitsForWormholeSFPU(const MachineInstr &MI) {
   // Only native issue establishes these masks here. A port word is opaque,
@@ -124,15 +147,15 @@ bool waitsForWormholeSFPU(const MachineInstr &MI) {
 }
 unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
                     unsigned Pending,
-                    const TensixSFPUReplayExecutionEffects *ReplayEffects =
-                        nullptr,
-                    bool Wormhole = false) {
+                    const TensixSFPUReplayExecutionEffects *ReplayEffects,
+                    bool Wormhole) {
   if (Wormhole && waitsForWormholeSFPU(MI))
     return 0;
   // Reuse the replay verifier's native exit state. A union of physical defs
   // cannot describe the pending MAD/LUT result or a cross-lane cooldown.
   if ((MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
-       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) &&
+       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+       MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay) &&
       MI.getOperand(0).getImm() == 0) {
     assert(ReplayEffects && "SFPU replay requires verified effects");
     auto It = ReplayEffects->find(&MI);
@@ -146,9 +169,14 @@ unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
     return 0xffff;
   if (!isSFPU(MI))
     return Pending;
-  // SFPADD uses the MAD datapath with the fixed multiplicand C10.
+  // All received MAD-unit forms have the same two-cycle result dependency.
+  // WH requires software gaps for every next-cycle read. BH interlocks normal
+  // reads, while needsSFPUWait retains the documented exceptional consumers.
   if (MI.getOpcode() == RISCV::TTSFPMAD || MI.getOpcode() == RISCV::TTSFPMUL ||
-      MI.getOpcode() == RISCV::TTSFPADD)
+      MI.getOpcode() == RISCV::TTSFPADD ||
+      MI.getOpcode() == RISCV::TTSFPADDI ||
+      MI.getOpcode() == RISCV::TTSFPMULI ||
+      MI.getOpcode() == RISCV::TTSFPMUL24)
     return lregBit(MI.getOperand(0), TRI);
   // Unlike MAD's partially tracked dependencies, LUT requires a gap before
   // any next-cycle read of its result.
@@ -158,6 +186,7 @@ unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
       MI.getOpcode() == RISCV::TTSFPLUTFP32Six)
     return lregBit(MI.getOperand(0), TRI) << 8;
   if (MI.getOpcode() == RISCV::TTSFPSWAP ||
+      MI.getOpcode() == RISCV::TTSFPSWAPIndex ||
       MI.getOpcode() == RISCV::TTSFPSHFT2 ||
       MI.getOpcode() == RISCV::TTSFPSHFT2Rotate4)
     return SFPUCooldown;
@@ -165,7 +194,8 @@ unsigned afterIssue(const MachineInstr &MI, const TargetRegisterInfo &TRI,
 }
 unsigned afterDstIssue(const MachineInstr &MI, unsigned Cycles) {
   if ((MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
-       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) &&
+       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+       MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay) &&
       MI.getOperand(0).getImm() == 0) {
     unsigned Length = MI.getOperand(2).getImm();
     return Cycles > Length ? Cycles - Length : 0;
@@ -191,12 +221,18 @@ unsigned afterDstIssue(const MachineInstr &MI, unsigned Cycles) {
 bool hasExternalIssueOwner(const MachineFunction &MF) {
   for (const auto &BB : MF)
     for (const auto &MI : BB)
-      if (MI.isCall() || MI.isInlineAsm() ||
+      if (isTensixMacroInstruction(MI.getOpcode()) ||
+          MI.isCall() || MI.isInlineAsm() ||
           RISCV::getTensixMachineInfoByPort(MI.getOpcode()) ||
           RISCV::getTensixMachineInfoByMop(MI.getOpcode()) ||
           MI.getOpcode() == RISCV::TTREPLAY ||
           MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
           MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay ||
+          MI.getOpcode() == RISCV::PseudoTTContentsReplayTemplateBegin ||
+          MI.getOpcode() == RISCV::PseudoTTContentsReplayTemplateEnd ||
+          RISCV::getTensixContentsReplayExecuteInfo(MI.getOpcode()) ||
+          RISCV::getTensixContentsMOPExecuteInfo(MI.getOpcode()) ||
           MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
           MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord ||
           MI.getOpcode() == RISCV::PseudoTTReplayTemplateBegin ||
@@ -207,6 +243,7 @@ bool hasExternalIssueOwner(const MachineFunction &MF) {
           MI.getOpcode() == RISCV::PseudoTTReplayTemplateDstWord ||
           MI.getOpcode() == RISCV::TTMOP ||
           MI.getOpcode() == RISCV::TTMOP_CFG ||
+          MI.getOpcode() == RISCV::PseudoTTCoprocessorWait ||
           MI.getOpcode() == RISCV::PseudoTTMOPClear ||
           MI.getOpcode() == RISCV::PseudoTTMOPControlWrite ||
           MI.getOpcode() == RISCV::PseudoTTMOPControlWriteImm ||
@@ -301,7 +338,9 @@ bool scheduleIndependentCopies(MachineFunction &MF,
           touchesFixedLReg(Consumer, Fixed, TRI) ||
           touchesFixedLReg(Copy, Fixed, TRI))
         continue;
-      unsigned Pending = afterIssue(Producer, TRI, 0);
+      unsigned Pending = afterIssue(
+          Producer, TRI, 0, nullptr,
+          MF.getSubtarget<RISCVSubtarget>().hasVendorXTTTensixWH());
       if (!(Pending & lregBit(Consumer.getOperand(0), TRI)) ||
           (Pending & readMask(Copy, TRI)) ||
           Copy.getOperand(0).getReg() == Copy.getOperand(1).getReg() ||
@@ -334,6 +373,8 @@ bool scheduleIndependentCopies(MachineFunction &MF,
 Error verifyCC(const MachineFunction &MF) {
   if (MF.empty())
     return Error::success();
+  const bool Wormhole =
+      MF.getSubtarget<RISCVSubtarget>().hasVendorXTTTensixWH();
   DenseMap<const MachineBasicBlock *, unsigned> Depths;
   SmallVector<const MachineBasicBlock *> Worklist{&MF.front()};
   Depths.try_emplace(&MF.front(), 0);
@@ -353,8 +394,15 @@ Error verifyCC(const MachineFunction &MF) {
         return createStringError(
             "Tensix SFPU machine CC replace-top requires a nonempty stack");
       }
-      // Nonzero POPC modes only peek. Blackhole defines an empty-stack top
-      // and permits peeking at all eight frames, without changing depth.
+      // Nonzero POPC modes only peek. Both generations define an empty
+      // stack top. WH writes above the top while peeking, so a full stack
+      // overwrites its bottom frame; BH fixes that hardware bug.
+      if (Wormhole && Depth == 8 &&
+          (MI.getOpcode() == RISCV::TTSFPPOPCPeek ||
+           MI.getOpcode() == RISCV::TTSFPPOPCAndTop ||
+           MI.getOpcode() == RISCV::TTSFPPOPCOrTop))
+        return createStringError(
+            "Wormhole SFPU nonzero POPC is not supported at CC stack depth 8");
       if (MI.isReturn() && Depth)
         return createStringError(
             "Tensix SFPU machine CC stack is not empty at return");
@@ -423,6 +471,8 @@ public:
         Uses |= isSFPU(MI);
     if (!Uses)
       return false;
+    if (Error E = verifyTensixMacroMachineFunction(MF))
+      return Fail(toString(std::move(E)));
     auto &ST = MF.getSubtarget<RISCVSubtarget>();
     const auto &TRI = *ST.getRegisterInfo();
     const auto &TII = *ST.getInstrInfo();
@@ -446,8 +496,8 @@ public:
         MachineInstr *Future = *Rebuilt;
         if (readsMatrixDst(*Future))
           DstPrefix = std::min(DstPrefix, unsigned(Index));
-        bool NeedsGap = needsTensixReplayHazardGap(*Future, TRI, State);
-        State = advanceTensixReplayHazard(*Future, TRI, State);
+        bool NeedsGap = needsTensixReplayHazardGap(*Future, ST, State);
+        State = advanceTensixReplayHazard(*Future, ST, State);
         MF.deleteMachineInstr(Future);
         if (NeedsGap)
           return createStringError(
@@ -490,9 +540,13 @@ public:
         // source-authored state changes; both forms retain full state effects.
         for (const auto &MO : MI.operands())
           if (MO.isReg() && MO.getReg().isVirtual() &&
-              RISCV::SFPRReadRegClass.hasSubClassEq(
-                  MF.getRegInfo().getRegClass(MO.getReg())))
+              (RISCV::SFPRReadRegClass.hasSubClassEq(
+                   MF.getRegInfo().getRegClass(MO.getReg())) ||
+               RISCV::SFPRIndexPairRegClass.hasSubClassEq(
+                   MF.getRegInfo().getRegClass(MO.getReg()))))
             return Fail("unallocated SFPU register reached final legality");
+        if (Error E = verifyTensixContentsIndexNative(MI, ST))
+          return Fail(toString(std::move(E)));
       }
     // Stack lifecycle is source-owned for bound operations. Keep the legacy
     // local-stack precondition without imposing it on physical issue streams.
@@ -608,16 +662,19 @@ public:
 };
 } // namespace
 bool llvm::needsTensixReplayHazardGap(const MachineInstr &MI,
-                                     const TargetRegisterInfo &TRI,
+                                     const RISCVSubtarget &ST,
                                      TensixReplayHazardState State) {
-  return needsSFPUWait(MI, TRI, State.SFPU) ||
+  const auto &TRI = *ST.getRegisterInfo();
+  return needsSFPUWait(MI, TRI, State.SFPU, ST.hasVendorXTTTensixWH()) ||
          (readsMatrixDst(MI) && State.DstCycles);
 }
 
 TensixReplayHazardState llvm::advanceTensixReplayHazard(
-    const MachineInstr &MI, const TargetRegisterInfo &TRI,
+    const MachineInstr &MI, const RISCVSubtarget &ST,
     TensixReplayHazardState State) {
-  return {afterIssue(MI, TRI, State.SFPU),
+  const auto &TRI = *ST.getRegisterInfo();
+  return {afterIssue(MI, TRI, State.SFPU, nullptr,
+                     ST.hasVendorXTTTensixWH()),
           afterDstIssue(MI, State.DstCycles)};
 }
 

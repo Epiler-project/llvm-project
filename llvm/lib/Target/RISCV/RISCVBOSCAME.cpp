@@ -9,8 +9,10 @@
 #include "RISCVRegisterInfo.h"
 #include "RISCVSubtarget.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -512,9 +514,12 @@ void transferSelectorValues(const MachineInstr &MI, SelectorValues &S) {
   }
 }
 
-DenseMap<const MachineInstr *, SelectorValue>
-resolveMachineSelectors(const MachineFunction &MF) {
-  if (!llvm::any_of(MF, [](const MachineBasicBlock &MBB) {
+DenseMap<const MachineInstr *, SelectorValue> resolveMachineSelectors(
+    const MachineFunction &MF,
+    const SmallPtrSetImpl<const MachineBasicBlock *> &Reachable) {
+  if (!llvm::any_of(MF, [&](const MachineBasicBlock &MBB) {
+        if (!Reachable.contains(&MBB))
+          return false;
         return llvm::any_of(MBB, [](const MachineInstr &MI) {
           return isSelectedLoad(MI.getOpcode()) ||
                  isSelectedMMA(MI.getOpcode());
@@ -523,22 +528,26 @@ resolveMachineSelectors(const MachineFunction &MF) {
     return {};
   DenseMap<const MachineBasicBlock *, SelectorValues> Out;
   for (const MachineBasicBlock &MBB : MF)
-    Out[&MBB] = SelectorValues();
+    if (Reachable.contains(&MBB))
+      Out[&MBB] = SelectorValues();
   auto In = [&](const MachineBasicBlock &MBB) {
     SelectorValues S;
-    if (&MBB == &MF.front() || MBB.pred_empty()) {
+    if (&MBB == &MF.front()) {
       S.Top = false;
       for (unsigned Reg = RISCV::X0; Reg <= RISCV::X31; ++Reg)
         S.Registers[Reg] = {nullptr, Register(Reg)};
     }
     for (const MachineBasicBlock *Pred : MBB.predecessors())
-      S.meet(Out[Pred]);
+      if (Reachable.contains(Pred))
+        S.meet(Out[Pred]);
     return S;
   };
   bool Changed;
   do {
     Changed = false;
     for (const MachineBasicBlock &MBB : MF) {
+      if (!Reachable.contains(&MBB))
+        continue;
       auto Next = In(MBB);
       for (const MachineInstr &MI : MBB)
         transferSelectorValues(MI, Next);
@@ -550,6 +559,8 @@ resolveMachineSelectors(const MachineFunction &MF) {
   } while (Changed);
   DenseMap<const MachineInstr *, SelectorValue> Selectors;
   for (const MachineBasicBlock &MBB : MF) {
+    if (!Reachable.contains(&MBB))
+      continue;
     auto S = In(MBB);
     for (const MachineInstr &MI : MBB) {
       bool Load = isSelectedLoad(MI.getOpcode());
@@ -709,17 +720,37 @@ ContentsConfig operationConfig(const IntrinsicInst &II) {
           II.getArgOperand(First + 2)};
 }
 
+// Project related contents, configuration and stride PHIs through the same
+// CFG edge. Equal sets of incoming values without equal edges are insufficient.
+const Value *contentsIncoming(const Value *V, const PHINode &Phi,
+                              unsigned Index) {
+  const auto *Related = dyn_cast<PHINode>(V);
+  return Related && Related->getParent() == Phi.getParent()
+             ? Related->getIncomingValueForBlock(Phi.getIncomingBlock(Index))
+             : V;
+}
+
+using ContentsDemand =
+    std::tuple<const Value *, const Value *, const Value *, const Value *>;
+
 // The role is retained by the intrinsic and the target type, including at CFG
 // merges. A/B use the same physical file but have different load geometry.
 bool checkContentsOrigin(const Value *V, unsigned Role,
                          const ContentsConfig &Config,
-                         SmallPtrSetImpl<const Value *> &Visited) {
-  if (!Visited.insert(V).second)
+                         DenseSet<ContentsDemand> &Visited) {
+  if (!Visited.insert({V, Config[0], Config[1], Config[2]}).second)
     return true;
-  if (auto *Phi = dyn_cast<PHINode>(V))
-    return llvm::all_of(Phi->incoming_values(), [&](const Value *Incoming) {
-      return checkContentsOrigin(Incoming, Role, Config, Visited);
-    });
+  if (auto *Phi = dyn_cast<PHINode>(V)) {
+    for (unsigned I = 0; I != Phi->getNumIncomingValues(); ++I) {
+      auto IncomingConfig = Config;
+      for (const Value *&Dimension : IncomingConfig)
+        Dimension = contentsIncoming(Dimension, *Phi, I);
+      if (!checkContentsOrigin(Phi->getIncomingValue(I), Role, IncomingConfig,
+                               Visited))
+        return false;
+    }
+    return true;
+  }
   auto *II = dyn_cast<IntrinsicInst>(V);
   if (!II || !isBOSCAMEContentsIntrinsic(II->getIntrinsicID()))
     return false;
@@ -738,6 +769,75 @@ bool checkContentsOrigin(const Value *V, unsigned Role,
          (Role == 2 || Defined[2] == Config[2]);
 }
 
+// Check a demand against the last actual write on every incoming CFG edge.
+// Keeping the requested value, rather than merging it into an uncorrelated
+// scalar fact, lets a validated configuration PHI reach successor blocks.
+// A repeated demand is an unchanged loop edge; all entry paths still need a
+// matching write, and writes are inspected before applying this cycle rule.
+bool hasReachingContentsConfig(
+    const Value *Dimension, unsigned Index, const BasicBlock &BB,
+    const Instruction *Before, const DominatorTree &Dominators,
+    DenseSet<std::pair<const BasicBlock *, const Value *>> &Visited) {
+  if (!Dimension || !Dominators.isReachableFromEntry(&BB))
+    return false;
+  for (const Instruction *I = Before ? Before->getPrevNode() : &BB.back(); I;
+       I = I->getPrevNode()) {
+    const auto *Set = dyn_cast<IntrinsicInst>(I);
+    if (Set && configIndex(Set->getIntrinsicID()) == Index)
+      return Set == Dimension;
+  }
+  if (!Visited.insert({&BB, Dimension}).second)
+    return true;
+  if (const auto *Phi = dyn_cast<PHINode>(Dimension);
+      Phi && Phi->getParent() == &BB) {
+    for (unsigned Edge = 0; Edge != Phi->getNumIncomingValues(); ++Edge)
+      if (!hasReachingContentsConfig(Phi->getIncomingValue(Edge), Index,
+                                     *Phi->getIncomingBlock(Edge), nullptr,
+                                     Dominators, Visited))
+        return false;
+    return true;
+  }
+  if (pred_empty(&BB))
+    return false;
+  for (const BasicBlock *Pred : predecessors(&BB))
+    if (!hasReachingContentsConfig(Dimension, Index, *Pred, nullptr, Dominators,
+                                   Visited))
+      return false;
+  return true;
+}
+
+// Geometry and stride PHIs must follow the same edge at every nested join.
+// Reaching-configuration validation separately anchors preserving loop cycles
+// in actual configuration writes on every path from function entry.
+Expected<bool>
+checkContentsRow(const Value *Dimension, const Value *Stride,
+                 unsigned DimensionIndex, bool Accumulator,
+                 const IntrinsicInst &II,
+                 DenseSet<std::pair<const Value *, const Value *>> &Visited) {
+  if (!Visited.insert({Dimension, Stride}).second)
+    return true;
+  if (const auto *Phi = dyn_cast<PHINode>(Dimension)) {
+    for (unsigned Edge = 0; Edge != Phi->getNumIncomingValues(); ++Edge) {
+      auto Row = checkContentsRow(Phi->getIncomingValue(Edge),
+                                  contentsIncoming(Stride, *Phi, Edge),
+                                  DimensionIndex, Accumulator, II, Visited);
+      if (!Row)
+        return Row.takeError();
+      if (!*Row)
+        return false;
+    }
+    return true;
+  }
+  const auto *Set = dyn_cast<IntrinsicInst>(Dimension);
+  if (!Set || configIndex(Set->getIntrinsicID()) != DimensionIndex)
+    return false;
+  auto Row = request(*Set);
+  if (!Row)
+    return Row.takeError();
+  unsigned Width = *Row * (Accumulator ? 4 : 1);
+  return validStride(Stride, Set->getArgOperand(0), Width, Accumulator, II);
+}
+
 Error verifyContentsIR(Function &F) {
   if (F.getFnAttribute("trex-bosc-contents-ame").getValueAsString() != "1")
     return invalid(F, "unsupported AME contents ABI version");
@@ -750,116 +850,72 @@ Error verifyContentsIR(Function &F) {
     return invalid(F, "AME contents cannot cross a function ABI");
   DominatorTree Dominators(F);
 
-  // Unknown predecessor facts are the lattice top, while null fields denote
-  // an actual path with no reaching configuration. This preserves real loops.
-  DenseMap<const BasicBlock *, std::optional<ContentsConfig>> Out;
-  auto Input = [&](const BasicBlock &BB) {
-    std::optional<ContentsConfig> State;
-    if (BB.isEntryBlock() || pred_empty(&BB))
-      State = ContentsConfig{};
-    for (const BasicBlock *Pred : predecessors(&BB)) {
-      auto Incoming = Out.lookup(Pred);
-      if (!Incoming)
-        continue;
-      if (!State)
-        State = Incoming;
-      else
-        for (unsigned I = 0; I != 3; ++I)
-          if ((*State)[I] != (*Incoming)[I])
-            (*State)[I] = nullptr;
+  for (const Instruction &I : instructions(F)) {
+    const auto *II = dyn_cast<IntrinsicInst>(&I);
+    if (!II)
+      continue;
+    auto ID = II->getIntrinsicID();
+    if (configIndex(ID) != 3) {
+      auto Dimension = request(*II);
+      if (!Dimension)
+        return Dimension.takeError();
+      continue;
     }
-    return State;
-  };
-  auto Transfer = [&](const BasicBlock &BB, std::optional<ContentsConfig> State,
-                      bool Verify) -> Expected<std::optional<ContentsConfig>> {
-    for (const Instruction &I : BB) {
-      auto *II = dyn_cast<IntrinsicInst>(&I);
-      if (!II)
-        continue;
-      auto ID = II->getIntrinsicID();
-      unsigned Index = configIndex(ID);
-      if (Index != 3) {
-        if (Verify) {
-          auto Dimension = request(*II);
-          if (!Dimension)
-            return Dimension.takeError();
-        }
-        if (State)
-          (*State)[Index] = II;
-        continue;
-      }
-      if (!isBOSCAMEContentsIntrinsic(ID))
-        continue;
-      if (!Verify)
-        continue;
-      auto Config = operationConfig(*II);
-      if (!State || Config != *State || llvm::is_contained(Config, nullptr))
+    if (!isBOSCAMEContentsIntrinsic(ID))
+      continue;
+    auto Config = operationConfig(*II);
+    for (unsigned Index = 0; Index != 3; ++Index) {
+      DenseSet<std::pair<const BasicBlock *, const Value *>> Visited;
+      if (!hasReachingContentsConfig(Config[Index], Index, *II->getParent(), II,
+                                     Dominators, Visited))
         return invalid(
             F, "AME contents require the actual reaching M/N/K configuration");
-      if (ID == Intrinsic::riscv_bosc_ame_contents_fp_mma &&
-          !llvm::any_of(instructions(F), [&](const Instruction &Format) {
-            const auto *Set = dyn_cast<IntrinsicInst>(&Format);
-            return Set &&
-                   Set->getIntrinsicID() ==
-                       Intrinsic::riscv_bosc_ame_setfp8_e4m3 &&
-                   Dominators.dominates(Set, II);
-          }))
-        return invalid(
-            F, "AME FP contents require an explicit reaching E4M3 format");
-      bool LoadA = ID == Intrinsic::riscv_bosc_ame_contents_load_a;
-      bool LoadB = ID == Intrinsic::riscv_bosc_ame_contents_load_b;
-      bool LoadC = ID == Intrinsic::riscv_bosc_ame_contents_load_c;
-      bool Store = ID == Intrinsic::riscv_bosc_ame_contents_store_c;
-      if (LoadA || LoadB || LoadC || Store) {
-        auto *Dimension = cast<IntrinsicInst>(Config[LoadA ? 2 : 1]);
-        auto Row = request(*Dimension);
-        if (!Row)
-          return Row.takeError();
-        unsigned Width = *Row * (LoadC || Store ? 4 : 1);
-        if (!validStride(II->getArgOperand(Store ? 2 : 1),
-                         Dimension->getArgOperand(0), Width, LoadC || Store,
-                         *II))
+    }
+    if (ID == Intrinsic::riscv_bosc_ame_contents_fp_mma &&
+        !llvm::any_of(instructions(F), [&](const Instruction &Format) {
+          const auto *Set = dyn_cast<IntrinsicInst>(&Format);
+          return Set &&
+                 Set->getIntrinsicID() ==
+                     Intrinsic::riscv_bosc_ame_setfp8_e4m3 &&
+                 Dominators.dominates(Set, II);
+        }))
+      return invalid(
+          F, "AME FP contents require an explicit reaching E4M3 format");
+    bool LoadA = ID == Intrinsic::riscv_bosc_ame_contents_load_a;
+    bool LoadB = ID == Intrinsic::riscv_bosc_ame_contents_load_b;
+    bool LoadC = ID == Intrinsic::riscv_bosc_ame_contents_load_c;
+    bool Store = ID == Intrinsic::riscv_bosc_ame_contents_store_c;
+    if (LoadA || LoadB || LoadC || Store) {
+      unsigned DimensionIndex = LoadA ? 2 : 1;
+      const Value *Dimension = Config[DimensionIndex];
+      const Value *Stride = II->getArgOperand(Store ? 2 : 1);
+      DenseSet<std::pair<const Value *, const Value *>> Visited;
+      auto Covered = checkContentsRow(Dimension, Stride, DimensionIndex,
+                                      LoadC || Store, *II, Visited);
+      if (!Covered)
+        return Covered.takeError();
+      if (!*Covered)
+        return invalid(F,
+                       "AME contents stride does not cover its configured row");
+    }
+    if (!LoadA && !LoadB && !LoadC) {
+      auto Check = [&](unsigned Operand, unsigned Role) -> Error {
+        DenseSet<ContentsDemand> Visited;
+        if (!checkContentsOrigin(II->getArgOperand(Operand), Role, Config,
+                                 Visited))
           return invalid(
-              F, "AME contents stride does not cover its configured row");
-      }
-      if (!LoadA && !LoadB && !LoadC) {
-        auto Check = [&](unsigned Operand, unsigned Role) -> Error {
-          SmallPtrSet<const Value *, 16> Visited;
-          if (!checkContentsOrigin(II->getArgOperand(Operand), Role, Config,
-                                   Visited))
-            return invalid(
-                F, "AME contents have incompatible role or configuration");
-          return Error::success();
-        };
-        if (Error E = Check(0, 2))
+              F, "AME contents have incompatible role or configuration");
+        return Error::success();
+      };
+      if (Error E = Check(0, 2))
+        return std::move(E);
+      if (!Store) {
+        if (Error E = Check(1, 0))
           return std::move(E);
-        if (!Store) {
-          if (Error E = Check(1, 0))
-            return std::move(E);
-          if (Error E = Check(2, 1))
-            return std::move(E);
-        }
+        if (Error E = Check(2, 1))
+          return std::move(E);
       }
     }
-    return State;
-  };
-  bool Changed;
-  do {
-    Changed = false;
-    for (const BasicBlock &BB : F) {
-      auto Next = Transfer(BB, Input(BB), false);
-      if (!Next)
-        return Next.takeError();
-      if (Out.lookup(&BB) != *Next) {
-        Out[&BB] = *Next;
-        Changed = true;
-      }
-    }
-  } while (Changed);
-  for (const BasicBlock &BB : F) {
-    auto Next = Transfer(BB, Input(BB), true);
-    if (!Next)
-      return Next.takeError();
   }
   for (const Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
@@ -1012,7 +1068,21 @@ Error llvm::verifyBOSCAMEIR(Function &F) {
 }
 
 void llvm::verifyBOSCAMEMachine(const MachineFunction &MF) {
-  auto Selectors = resolveMachineSelectors(MF);
+  // A predecessor-free dead block is not a second invocation entry. Restrict
+  // execution-state meets to paths reachable from the real function entry;
+  // structural instruction checks below still inspect every emitted block.
+  SmallPtrSet<const MachineBasicBlock *, 32> Reachable;
+  SmallVector<const MachineBasicBlock *, 16> Pending;
+  if (!MF.empty())
+    Pending.push_back(&MF.front());
+  while (!Pending.empty()) {
+    const MachineBasicBlock *MBB = Pending.pop_back_val();
+    if (!Reachable.insert(MBB).second)
+      continue;
+    for (const MachineBasicBlock *Succ : MBB->successors())
+      Pending.push_back(Succ);
+  }
+  auto Selectors = resolveMachineSelectors(MF, Reachable);
   const Function &F = MF.getFunction();
   const auto &ST = MF.getSubtarget<RISCVSubtarget>();
   if (isBOSCContentsAMEFunction(F)) {
@@ -1075,6 +1145,8 @@ void llvm::verifyBOSCAMEMachine(const MachineFunction &MF) {
       if (isSelectedLoad(MI.getOpcode()) || isSelectedMMA(MI.getOpcode())) {
         bool Load = isSelectedLoad(MI.getOpcode());
         auto Selected = selection(MI, Selectors);
+        if (Selected.FalseReg == Selected.TrueReg)
+          fail(F, "selected machine B alternatives require distinct Tr0..Tr15");
         for (unsigned Reg : {Selected.FalseReg, Selected.TrueReg}) {
           if (Reg >= 16)
             fail(F, "selected machine B alternative exceeds Tr0..Tr15");
@@ -1111,30 +1183,37 @@ void llvm::verifyBOSCAMEMachine(const MachineFunction &MF) {
   if (!Bound)
     return;
   MachineState TopState;
-  for (const MachineBasicBlock &MBB : MF)
+  for (const MachineBasicBlock &MBB : MF) {
+    if (!Reachable.contains(&MBB))
+      continue;
     for (const MachineInstr &MI : MBB)
       if (isSelectedLoad(MI.getOpcode()) || isSelectedMMA(MI.getOpcode())) {
         auto Selected = selection(MI, Selectors);
         if (!llvm::is_contained(TopState.SelectedB, Selected))
           TopState.SelectedB.push_back(Selected);
       }
+  }
   DenseMap<const MachineBasicBlock *, MachineState> Out;
   for (const MachineBasicBlock &MBB : MF)
-    Out[&MBB] = TopState;
+    if (Reachable.contains(&MBB))
+      Out[&MBB] = TopState;
   auto In = [&](const MachineBasicBlock &MBB) {
     MachineState S = TopState;
-    if (&MBB == &MF.front() || MBB.pred_empty()) {
+    if (&MBB == &MF.front()) {
       S.Bits = 0;
       S.SelectedB.clear();
     }
     for (const MachineBasicBlock *Pred : MBB.predecessors())
-      S.meet(Out[Pred]);
+      if (Reachable.contains(Pred))
+        S.meet(Out[Pred]);
     return S;
   };
   bool Changed;
   do {
     Changed = false;
     for (const MachineBasicBlock &MBB : MF) {
+      if (!Reachable.contains(&MBB))
+        continue;
       auto Next = transferMachine(MBB, In(MBB), false, Selectors);
       if (!(Next == Out[&MBB])) {
         Out[&MBB] = std::move(Next);
@@ -1143,7 +1222,8 @@ void llvm::verifyBOSCAMEMachine(const MachineFunction &MF) {
     }
   } while (Changed);
   for (const MachineBasicBlock &MBB : MF)
-    transferMachine(MBB, In(MBB), true, Selectors);
+    if (Reachable.contains(&MBB))
+      transferMachine(MBB, In(MBB), true, Selectors);
 }
 
 SDValue llvm::lowerBOSCAMEIntrinsic(SDValue Op, SelectionDAG &DAG,

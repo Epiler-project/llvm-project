@@ -1,0 +1,144 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/legal.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/full-peek.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FULL
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/full-peek.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/full-and.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FULL
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/full-and.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t/full-or.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FULL
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/full-or.mir -o /dev/null
+# FULL: Wormhole SFPU nonzero POPC is not supported at CC stack depth 8
+
+# WH's nonzero POPC hardware bug overwrites the bottom frame at depth eight.
+# Depth seven, empty-stack peeking, and plain pop at depth eight remain legal.
+# BH fixes this bug and retains its pre-existing full-stack peeking support.
+#--- legal.mir
+--- |
+  define void @wh_legal_peek_depth() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: wh_legal_peek_depth
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPPOPCPeek implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPCAndTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPCOrTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPCPeek implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPCAndTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPCOrTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPCPeek implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPCAndTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPCOrTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- full-peek.mir
+--- |
+  define void @full_peek() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: full_peek
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPCPeek implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- full-and.mir
+--- |
+  define void @full_and() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: full_and
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPCAndTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- full-or.mir
+--- |
+  define void @full_or() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: full_or
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPUSHC implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPCOrTop implicit $tt_cc, implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    TTSFPPOPC implicit $tt_ccstack, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_ccstack, implicit-def $tt_issue
+    PseudoRET
+...

@@ -7,6 +7,25 @@
 // Literal struct results may only be projected with extractvalue, not passed
 // through an ordinary function ABI or assembled into arbitrary aggregates.
 let TargetPrefix = "riscv" in {
+  // Paired LOAD returns the primary value and its hardware +4 companion.
+  // LLVM selects one of four legal low-primary groups without source IDs.
+  // Both old contents preserve disabled/blocked lanes; capture itself is
+  // conditional on the actual LaneConfig bits, not an asserted readiness fact.
+  // The Dst coordinate may be scalar SSA only when the independent IR
+  // verifier proves it defined, non-poison and within ten bits. Native
+  // AddrMod/format verification remains shared with ordinary SFPLOAD.
+  def int_riscv_tt_contents_load_index :
+      TensixIntrinsic<[llvm_v32i32_ty, llvm_v32i32_ty],
+                      [llvm_v32i32_ty, llvm_v32i32_ty, llvm_i32_ty,
+                       llvm_i32_ty, llvm_i32_ty],
+                      [ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<4>>]>;
+  // Four-result source form: L4..L7 are machine scratch clobbers, not
+  // numerical inputs/results or additional storage capacity.
+  def int_riscv_tt_contents_transpose4 :
+      TensixIntrinsic<[llvm_v32i32_ty, llvm_v32i32_ty, llvm_v32i32_ty,
+                       llvm_v32i32_ty],
+                      [llvm_v32i32_ty, llvm_v32i32_ty, llvm_v32i32_ty,
+                       llvm_v32i32_ty]>;
   def int_riscv_tt_contents_transpose8 :
       TensixIntrinsic<[llvm_v32i32_ty, llvm_v32i32_ty, llvm_v32i32_ty,
                        llvm_v32i32_ty, llvm_v32i32_ty, llvm_v32i32_ty,
@@ -31,6 +50,16 @@ let TargetPrefix = "riscv" in {
       TensixIntrinsic<[llvm_v32i32_ty, llvm_v32i32_ty],
                       [llvm_v32i32_ty, llvm_v32i32_ty, llvm_i32_ty],
                       [ImmArg<ArgIndex<2>>]>;
+  // Complete argmin/argmax update in numerical order D, C, D-index, C-index.
+  // LLVM selects two distinct low primaries and their hardware +4 companions.
+  // No source register selectors are exposed. The old values preserve every lane
+  // that does not swap or has ENABLE_DEST_INDEX disabled. Unlike the pair
+  // form, this receives all possible writes for either indexing state.
+  def int_riscv_tt_contents_swap_index :
+      TensixIntrinsic<[llvm_v32i32_ty, llvm_v32i32_ty, llvm_v32i32_ty,
+                       llvm_v32i32_ty],
+                      [llvm_v32i32_ty, llvm_v32i32_ty, llvm_v32i32_ty,
+                       llvm_v32i32_ty, llvm_i32_ty], [ImmArg<ArgIndex<4>>]>;
   // Direct table forms return only their actual destination. Old destination
   // preserves disabled lanes; following numerical sources occupy the actual
   // fixed table/input positions without hidden staging copies.

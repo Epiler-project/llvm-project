@@ -18,7 +18,7 @@ class MachineInstr;
 class MachineInstrBuilder;
 class RISCVInstrInfo;
 class PassRegistry;
-class TargetRegisterInfo;
+class RISCVSubtarget;
 inline constexpr unsigned TensixReplaySlotCount = 32;
 // Shared native latency transfer for verified, non-REPLAY/MOP body words.
 // Neither templates nor their MC emitter maintain another opcode table.
@@ -29,11 +29,13 @@ struct TensixReplayHazardState {
     return SFPU == Other.SFPU && DstCycles == Other.DstCycles;
   }
 };
+// Reconstructed words are detached MIs. Their owner must supply the actual
+// subtarget; neither a parent MBB nor an implicit BH model is available here.
 bool needsTensixReplayHazardGap(const MachineInstr &MI,
-                               const TargetRegisterInfo &TRI,
+                               const RISCVSubtarget &ST,
                                TensixReplayHazardState State);
 TensixReplayHazardState advanceTensixReplayHazard(
-    const MachineInstr &MI, const TargetRegisterInfo &TRI,
+    const MachineInstr &MI, const RISCVSubtarget &ST,
     TensixReplayHazardState State);
 struct TensixSFPUReplayEffects {
   SmallVector<MCRegister, 16> Uses;

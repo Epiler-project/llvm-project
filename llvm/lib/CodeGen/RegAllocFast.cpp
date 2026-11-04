@@ -1327,8 +1327,17 @@ bool RegAllocFastImpl::setPhysReg(MachineInstr &MI, MachineOperand &MO,
   }
 
   // A <def,read-undef> of a sub-register requires an implicit def of the full
-  // register.
-  if (MO.isDef() && MO.isUndef()) {
+  // register. An undef subregister def can also be tied to a real read after
+  // coalescing; in that case the tied use must retain its assignment.
+  // In a bundle, MI is the bundle header while MO belongs to a bundled
+  // instruction. Query the tie on the operand's owning instruction.
+  MachineInstr &OperandMI = *MO.getParent();
+  bool TiedToRead =
+      MO.isDef() && MO.isTied() &&
+      !OperandMI
+           .getOperand(OperandMI.findTiedOperandIdx(OperandMI.getOperandNo(&MO)))
+           .isUndef();
+  if (MO.isDef() && MO.isUndef() && !TiedToRead) {
     if (MO.isDead())
       MI.addRegisterDead(PhysReg, TRI, true);
     else
@@ -1825,6 +1834,10 @@ void RegAllocFastImpl::handleBundle(MachineInstr &MI) {
       assert(DI != BundleVirtRegsMap.end() && "Unassigned virtual register");
 
       setPhysReg(MI, MO, DI->second);
+      // Bundled instructions are not visited by allocateInstruction(), which
+      // normally clears the subregister marker left on physical defs.
+      if (MO.isDef())
+        MO.setSubReg(0);
     }
 
     ++BundledMI;

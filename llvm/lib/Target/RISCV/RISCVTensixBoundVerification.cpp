@@ -27,16 +27,19 @@ bool isSFPURegister(Register Reg, const MachineRegisterInfo &MRI) {
     return false;
   if (Reg.isPhysical())
     return RISCV::SFPRReadRegClass.contains(Reg) ||
+           RISCV::SFPRIndexPairRegClass.contains(Reg) ||
            RISCV::SFPStageRegClass.contains(Reg) ||
            RISCV::SFPStateRegClass.contains(Reg);
   const TargetRegisterClass *RC = MRI.getRegClassOrNull(Reg);
   return RC && (RISCV::SFPRReadRegClass.hasSubClassEq(RC) ||
+                RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC) ||
                 RISCV::SFPStageRegClass.hasSubClassEq(RC) ||
                 RISCV::SFPStateRegClass.hasSubClassEq(RC));
 }
 
 bool isDstPort(const MachineInstr &MI) {
   return MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+         MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
          MI.getOpcode() == RISCV::PseudoTTSFPSTORE;
 }
 
@@ -57,13 +60,18 @@ bool isNativeIssue(const MachineInstr &MI) {
 // effect is not an equivalent description. Compare multiplicities as well as
 // membership; a duplicate use cannot stand in for a different required use.
 Error llvm::verifyTensixMachineEffects(const MachineInstr &MI) {
+  return verifyTensixMachineEffects(MI, MI.getDesc().getNumOperands());
+}
+
+Error llvm::verifyTensixMachineEffects(const MachineInstr &MI,
+                                     unsigned ExplicitOperandCount) {
   const MCInstrDesc &Desc = MI.getDesc();
   auto Fail = [] {
     return createStringError(
         "bound Tensix SFPU physical effects differ from the native descriptor");
   };
-  if (MI.getNumExplicitOperands() != Desc.getNumOperands() ||
-      MI.getNumOperands() != Desc.getNumOperands() +
+  if (MI.getNumExplicitOperands() != ExplicitOperandCount ||
+      MI.getNumOperands() != ExplicitOperandCount +
                                  Desc.implicit_uses().size() +
                                  Desc.implicit_defs().size())
     return Fail();
@@ -153,6 +161,29 @@ Error llvm::verifyTensixMachineOperands(const MachineInstr &MI,
   return Error::success();
 }
 
+Error llvm::verifyTensixCoprocessorWait(const MachineInstr &MI,
+                                        const RISCVSubtarget &ST) {
+  if (MI.getOpcode() != RISCV::PseudoTTCoprocessorWait || MI.isBundled() ||
+      !MI.memoperands_empty())
+    return createStringError(
+        "coprocessor wait requires one indivisible full-memory machine owner");
+  if (ST.is64Bit() ||
+      (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH()))
+    return createStringError(
+        "coprocessor wait requires RV32 +xtttensixbh or +xtttensixwh");
+  const MachineFunction &MF = *MI.getMF();
+  Attribute Executor = MF.getFunction().getFnAttribute("tensix-executor");
+  if (!Executor.isStringAttribute() ||
+      (Executor.getValueAsString() != "trisc0" &&
+       Executor.getValueAsString() != "trisc1" &&
+       Executor.getValueAsString() != "trisc2"))
+    return createStringError("coprocessor wait requires a TRISC executor");
+  if (Error E = verifyTensixMachineEffects(MI))
+    return E;
+  return verifyTensixMachineOperands(MI, MF.getRegInfo(),
+                                     *ST.getRegisterInfo());
+}
+
 namespace {
 
 // Dynamic Dst issue has only ordinary scalar scratch. Verify it without
@@ -161,10 +192,11 @@ namespace {
 // or SFPU register/tie/mode table is maintained here.
 Error verifyDstPort(const MachineInstr &MI, const MachineRegisterInfo &MRI,
                     const RISCVInstrInfo &TII, const RISCVRegisterInfo &TRI) {
-  bool Load = MI.getOpcode() == RISCV::PseudoTTSFPLOAD;
+  bool Full = MI.getOpcode() == RISCV::PseudoTTSFPLOADFull;
+  bool Load = Full || MI.getOpcode() == RISCV::PseudoTTSFPLOAD;
   unsigned WordIndex = Load ? 1 : 0;
   unsigned AddressIndex = WordIndex + 1;
-  unsigned OffsetIndex = Load ? 4 : 3;
+  unsigned OffsetIndex = Full ? 3 : Load ? 4 : 3;
   for (unsigned I : {WordIndex, AddressIndex, OffsetIndex}) {
     const MachineOperand &MO = MI.getOperand(I);
     if (!MO.isReg() || !MO.getReg() || MO.getSubReg() || MO.isUndef() ||
@@ -188,9 +220,11 @@ Error verifyDstPort(const MachineInstr &MI, const MachineRegisterInfo &MRI,
         "bound Tensix SFPU scalar scratch must preserve all inputs");
 
   MCInst Native;
-  Native.setOpcode(Load ? RISCV::TTSFPLOAD : RISCV::TTSFPSTORE);
+  Native.setOpcode(Full   ? RISCV::TTSFPLOADFull
+                   : Load ? RISCV::TTSFPLOAD
+                          : RISCV::TTSFPSTORE);
   const unsigned DataIndices[] = {Load ? 0u : 2u, 3};
-  for (unsigned I : ArrayRef(DataIndices).take_front(Load ? 2 : 1)) {
+  for (unsigned I : ArrayRef(DataIndices).take_front(Load && !Full ? 2 : 1)) {
     const MachineOperand &MO = MI.getOperand(I);
     if (!MO.isReg() || !MO.getReg().isPhysical() ||
         MO.isDef() != (Load && I == 0))

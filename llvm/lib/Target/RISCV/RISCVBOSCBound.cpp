@@ -15,10 +15,12 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/CFG.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
+#include "llvm/CodeGen/StackProtector.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
@@ -35,6 +37,7 @@
 #include <array>
 #include <limits>
 #include <optional>
+#include <tuple>
 
 using namespace llvm;
 
@@ -310,6 +313,15 @@ bool hasDMAIntrinsic(const Function &F) {
   });
 }
 
+bool requiresBOSCExplicitVectorState(const Function &F) {
+  // The contents ABI owns real vector SSA and lets LLVM allocate its registers.
+  // Fixed-register and standalone DMA functions instead admit scalar state and
+  // explicit bound operations. Scalar memory combines must not invent VRF
+  // contents merely because the target also supports the V extension.
+  return !isBOSCContentsRVVFunction(F) &&
+         (isBOSCBoundFunction(F) || hasDMAIntrinsic(F));
+}
+
 bool hasBOSCObservationIntrinsic(const Function &F) {
   return llvm::any_of(instructions(F), [](const Instruction &I) {
     const auto *II = dyn_cast<IntrinsicInst>(&I);
@@ -459,27 +471,55 @@ ContentsVLRange contentsVLRange(const Value *VL,
   return Result;
 }
 
+// A prefix produced under the same actual VL, or under VLMAX, covers every
+// lane read by the reduction. A guaranteed full prefix also suffices when the
+// function carries the exact VLEN=512 contract. Unrelated dynamic VL results
+// cannot establish coverage, even if they happen to agree on one execution.
+bool contentsVLCovers(const Value *ProducerVL, const Value *RequiredVL,
+                      bool Exact512) {
+  if (ProducerVL == RequiredVL)
+    return true;
+  if (const auto *II = dyn_cast<IntrinsicInst>(ProducerVL);
+      II && II->getIntrinsicID() == Intrinsic::riscv_vsetvlimax)
+    return true;
+  return Exact512 && contentsVLRange(ProducerVL).Minimum >= 16;
+}
+
 // Gather may read a lane outside active VL, but never an undefined tail.
-// Receive the lane from actual contents producers, preserving CFG PHIs and
-// seeded cycles. No physical selector, repair copy or source loop cloning is
-// needed. The gather's positive-VL path also validates a same-VL lane zero.
+// Reduction lane zero additionally depends on its scalar seed and the entire
+// actual active source prefix. A prefix requirement is vacuous when its VL is
+// zero; this does not initialize the scalar seed or any result lane.
+// Receive both requirements from actual contents producers, preserving CFG
+// PHIs and seeded cycles without physical selectors or repair copies.
 Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
                                      const Value *PositiveVL, bool Exact512) {
-  using Node = std::pair<const Value *, unsigned>;
+  enum class Region { Lane, ActivePrefix };
+  // Context is the positive gather VL for Lane, or the demanded actual VL for
+  // ActivePrefix. Keeping it in the key preserves distinct path assumptions.
+  using Node = std::tuple<const Value *, Region, unsigned, const Value *>;
   DenseMap<Node, SmallVector<Node, 3>> Dependencies;
   DenseMap<Node, bool> Seeded;
-  SmallVector<Node, 16> Worklist{{Source, Lane}};
+  SmallVector<Node, 16> Worklist{{Source, Region::Lane, Lane, PositiveVL}};
   while (!Worklist.empty()) {
     Node Key = Worklist.pop_back_val();
     auto [It, Inserted] = Dependencies.try_emplace(Key);
     if (!Inserted)
       continue;
-    auto &[V, Index] = Key;
-    auto Add = [&](const Value *Input, unsigned InputLane) {
-      Node Dependency{Input, InputLane};
+    auto &[V, Requirement, Index, Context] = Key;
+    auto Add = [&](const Value *Input, Region InputRegion, unsigned InputLane,
+                   const Value *InputContext) {
+      Node Dependency{Input, InputRegion, InputLane, InputContext};
       It->second.push_back(Dependency);
       Worklist.push_back(Dependency);
     };
+    auto AddSame = [&](const Value *Input) {
+      Add(Input, Requirement, Index, Context);
+    };
+    if (Requirement == Region::ActivePrefix &&
+        !contentsVLRange(Context).MayBePositive) {
+      Seeded[Key] = true;
+      continue;
+    }
     if (isa<UndefValue>(V))
       return false;
     if (auto *C = dyn_cast<Constant>(V)) {
@@ -490,8 +530,18 @@ Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
       continue;
     }
     if (auto *Phi = dyn_cast<PHINode>(V)) {
+      // A PHI may carry the previous iteration's contents. A positive current
+      // VL cannot initialize that old value, and equal SSA VL operands do not
+      // identify the same dynamic occurrence across a backedge. Only transport
+      // a prefix demand when its VL cannot be reevaluated after this PHI.
+      if (Requirement == Region::ActivePrefix)
+        if (const auto *VLInst = dyn_cast<Instruction>(Context);
+            VLInst &&
+            isPotentiallyReachable(Phi->getParent(), VLInst->getParent()))
+          return false;
       for (const Value *Incoming : Phi->incoming_values())
-        Add(Incoming, Index);
+        Add(Incoming, Requirement, Index,
+            Requirement == Region::Lane ? nullptr : Context);
       continue;
     }
     if (auto *Cast = dyn_cast<BitCastInst>(V)) {
@@ -500,23 +550,81 @@ Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
       if (!SrcTy || !DstTy ||
           SrcTy->getElementCount() != DstTy->getElementCount())
         return false;
-      Add(Cast->getOperand(0), Index);
+      AddSame(Cast->getOperand(0));
       continue;
     }
     auto *II = dyn_cast<IntrinsicInst>(V);
-    if (!II || (!isBOSCOrderedRVVContentsIntrinsic(II->getIntrinsicID()) &&
-                !isBOSCContentsSFUIntrinsic(II->getIntrinsicID())))
+    if (!II)
       return false;
     auto ID = II->getIntrinsicID();
+    bool Merge = ID == Intrinsic::riscv_vmerge;
+    if (!Merge && !isBOSCOrderedRVVContentsIntrinsic(ID) &&
+        !isBOSCContentsSFUIntrinsic(ID))
+      return false;
+    const Value *VL = II->getArgOperand(II->arg_size() - 1);
+    if (Merge) {
+      auto *VT = dyn_cast<ScalableVectorType>(II->getType());
+      if (!VT || VT->getMinNumElements() != 2 ||
+          !VT->getElementType()->isIntegerTy(32) ||
+          II->getArgOperand(1)->getType() != VT ||
+          II->getArgOperand(2)->getType() != VT || !isActualE32M1VL(VL))
+        return false;
+    }
     auto Range =
-        contentsVLRange(II->getArgOperand(II->arg_size() - 1), PositiveVL);
+        contentsVLRange(VL, Requirement == Region::Lane ? Context : nullptr);
     if (!Range.MayBePositive) {
-      Add(II->getArgOperand(0), Index);
+      AddSame(II->getArgOperand(0));
       continue;
     }
-    if (Range.Minimum <= Index)
+    if (Merge) {
+      // Official vmerge receives a real passthru: unlike the ordered
+      // tail-agnostic operations below, its inactive tails can retain defined
+      // old contents. If this demand extends beyond the known active region,
+      // receive both that passthru and the actually-read active prefix.
+      bool Active = Requirement == Region::Lane
+                        ? Range.Minimum > Index
+                        : contentsVLCovers(VL, Context, Exact512);
+      if (!Active)
+        AddSame(II->getArgOperand(0));
+      auto AddActive = [&](const Value *Input) {
+        if (Active)
+          AddSame(Input);
+        else
+          Add(Input, Region::ActivePrefix, 0, VL);
+      };
+      const auto *Mask = dyn_cast<Constant>(II->getArgOperand(3));
+      const auto *MaskBit =
+          Mask ? dyn_cast_or_null<ConstantInt>(Mask->getSplatValue()) : nullptr;
+      if (MaskBit)
+        AddActive(II->getArgOperand(MaskBit->isZero() ? 1 : 2));
+      else {
+        AddActive(II->getArgOperand(1));
+        AddActive(II->getArgOperand(2));
+        AddActive(II->getArgOperand(3));
+      }
+      continue;
+    }
+    if (ID == Intrinsic::riscv_bosc_rvv_contents_freduce_sum ||
+        ID == Intrinsic::riscv_bosc_rvv_contents_freduce_max) {
+      // Positive-VL reductions define only lane zero; the remaining lanes are
+      // tail-agnostic even if the old destination was fully initialized.
+      if (Requirement != Region::Lane || Index != 0)
+        return false;
+      Add(II->getArgOperand(0), Region::Lane, 0, Context);
+      Add(II->getArgOperand(1), Region::ActivePrefix, 0, VL);
+      continue;
+    }
+    if (Requirement == Region::Lane ? Range.Minimum <= Index
+                                    : !contentsVLCovers(VL, Context, Exact512))
       return false;
     switch (ID) {
+    case Intrinsic::riscv_bosc_rvv_contents_fcmp_lt:
+    case Intrinsic::riscv_bosc_rvv_contents_fcmp_eq:
+      // Only the active mask prefix is initialized. Positive-VL mask tails
+      // remain agnostic even when the compare received a defined old mask.
+      AddSame(II->getArgOperand(1));
+      AddSame(II->getArgOperand(2));
+      break;
     case Intrinsic::riscv_bosc_rvv_contents_load:
       Seeded[Key] = true;
       break;
@@ -533,11 +641,11 @@ Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
       if (*InputLane == 16)
         Seeded[Key] = true;
       else
-        Add(II->getArgOperand(1), *InputLane);
+        Add(II->getArgOperand(1), Region::Lane, *InputLane, VL);
       break;
     }
     case Intrinsic::riscv_bosc_rvv_contents_fmacc:
-      Add(II->getArgOperand(0), Index);
+      AddSame(II->getArgOperand(0));
       [[fallthrough]];
     case Intrinsic::riscv_bosc_rvv_contents_add:
     case Intrinsic::riscv_bosc_rvv_contents_maximum:
@@ -546,7 +654,7 @@ Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
     case Intrinsic::riscv_bosc_rvv_contents_fmul:
     case Intrinsic::riscv_bosc_rvv_contents_fdiv:
     case Intrinsic::riscv_bosc_rvv_contents_fmax:
-      Add(II->getArgOperand(2), Index);
+      AddSame(II->getArgOperand(2));
       [[fallthrough]];
     case Intrinsic::riscv_bosc_rvv_contents_iadd_scalar:
     case Intrinsic::riscv_bosc_rvv_contents_shl:
@@ -557,7 +665,7 @@ Expected<bool> isContentsLaneDefined(const Value *Source, unsigned Lane,
     case Intrinsic::riscv_bosc_rvv_contents_fcvt_from_i32:
     case Intrinsic::riscv_bosc_sfu_exp2_contents:
     case Intrinsic::riscv_bosc_sfu_rcp_contents:
-      Add(II->getArgOperand(1), Index);
+      AddSame(II->getArgOperand(1));
       break;
     default:
       return false;
@@ -984,10 +1092,25 @@ public:
     const auto &ST = TM.getSubtarget<RISCVSubtarget>(F);
     if (Error E = verifyBOSCFunction(F, ST, Supported))
       reportFatalUsageError(Twine(toString(std::move(E))));
+    // Establish the standard LLVM codegen policy at machine ingress, after the
+    // actual function has passed the BOSC ABI verifier. This covers SelectionDAG
+    // store merging, memory-intrinsic expansion and other implicit vector uses;
+    // it preserves explicit scalar FP and bound vector operations. Library IR
+    // verification remains read-only, and standalone llc receives the same
+    // policy without relying on a TReX producer or a function-name convention.
+    if (requiresBOSCExplicitVectorState(F) &&
+        !F.hasFnAttribute(Attribute::NoImplicitFloat)) {
+      F.addFnAttr(Attribute::NoImplicitFloat);
+      return true;
+    }
     return false;
   }
   void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.setPreservesAll();
+    AU.setPreservesCFG();
+    // Only a codegen policy attribute changes. Keep the already-run stack
+    // protector: rebuilding it here invalidates AA required by SelectionDAG
+    // and creates an unschedulable legacy analysis dependency.
+    AU.addPreserved<StackProtector>();
     AU.addRequired<TargetPassConfig>();
   }
 };

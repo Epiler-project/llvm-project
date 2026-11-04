@@ -13,13 +13,14 @@
 
 #include "RISCVBaseInfo.h"
 #include "RISCVMCAsmInfo.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -53,6 +54,8 @@ namespace RISCV {
 #define GET_RISCVVLXTable_IMPL
 #define GET_RISCVVSXTable_IMPL
 #define GET_RISCVNDSVLNTable_IMPL
+#define GET_RISCVTensixContentsReplayExecuteTable_IMPL
+#define GET_RISCVTensixContentsMOPExecuteTable_IMPL
 #define GET_RISCVTensixEncodingTable_IMPL
 #define GET_RISCVTensixInstructionTable_IMPL
 #define GET_RISCVTensixMachineTable_IMPL
@@ -215,6 +218,15 @@ Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
           getTensixInstructionField(*Info, I)->getName() + " must be in [" +
           Twine(Field->MinValue) + ", " + Twine(Field->MaxValue) + "]");
   }
+  if (ID == Intrinsic::riscv_tt_replay) {
+    // Independent field bounds cannot establish that this contiguous range
+    // stays inside the bank. Its capacity comes from the same native TableGen
+    // count bound, rather than another encoding or architecture table.
+    const auto *Count = getTensixWormholeField(Machine->Opcode, 2);
+    if (Fields[2] + Fields[3] > Count->MaxValue)
+      return createStringError(
+          "Tensix replay range must fit 32 instruction slots");
+  }
   if (!getTensixWormholeFormField(Machine->Opcode, 0, 0))
     return Error::success();
   for (unsigned F = 0;
@@ -320,6 +332,9 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
     case RISCVOp::OPERAND_UIMM8:
       Bits = 8;
       break;
+    case RISCVOp::OPERAND_UIMM9:
+      Bits = 9;
+      break;
     case RISCVOp::OPERAND_UIMM10:
       Bits = 10;
       break;
@@ -341,6 +356,40 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
                                Twine(Bits) + " unsigned bits");
   }
 
+  // These codegen-only views describe every actual old/result. Their widened
+  // leaf classes do not by themselves enforce the hardware +4 relationship.
+  auto IsIndexPair = [](const MCOperand &Primary, const MCOperand &Index) {
+    if (!Primary.isReg() || !Index.isReg())
+      return false;
+    static constexpr MCPhysReg Pairs[][2] = {{RISCV::TT_L0, RISCV::TT_L4},
+                                             {RISCV::TT_L1, RISCV::TT_L5},
+                                             {RISCV::TT_L2, RISCV::TT_L6},
+                                             {RISCV::TT_L3, RISCV::TT_L7}};
+    return llvm::any_of(Pairs, [&](const auto &Pair) {
+      return Primary.getReg() == Pair[0] && Index.getReg() == Pair[1];
+    });
+  };
+  if (MI.getOpcode() == RISCV::TTSFPLOADIndex) {
+    if (!IsIndexPair(MI.getOperand(0), MI.getOperand(1)))
+      return createStringError("contents paired LOAD requires a low primary "
+                               "and its hardware +4 companion");
+    if (!MI.getOperand(2).isReg() || !MI.getOperand(3).isReg() ||
+        MI.getOperand(0).getReg() != MI.getOperand(2).getReg() ||
+        MI.getOperand(1).getReg() != MI.getOperand(3).getReg())
+      return createStringError("contents paired LOAD requires actual old ties");
+  }
+  if (MI.getOpcode() == RISCV::TTSFPSWAPIndex) {
+    if (!IsIndexPair(MI.getOperand(0), MI.getOperand(2)) ||
+        !IsIndexPair(MI.getOperand(1), MI.getOperand(3)) ||
+        MI.getOperand(0).getReg() == MI.getOperand(1).getReg())
+      return createStringError("contents index SWAP requires distinct low "
+                               "primaries and their hardware +4 companions");
+    for (unsigned I = 0; I != 4; ++I)
+      if (!MI.getOperand(4 + I).isReg() ||
+          MI.getOperand(I).getReg() != MI.getOperand(4 + I).getReg())
+        return createStringError(
+            "contents index SWAP requires actual old ties");
+  }
   if (Encoding->ConfigCount &&
       uint64_t(MI.getOperand(0).getImm()) >= Encoding->ConfigCount)
     return createStringError("SETC16 configuration index must be in [0, 67]");
@@ -355,6 +404,7 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
       raw_string_ostream OS(Message);
       OS << MCII.getName(MI.getOpcode()).drop_front(2)
          << ((MI.getOpcode() == RISCV::TTSFPLOAD ||
+              MI.getOpcode() == RISCV::TTSFPLOADFull ||
               MI.getOpcode() == RISCV::TTSFPSTORE)
                  ? " format"
                  : " mode")
