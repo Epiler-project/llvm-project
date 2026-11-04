@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVRegisterContents.h"
+#include "RISCVBOSCBound.h"
 #include "RISCVRegisterInfo.h"
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -16,10 +17,16 @@
 
 using namespace llvm;
 
-bool llvm::isRISCVRegisterContentsClass(const MachineFunction &,
+bool llvm::isRISCVRegisterContentsClass(const MachineFunction &MF,
                                         const TargetRegisterClass &RC) {
+  const Function &F = MF.getFunction();
   return RISCV::SFPRReadRegClass.hasSubClassEq(&RC) ||
-         RISCV::SFPRIndexPairRegClass.hasSubClassEq(&RC);
+         RISCV::SFPRIndexPairRegClass.hasSubClassEq(&RC) ||
+         (isBOSCContentsRVVFunction(F) &&
+          RISCVRegisterInfo::isRVVRegClass(&RC)) ||
+         (isBOSCContentsAMEFunction(F) &&
+          (RISCV::BOSCTrRegRegClass.hasSubClassEq(&RC) ||
+           RISCV::BOSCAccRegRegClass.hasSubClassEq(&RC)));
 }
 
 namespace {

@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVISelLowering.h"
+#include "RISCVBOSCBound.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCV.h"
 #include "RISCVConstantPoolValue.h"
@@ -330,6 +331,10 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   }
 
 
+  if (Subtarget.hasVendorXBOSCAME()) {
+    addRegisterClass(MVT::riscv_bosc_ame_tr, &RISCV::BOSCTrRegRegClass);
+    addRegisterClass(MVT::riscv_bosc_ame_acc, &RISCV::BOSCAccRegRegClass);
+  }
   if (Subtarget.hasVendorXTTTensixBH() || Subtarget.hasVendorXTTTensixWH())
     addRegisterClass(MVT::v32i32, &RISCV::SFPRRegClass);
 
@@ -444,7 +449,8 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   // formal Tensix intrinsics instead of silently emitting an external call.
   setOperationAction(ISD::INTRINSIC_VOID, {MVT::Other, MVT::i1, MVT::i16},
                      Custom);
-  if (Subtarget.hasVendorXTTTensixBH() || Subtarget.hasVendorXTTTensixWH())
+  if (Subtarget.hasVendorXTTTensixBH() || Subtarget.hasVendorXTTTensixWH() ||
+      Subtarget.hasVendorXBOSCAME())
     // Intrinsic operation legalization is queried with MVT::Other, even
     // when the intrinsic returns the legal SFPU vector carrier.
     setOperationAction(ISD::INTRINSIC_W_CHAIN, MVT::Other, Custom);
@@ -13747,10 +13753,36 @@ lowerFixedVectorSegLoadIntrinsics(unsigned IntNo, SDValue Op,
   return DAG.getMergeValues(Results, DL);
 }
 
+SDValue llvm::lowerBOSCContentsSFUIntrinsic(SDValue Op, SelectionDAG &DAG,
+                                            const RISCVSubtarget &ST) {
+  if (Op.getOpcode() != ISD::INTRINSIC_W_CHAIN)
+    return SDValue();
+  auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
+  if (ID != Intrinsic::riscv_bosc_sfu_exp2_contents &&
+      ID != Intrinsic::riscv_bosc_sfu_rcp_contents)
+    return SDValue();
+  if (!isBOSCContentsRVVFunction(DAG.getMachineFunction().getFunction()) ||
+      !ST.is64Bit() || !ST.hasVInstructions() || !ST.hasVendorXBOSCSFU())
+    report_fatal_error("BOSC SFU contents require RV64 vector contents scope "
+                      "and +xboscsfu");
+  SDLoc DL(Op);
+  unsigned Opcode = ID == Intrinsic::riscv_bosc_sfu_exp2_contents
+                        ? RISCV::PseudoBOSC_SFU_EXP2_M1
+                        : RISCV::PseudoBOSC_SFU_RCP_M1;
+  SDValue Args[] = {Op.getOperand(2), Op.getOperand(3), Op.getOperand(4),
+                    DAG.getTargetConstant(5, DL, MVT::i64),
+                    DAG.getTargetConstant(3, DL, MVT::i64), Op.getOperand(0)};
+  return SDValue(DAG.getMachineNode(
+                     Opcode, DL, DAG.getVTList(MVT::nxv2i32, MVT::Other), Args),
+                 0);
+}
+
 SDValue RISCVTargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
                                                     SelectionDAG &DAG) const {
   if (SDValue Contents = lowerTensixContentsIntrinsic(Op, DAG, Subtarget))
     return Contents;
+  if (SDValue Bound = lowerBOSCBoundIntrinsic(Op, DAG, Subtarget))
+    return Bound;
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
   unsigned IntNo = Op.getConstantOperandVal(1);
@@ -13899,6 +13931,8 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
                                                  SelectionDAG &DAG) const {
   if (SDValue Contents = lowerTensixContentsIntrinsic(Op, DAG, Subtarget))
     return Contents;
+  if (SDValue Bound = lowerBOSCBoundIntrinsic(Op, DAG, Subtarget))
+    return Bound;
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
   if (SDValue Tensix = lowerTensixOrdinaryIntrinsic(Op, DAG, Subtarget))
@@ -27312,6 +27346,8 @@ static MachineBasicBlock *emitFROUND(MachineInstr &MI, MachineBasicBlock *MBB,
 MachineBasicBlock *
 RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
                                                  MachineBasicBlock *BB) const {
+  if (auto *Bound = emitBOSCBoundInstruction(MI, BB, Subtarget))
+    return Bound;
   if (auto *Bound = emitTensixBoundSFPUInstruction(MI, BB, Subtarget))
     return Bound;
   switch (MI.getOpcode()) {

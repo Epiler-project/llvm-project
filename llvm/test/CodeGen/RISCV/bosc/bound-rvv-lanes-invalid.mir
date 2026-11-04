@@ -1,0 +1,74 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/short-write.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/backedge.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/dynamic.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/ambiguous.mir -o /dev/null 2>&1 | FileCheck %s
+# CHECK: machine read of undefined physical vector register v4 covering the active setvl lanes
+
+#--- short-write.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 15, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VADD_VV $v4, $v4, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- backedge.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    successors: %bb.1
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 15, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    BNE $x12, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+#--- dynamic.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETVLI $x12, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- ambiguous.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 17, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...

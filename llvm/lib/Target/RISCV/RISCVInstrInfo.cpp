@@ -14,6 +14,7 @@
 #include "MCTargetDesc/RISCVBaseInfo.h"
 #include "MCTargetDesc/RISCVMatInt.h"
 #include "RISCV.h"
+#include "RISCVBOSCBound.h"
 #include "RISCVRegisterContents.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
@@ -525,9 +526,20 @@ void RISCVInstrInfo::copyPhysRegVector(
   }
 }
 
-static StringRef getContentsCopyError(const MachineFunction &,
-                                      const TargetRegisterInfo &,
+static StringRef getContentsCopyError(const MachineFunction &MF,
+                                      const TargetRegisterInfo &TRI,
                                       Register DstReg, Register SrcReg) {
+  const Function &F = MF.getFunction();
+  if (isBOSCContentsAMEFunction(F) &&
+      (RISCV::BOSCTrRegRegClass.contains(DstReg) ||
+       RISCV::BOSCTrRegRegClass.contains(SrcReg) ||
+       RISCV::BOSCAccRegRegClass.contains(DstReg) ||
+       RISCV::BOSCAccRegRegClass.contains(SrcReg)))
+    return "BOSC register contents cannot synthesize a matrix register copy";
+  if (isBOSCContentsRVVFunction(F) &&
+      (RISCVRegisterInfo::isRVVRegClass(TRI.getMinimalPhysRegClass(DstReg)) ||
+       RISCVRegisterInfo::isRVVRegClass(TRI.getMinimalPhysRegClass(SrcReg))))
+    return "BOSC register contents cannot synthesize a vector register copy";
   if (RISCV::SFPRReadRegClass.contains(DstReg) ||
       RISCV::SFPRReadRegClass.contains(SrcReg) ||
       RISCV::SFPRIndexPairRegClass.contains(DstReg) ||
@@ -739,6 +751,16 @@ void RISCVInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                          const TargetRegisterClass *RC,
                                          Register VReg,
                                          MachineInstr::MIFlag Flags) const {
+  const Function &F = MBB.getParent()->getFunction();
+  if ((isBOSCContentsRVVFunction(F) &&
+       RISCVRegisterInfo::isRVVRegClass(RC)) ||
+      (isBOSCContentsAMEFunction(F) &&
+       (RISCV::BOSCTrRegRegClass.hasSubClassEq(RC) ||
+        RISCV::BOSCAccRegRegClass.hasSubClassEq(RC)))) {
+    F.getContext().diagnose(DiagnosticInfoUnsupported(
+        F, "BOSC register contents cannot spill or reload"));
+    return;
+  }
   if (RISCV::SFPRReadRegClass.hasSubClassEq(RC) ||
       RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC)) {
     auto &MF = *MBB.getParent();
@@ -837,6 +859,16 @@ void RISCVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           const TargetRegisterClass *RC,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
+  const Function &F = MBB.getParent()->getFunction();
+  if ((isBOSCContentsRVVFunction(F) &&
+       RISCVRegisterInfo::isRVVRegClass(RC)) ||
+      (isBOSCContentsAMEFunction(F) &&
+       (RISCV::BOSCTrRegRegClass.hasSubClassEq(RC) ||
+        RISCV::BOSCAccRegRegClass.hasSubClassEq(RC)))) {
+    F.getContext().diagnose(DiagnosticInfoUnsupported(
+        F, "BOSC register contents cannot spill or reload"));
+    return;
+  }
   if (RISCV::SFPRReadRegClass.hasSubClassEq(RC) ||
       RISCV::SFPRIndexPairRegClass.hasSubClassEq(RC)) {
     auto &MF = *MBB.getParent();

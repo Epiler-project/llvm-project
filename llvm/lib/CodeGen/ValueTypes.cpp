@@ -186,6 +186,8 @@ std::string EVT::getEVTString() const {
   case MVT::Glue:      return "glue";
   case MVT::x86mmx:    return "x86mmx";
   case MVT::x86amx:    return "x86amx";
+  case MVT::riscv_bosc_ame_tr: return "riscv_bosc_ame_tr";
+  case MVT::riscv_bosc_ame_acc: return "riscv_bosc_ame_acc";
   case MVT::i64x8:     return "i64x8";
   case MVT::Metadata:  return "Metadata";
   case MVT::Untyped:   return "Untyped";
@@ -228,6 +230,10 @@ Type *EVT::getTypeForEVT(LLVMContext &Context) const {
   case MVT::aarch64mfp8:
     return FixedVectorType::get(IntegerType::get(Context, 8), 1);
   case MVT::x86amx:  return Type::getX86_AMXTy(Context);
+  case MVT::riscv_bosc_ame_tr:
+    return TargetExtType::get(Context, "riscv.bosc.ame.tr");
+  case MVT::riscv_bosc_ame_acc:
+    return TargetExtType::get(Context, "riscv.bosc.ame.acc");
   case MVT::i64x8:   return IntegerType::get(Context, 512);
   case MVT::amdgpuBufferFatPointer:  return IntegerType::get(Context, 160);
   case MVT::amdgpuBufferStridedPointer:  return IntegerType::get(Context, 192);
@@ -268,6 +274,10 @@ MVT MVT::getVT(Type *Ty, bool HandleUnknown){
     TargetExtType *TargetExtTy = cast<TargetExtType>(Ty);
     if (TargetExtTy->getName() == "aarch64.svcount")
       return MVT(MVT::aarch64svcount);
+    else if (TargetExtTy->getName() == "riscv.bosc.ame.tr")
+      return MVT(MVT::riscv_bosc_ame_tr);
+    else if (TargetExtTy->getName() == "riscv.bosc.ame.acc")
+      return MVT(MVT::riscv_bosc_ame_acc);
     else if (TargetExtTy->getName() == "wasm.externref")
       return MVT(MVT::externref);
     else if (TargetExtTy->getName() == "wasm.funcref")

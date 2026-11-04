@@ -1,0 +1,270 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/two-memory.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=TWO-MEMORY
+# TWO-MEMORY: bit observation requires one exact naturally aligned volatile load matching its width
+# A store MMO violates the read-only instruction descriptor, so the generic
+# machine verifier rejects it before the BOSC receiver runs.
+# RUN: not --crash llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/store-memory.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=STORE-MEMORY
+# STORE-MEMORY: Bad machine code: Missing mayStore flag
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/missing-memory.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING-MEMORY
+# MISSING-MEMORY: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/over-aligned.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=OVER-ALIGNED
+# OVER-ALIGNED: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/wide-size.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WIDE-SIZE
+# WIDE-SIZE: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/doubleword-size.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DOUBLEWORD-SIZE
+# DOUBLEWORD-SIZE: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/doubleword-alignment.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DOUBLEWORD-ALIGNMENT
+# DOUBLEWORD-ALIGNMENT: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/word-alignment.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WORD-ALIGNMENT
+# WORD-ALIGNMENT: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/word-byte-size.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WORD-BYTE-SIZE
+# WORD-BYTE-SIZE: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/width.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WIDTH
+# WIDTH: bit observation width must be 8, 32, or 64
+# The receiver independently validates scratch ownership, restore operands,
+# issue/config dependencies and the exact-width access before final expansion.
+# RUN: not --crash llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/zero-restore.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ZERO-RESTORE
+# The generic machine verifier rejects the nonzero-register-class violation
+# before the BOSC receiver runs.
+# ZERO-RESTORE: $x0 is not a GPRNoX0 register.
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/alias-result.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ALIAS-RESULT
+# ALIAS-RESULT: bit observation scalar temporaries overlap
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/alias-base.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ALIAS-BASE
+# ALIAS-BASE: bit observation scalar temporaries overlap
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/scratch-zero.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SCRATCH-ZERO
+# SCRATCH-ZERO: bit observation requires a bound physical scratch v1..v31
+# MachineInstr construction supplies the descriptor's early-clobber constraint;
+# omitting it in MIR text cannot create an invalid machine operand. Verify that
+# it is restored; the two alias cases above independently reject unsafe reuse.
+# RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/clobber-from-descriptor.mir -o - | FileCheck %s --check-prefix=CLOBBER
+# CLOBBER: early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8,
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/missing-config-use.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING-CONFIG-USE
+# MISSING-CONFIG-USE: missing implicit register operand 'implicit $vtype'
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/missing-issue.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING-ISSUE
+# MISSING-ISSUE: missing BOSC issue-order use/def
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/wrong-size.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=WRONG-SIZE
+# WRONG-SIZE: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/nonvolatile.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=NONVOLATILE
+# NONVOLATILE: bit observation requires one exact naturally aligned volatile load matching its width
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/virtual-scratch.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL-SCRATCH
+# VIRTUAL-SCRATCH: bit observation requires a bound physical scratch v1..v31
+#--- zero-restore.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x0, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- alias-result.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x10, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- alias-base.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x10, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- scratch-zero.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v0 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- clobber-from-descriptor.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- missing-config-use.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- missing-issue.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype :: (volatile load (s8))
+    PseudoRET
+...
+#--- wrong-size.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s32))
+    PseudoRET
+...
+#--- nonvolatile.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (load (s8))
+    PseudoRET
+...
+#--- virtual-scratch.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, %0:vr = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- width.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 16, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s16))
+    PseudoRET
+...
+#--- word-byte-size.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 32, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s8))
+    PseudoRET
+...
+#--- word-alignment.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 32, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s32), align 1)
+    PseudoRET
+...
+#--- doubleword-alignment.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 64, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s64), align 4)
+    PseudoRET
+...
+#--- doubleword-size.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 64, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s32))
+    PseudoRET
+...
+#--- wide-size.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 8, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s64))
+    PseudoRET
+...
+#--- over-aligned.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 32, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s32), align 8)
+    PseudoRET
+...
+#--- missing-memory.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 64, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- store-memory.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 64, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile store (s64))
+    PseudoRET
+...
+#--- two-memory.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    early-clobber $x10, $v4 = PseudoBOSCReadBitsBound $x11, $x12, 64, implicit-def $vl, implicit-def $vtype, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile load (s64)), (volatile load (s64))
+    PseudoRET
+...

@@ -1,0 +1,41 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+xboscame -run-pass=postrapseudos -verify-machineinstrs %t/tr.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv64 -mattr=+xboscame -run-pass=postrapseudos -verify-machineinstrs %t/acc.mir -o /dev/null 2>&1 | FileCheck %s
+# RUN: not llc -mtriple=riscv64 -mattr=+xboscame -start-before=postrapseudos -verify-machineinstrs -filetype=obj %t/tr.mir -o %t.tr.o 2>&1 | FileCheck %s
+# RUN: test ! -e %t.tr.o
+# RUN: not llc -mtriple=riscv64 -mattr=+xboscame -start-before=postrapseudos -verify-machineinstrs -filetype=obj %t/acc.mir -o %t.acc.o 2>&1 | FileCheck %s
+# RUN: test ! -e %t.acc.o
+# Neither matrix register file has an implicit contents-copy instruction.
+# Surviving physical copies must diagnose without corrupting liveness or
+# publishing an object that silently dropped the destination definition.
+# CHECK: BOSC register contents cannot synthesize a matrix register copy
+
+#--- tr.mir
+--- |
+  define void @tr_copy() #0 { ret void }
+  attributes #0 = { "trex-bosc-contents-ame"="1" }
+...
+---
+name: tr_copy
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $bosc_tr0
+    $bosc_tr1 = COPY $bosc_tr0
+    PseudoRET implicit $bosc_tr1
+...
+
+#--- acc.mir
+--- |
+  define void @acc_copy() #0 { ret void }
+  attributes #0 = { "trex-bosc-contents-ame"="1" }
+...
+---
+name: acc_copy
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $bosc_acc0
+    $bosc_acc1 = COPY $bosc_acc0
+    PseudoRET implicit $bosc_acc1
+...

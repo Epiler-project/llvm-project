@@ -1026,6 +1026,41 @@ let RegInfos = XLenRI in {
   def TRM4 : RISCVRegisterClass<[untyped], 32, (add (decimate TR, 4))>;
 }
 
+// Machine-only dependency for the MLIR-selected accelerator issue stream.
+// It has no encoded operand, storage bits or allocatable scratch capacity.
+let Namespace = "RISCV" in
+def BOSC_ISSUE : Register<"bosc_issue">;
+def BOSCIssueState : RISCVRegisterClass<[untyped], 32, (add BOSC_ISSUE)> {
+  let isAllocatable = 0;
+}
+
+def BOSC_M : RISCVReg<0, "bosc_m">;
+def BOSC_N : RISCVReg<0, "bosc_n">;
+def BOSC_K : RISCVReg<0, "bosc_k">;
+def BOSC_MTYPE : RISCVReg<0, "bosc_mtype">;
+def BOSCConfigReg : RISCVRegisterClass<[XLenVT], 32,
+                                       (add BOSC_M, BOSC_N, BOSC_K, BOSC_MTYPE)> {
+  let RegInfos = XLenRI;
+  let isAllocatable = 0;
+}
+
+// The contents ABI allocates opaque Tr/Acc values. Bound functions reserve
+// these same physical registers and retain their existing immediate ABI.
+foreach Index = 0-15 in
+  def BOSC_TR#Index : RISCVReg<Index, "tr"#Index>;
+foreach Index = 0-7 in
+  def BOSC_ACC#Index : RISCVReg<Index, "acc"#Index>;
+let RegInfos = XLenRI in {
+  def BOSCTrReg : RISCVRegisterClass<[riscv_bosc_ame_tr], 32,
+                                     (add (sequence "BOSC_TR%u", 0, 15))> {
+    let DecoderMethod = "DecodeSimpleRegisterClass<RISCV::BOSC_TR0, 16>";
+  }
+  def BOSCAccReg : RISCVRegisterClass<[riscv_bosc_ame_acc], 32,
+                                      (add (sequence "BOSC_ACC%u", 0, 7))> {
+    let DecoderMethod = "DecodeSimpleRegisterClass<RISCV::BOSC_ACC0, 8>";
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // XAIFET registers
 //===----------------------------------------------------------------------===//

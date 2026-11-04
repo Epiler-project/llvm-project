@@ -355,6 +355,10 @@ def funcref   : ValueType<0>;            // WebAssembly's funcref type
 def externref : ValueType<0>;            // WebAssembly's externref type
 def exnref    : ValueType<0>;            // WebAssembly's exnref type
 def x86amx    : ValueType<8192>;         // X86 AMX value
+// Opaque matrix contents. No bitcast, ordinary memory layout or spill size is
+// implied by these role types; their register classes count architectural slots.
+def riscv_bosc_ame_tr : ValueType<0>;
+def riscv_bosc_ame_acc : ValueType<0>;
 def i64x8     : ValueType<512>;          // 8 Consecutive GPRs (AArch64)
 def aarch64svcount
               : ValueType<16>;   // AArch64 predicate-as-counter

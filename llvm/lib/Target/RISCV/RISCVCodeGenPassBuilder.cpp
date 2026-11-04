@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCV.h"
+#include "RISCVBOSCBound.h"
 #include "RISCVAsmPrinter.h"
 #include "RISCVTargetMachine.h"
 #include "llvm/CodeGen/AtomicExpand.h"
@@ -94,6 +95,7 @@ void RISCVCodeGenPassBuilder::addCodeGenPrepare(PassManagerWrapper &PMW) {
 }
 
 Error RISCVCodeGenPassBuilder::addInstSelector(PassManagerWrapper &PMW) {
+  addFunctionPass(RISCVBOSCNewPMGate(), PMW);
   addFunctionPass(RISCVTensixNewPMGate(&getTM()), PMW);
   addFunctionPass(RISCVTensixIssueWordFoldPass(&getTM()), PMW);
   addMachineFunctionPass(RISCVISelDAGToDAGPass(getTM(), getOptLevel()), PMW);

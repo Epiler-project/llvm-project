@@ -1,0 +1,59 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv64 -mattr=+xboscame -run-pass=riscv-bosc-bound-verify %t/valid.mir -o /dev/null
+# RUN: not llc -mtriple=riscv64 -mattr=+xboscame -run-pass=riscv-bosc-bound-verify %t/overwrite.mir -o /dev/null 2>&1 | FileCheck %s
+# CHECK: machine selected MMA requires initialized C/A and the same live B selector
+# Rematerialized low-bit predicates and exact spills retain their values;
+# overwriting the spill with the opposite predicate cannot reuse that fact.
+
+#--- valid.mir
+--- |
+  define void @provenance() "trex-bosc-bound-ame"="1" { ret void }
+...
+---
+name: provenance
+stack:
+  - { id: 0, type: spill-slot, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    $x5 = BOSC_AME_SETM $x10, implicit-def $bosc_m, implicit $bosc_issue, implicit-def $bosc_issue
+    $x5 = BOSC_AME_SETN $x10, implicit-def $bosc_n, implicit $bosc_issue, implicit-def $bosc_issue
+    $x5 = BOSC_AME_SETK $x10, implicit-def $bosc_k, implicit $bosc_issue, implicit-def $bosc_issue
+    $bosc_acc0 = BOSC_AME_LOADC $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_issue, implicit-def $bosc_issue
+    $bosc_tr0 = BOSC_AME_LOADA $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_issue, implicit-def $bosc_issue
+    $x13 = ANDI $x12, 1
+    PseudoBOSCAMELoadBSelectBound $x13, 1, 2, $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit-def $bosc_tr1, implicit-def $bosc_tr2, implicit $bosc_issue, implicit-def $bosc_issue
+    SD $x13, %stack.0, 0 :: (store (s64) into %stack.0)
+    $x13 = XORI $x13, 1
+    $x14 = LD %stack.0, 0 :: (load (s64) from %stack.0)
+    PseudoBOSCAMEMMABSelectBound 0, 0, $x14, 1, 2, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_tr1, implicit $bosc_tr2, implicit $bosc_acc0, implicit-def $bosc_acc0, implicit $bosc_tr0, implicit $bosc_issue, implicit-def $bosc_issue
+    $x15 = ANDI $x12, 1
+    PseudoBOSCAMEMMABSelectBound 0, 0, $x15, 1, 2, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_tr1, implicit $bosc_tr2, implicit $bosc_acc0, implicit-def $bosc_acc0, implicit $bosc_tr0, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+
+#--- overwrite.mir
+--- |
+  define void @provenance() "trex-bosc-bound-ame"="1" { ret void }
+...
+---
+name: provenance
+stack:
+  - { id: 0, type: spill-slot, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    $x5 = BOSC_AME_SETM $x10, implicit-def $bosc_m, implicit $bosc_issue, implicit-def $bosc_issue
+    $x5 = BOSC_AME_SETN $x10, implicit-def $bosc_n, implicit $bosc_issue, implicit-def $bosc_issue
+    $x5 = BOSC_AME_SETK $x10, implicit-def $bosc_k, implicit $bosc_issue, implicit-def $bosc_issue
+    $bosc_acc0 = BOSC_AME_LOADC $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_issue, implicit-def $bosc_issue
+    $bosc_tr0 = BOSC_AME_LOADA $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_issue, implicit-def $bosc_issue
+    $x13 = ANDI $x12, 1
+    PseudoBOSCAMELoadBSelectBound $x13, 1, 2, $x10, $x11, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit-def $bosc_tr1, implicit-def $bosc_tr2, implicit $bosc_issue, implicit-def $bosc_issue
+    SD $x13, %stack.0, 0 :: (store (s64) into %stack.0)
+    $x13 = XORI $x13, 1
+    SD $x13, %stack.0, 0 :: (store (s64) into %stack.0)
+    $x14 = LD %stack.0, 0 :: (load (s64) from %stack.0)
+    PseudoBOSCAMEMMABSelectBound 0, 0, $x14, 1, 2, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_tr1, implicit $bosc_tr2, implicit $bosc_acc0, implicit-def $bosc_acc0, implicit $bosc_tr0, implicit $bosc_issue, implicit-def $bosc_issue
+    $x15 = ANDI $x12, 1
+    PseudoBOSCAMEMMABSelectBound 0, 0, $x15, 1, 2, implicit $bosc_m, implicit $bosc_n, implicit $bosc_k, implicit $bosc_tr1, implicit $bosc_tr2, implicit $bosc_acc0, implicit-def $bosc_acc0, implicit $bosc_tr0, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...

@@ -24,6 +24,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "RISCVBOSCBound.h"
 #include "RISCV.h"
 #include "RISCVSubtarget.h"
 #include "RISCVVSETVLIInfoAnalysis.h"
@@ -1133,6 +1134,8 @@ bool RISCVInsertVSETVLI::insertVSETMTK(MachineBasicBlock &MBB,
 }
 
 bool RISCVInsertVSETVLI::runOnMachineFunction(MachineFunction &MF) {
+  if (isBOSCBoundFunction(MF.getFunction()))
+    return false;
   // Skip if the vector extension is not enabled.
   ST = &MF.getSubtarget<RISCVSubtarget>();
   if (!ST->hasVInstructions())

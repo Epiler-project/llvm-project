@@ -975,6 +975,11 @@ Expected<TargetExtType *> TargetExtType::checkParams(TargetExtType *TTy) {
         "target extension type aarch64.svcount should have no parameters");
 
   // Opaque types in the RISC-V name space.
+  if ((TTy->Name == "riscv.bosc.ame.tr" ||
+       TTy->Name == "riscv.bosc.ame.acc") &&
+      (TTy->getNumTypeParameters() != 0 || TTy->getNumIntParameters() != 0))
+    return createStringError(
+        "BOSC AME contents types should have no parameters");
   if (TTy->Name == "riscv.vector.tuple" &&
       (TTy->getNumTypeParameters() != 1 || TTy->getNumIntParameters() != 1))
     return createStringError(

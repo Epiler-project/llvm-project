@@ -1,0 +1,77 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/tail.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=TAIL
+# TAIL: machine gather index reads an uninitialized source lane
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/alias.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ALIAS
+# ALIAS: gather destination must not overlap its source
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/clobber.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLOBBER
+# CLOBBER: machine gather index must be a constant in 0..16
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/join.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=JOIN
+# JOIN: machine gather index must be a constant in 0..16
+#--- tail.mir
+--- |
+  define void @bad() vscale_range(8,8) "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x12 = ADDI $x0, 1
+    $x11 = VSETIVLI 1, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v1 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v2 = VRGATHER_VX $v1, $x12, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- alias.mir
+--- |
+  define void @bad() vscale_range(8,8) "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x12 = ADDI $x0, 0
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v1 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v1 = VRGATHER_VX $v1, $x12, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- clobber.mir
+--- |
+  define void @bad() vscale_range(8,8) "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x12 = ADDI $x0, 15
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v1 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x12 = ADD $x13, $x14
+    $v2 = VRGATHER_VX $v1, $x12, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- join.mir
+--- |
+  define void @bad() vscale_range(8,8) "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v1 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    BNE $x13, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.1:
+    successors: %bb.3
+    $x12 = ADDI $x0, 1
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    $x12 = ADDI $x0, 15
+    PseudoBR %bb.3
+  bb.3:
+    $v2 = VRGATHER_VX $v1, $x12, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...

@@ -1,0 +1,57 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/no-config.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOCONFIG
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/virtual.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=VIRTUAL
+# RUN: not --crash llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/renamable.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RENAMABLE
+# RUN: not llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %t/implicit-frm.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FRM
+# NOCONFIG: machine vector operation requires an explicit setvl on every incoming path
+# VIRTUAL: virtual vector register is forbidden
+# RENAMABLE: isRenamable set on reserved register
+# FRM: missing implicit register operand 'implicit $frm'
+
+#--- no-config.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $v6 = VFADD_VV $v4, $v5, $noreg, implicit $frm, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- virtual.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    %0:vr = IMPLICIT_DEF
+    PseudoRET
+...
+#--- renamable.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    renamable $v6 = VFADD_VV $v4, $v5, $noreg, implicit $frm, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+#--- implicit-frm.mir
+--- |
+  define void @bad() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: bad
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v5 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v6 = VFADD_VV $v4, $v5, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...

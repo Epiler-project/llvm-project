@@ -417,9 +417,85 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
 
   emitNTLHint(MI);
 
+  if (MI->getOpcode() == RISCV::PseudoBOSCAMELoadBSelectBound ||
+      MI->getOpcode() == RISCV::PseudoBOSCAMEMMABSelectBound) {
+    bool Load = MI->getOpcode() == RISCV::PseudoBOSCAMELoadBSelectBound;
+    auto *FalseLabel = OutContext.createTempSymbol("bosc_stage0");
+    auto *DoneLabel = OutContext.createTempSymbol("bosc_stage_done");
+    auto Emit = [&](const MCInst &Inst) { EmitToStreamer(*OutStreamer, Inst); };
+    auto Label = [&](MCSymbol *Symbol) {
+      return MCSymbolRefExpr::create(Symbol, OutContext);
+    };
+    Emit(MCInstBuilder(RISCV::BEQ)
+             .addReg(MI->getOperand(Load ? 0 : 2).getReg())
+             .addReg(RISCV::X0)
+             .addExpr(Label(FalseLabel)));
+    auto Alternative = [&](bool True) {
+      unsigned B = RISCV::BOSC_TR0 +
+                   MI->getOperand((Load ? 1 : 3) + unsigned(True)).getImm();
+      if (Load)
+        Emit(MCInstBuilder(RISCV::BOSC_AME_LOADB)
+                 .addReg(B)
+                 .addReg(MI->getOperand(3).getReg())
+                 .addReg(MI->getOperand(4).getReg()));
+      else {
+        unsigned Acc = RISCV::BOSC_ACC0 + MI->getOperand(0).getImm();
+        Emit(MCInstBuilder(RISCV::BOSC_AME_MMA)
+                 .addReg(Acc)
+                 .addReg(Acc)
+                 .addReg(RISCV::BOSC_TR0 + MI->getOperand(1).getImm())
+                 .addReg(B));
+      }
+    };
+    Alternative(true);
+    Emit(MCInstBuilder(RISCV::JAL).addReg(RISCV::X0).addExpr(Label(DoneLabel)));
+    OutStreamer->emitLabel(FalseLabel);
+    Alternative(false);
+    OutStreamer->emitLabel(DoneLabel);
+    return;
+  }
+
   // Do any auto-generated pseudo lowerings.
   if (MCInst OutInst; lowerPseudoInstExpansion(MI, OutInst)) {
     EmitToStreamer(*OutStreamer, OutInst);
+    return;
+  }
+
+  if (MI->getOpcode() == RISCV::PseudoBOSCReadBitsBound) {
+    // All physical and scalar scratch operands were validated before emission.
+    // This closed operation never exposes its temporary configuration to the
+    // scheduler or to the ordinary bound e32 lane/configuration dataflow.
+    MCRegister Result = MI->getOperand(0).getReg();
+    MCRegister Scratch = MI->getOperand(1).getReg();
+    MCRegister Base = MI->getOperand(2).getReg();
+    MCRegister RestoreVL = MI->getOperand(3).getReg();
+    unsigned Width = MI->getOperand(4).getImm();
+    assert((Width == 8 || Width == 32 || Width == 64) &&
+           "invalid BOSC observation width");
+    unsigned VType = Width == 8 ? 0xc0 : Width == 32 ? 0xd0 : 0xd8;
+    unsigned Load = Width == 8    ? RISCV::VLE8_V
+                    : Width == 32 ? RISCV::VLE32_V
+                                  : RISCV::VLE64_V;
+    auto Emit = [&](const MCInst &Inst) { EmitToStreamer(*OutStreamer, Inst); };
+    Emit(MCInstBuilder(RISCV::VSETIVLI)
+             .addReg(RISCV::X0)
+             .addImm(1)
+             .addImm(VType)); // selected SEW,m1,ta,ma
+    Emit(MCInstBuilder(Load).addReg(Scratch).addReg(Base).addReg(
+        RISCV::NoRegister));
+    Emit(MCInstBuilder(RISCV::VMV_X_S).addReg(Result).addReg(Scratch));
+    if (Width == 8)
+      Emit(
+          MCInstBuilder(RISCV::ANDI).addReg(Result).addReg(Result).addImm(255));
+    else if (Width == 32) {
+      // VMV_X_S sign-extends SEW to XLEN; observation returns source bits.
+      Emit(MCInstBuilder(RISCV::SLLI).addReg(Result).addReg(Result).addImm(32));
+      Emit(MCInstBuilder(RISCV::SRLI).addReg(Result).addReg(Result).addImm(32));
+    }
+    Emit(MCInstBuilder(RISCV::VSETVLI)
+             .addReg(RISCV::X0)
+             .addReg(RestoreVL)
+             .addImm(0xd0)); // e32,m1,ta,ma
     return;
   }
 

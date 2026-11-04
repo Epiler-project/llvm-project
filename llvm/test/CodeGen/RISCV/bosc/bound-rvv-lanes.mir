@@ -1,0 +1,45 @@
+# RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-bound-verify %s -o /dev/null
+
+# Verify physical machine operands independently of the LLVM IR receiver.
+--- |
+  define void @prefixes() "trex-bosc-bound-rvv"="1" { ret void }
+  define void @loop_prefix() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: prefixes
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 15, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v5 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 0, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v5 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $x11 = VSETIVLI 15, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v5 = VADD_VV $v4, $v5, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v5, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoRET
+...
+---
+name: loop_prefix
+body: |
+  bb.0:
+    successors: %bb.2
+    PseudoBR %bb.2
+  bb.1:
+    successors: %bb.1, %bb.3
+    $x11 = VSETIVLI 15, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VADD_VV $v4, $v4, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    BNE $x12, $x0, %bb.1
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.1
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype, implicit $bosc_issue, implicit-def $bosc_issue
+    PseudoBR %bb.1
+  bb.3:
+    PseudoRET
+...

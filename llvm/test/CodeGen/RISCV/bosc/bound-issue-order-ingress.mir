@@ -1,0 +1,31 @@
+# RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-issue-ingress,riscv-bosc-bound-verify %s -o - | FileCheck %s
+# RUN: llc -mtriple=riscv64 -mattr=+v,+zvl512b -run-pass=riscv-bosc-issue-ingress,riscv-bosc-issue-ingress,riscv-bosc-bound-verify %s -o - | FileCheck %s
+
+# Ingress adds one shared dependency and is idempotent. Scalar instructions
+# keep their ordinary resource effects; only volatile memory joins the chain.
+# CHECK-LABEL: name: common_issue
+# CHECK: VSETIVLI {{.*}}implicit $bosc_issue, implicit-def $bosc_issue{{$}}
+# CHECK: VLE32_V {{.*}}implicit $bosc_issue, implicit-def $bosc_issue{{$}}
+# CHECK: = ADDI $x10, 1{{$}}
+# CHECK: = LD $x10, 0 :: (load (s64)){{$}}
+# CHECK: FENCE 15, 15, implicit $bosc_issue, implicit-def $bosc_issue{{$}}
+# CHECK: = CSRRW 3008, $x10, implicit $bosc_issue, implicit-def $bosc_issue{{$}}
+# CHECK: SD $x11, $x10, 0, implicit $bosc_issue, implicit-def $bosc_issue :: (volatile store (s64)){{$}}
+# CHECK: VSE32_V {{.*}}implicit $bosc_issue, implicit-def $bosc_issue{{$}}
+--- |
+  define void @common_issue() "trex-bosc-bound-rvv"="1" { ret void }
+...
+---
+name: common_issue
+body: |
+  bb.0:
+    $x11 = VSETIVLI 16, 208, implicit-def $vl, implicit-def $vtype
+    $v4 = VLE32_V $x10, $noreg, implicit $vl, implicit $vtype
+    $x12 = ADDI $x10, 1
+    $x13 = LD $x10, 0 :: (load (s64))
+    FENCE 15, 15
+    $x0 = CSRRW 3008, $x10
+    SD $x11, $x10, 0 :: (volatile store (s64))
+    VSE32_V $v4, $x10, $noreg, implicit $vl, implicit $vtype
+    PseudoRET
+...
