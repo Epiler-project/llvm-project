@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVTargetMachine.h"
-#include "RISCVBOSCBound.h"
 #include "RISCVRegisterContents.h"
 #include "RISCVTensixReplayTemplate.h"
 #include "RISCV.h"
@@ -169,9 +168,6 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> B(getTheRISCV64beTarget());
   auto *PR = PassRegistry::getPassRegistry();
   initializeGlobalISel(*PR);
-  initializeRISCVBOSCIRVerificationPass(*PR);
-  initializeRISCVBOSCIssueIngressPass(*PR);
-  initializeRISCVBOSCBoundVerificationPass(*PR);
   initializeRISCVRegisterContentsAllocationPass(*PR);
   initializeRISCVTensixIRVerificationPass(*PR);
   initializeRISCVTensixIssueWordFoldPass(*PR);
@@ -398,9 +394,6 @@ public:
 static bool onlyAllocateRVVReg(const TargetRegisterInfo &TRI,
                                const MachineRegisterInfo &MRI,
                                const Register Reg) {
-  if (isBOSCBoundFunction(MRI.getMF().getFunction()) &&
-      !isBOSCContentsRVVFunction(MRI.getMF().getFunction()))
-    return false;
   const TargetRegisterClass *RC = MRI.getRegClass(Reg);
   return RISCVRegisterInfo::isRVVRegClass(RC);
 }
@@ -459,9 +452,6 @@ class RISCVPassConfig : public TargetPassConfig {
 public:
   RISCVPassConfig(RISCVTargetMachine &TM, PassManagerBase &PM)
       : TargetPassConfig(TM, PM) {
-    // FinalizeISel materializes bound physical operands. Install the common
-    // issue dependency before any machine SSA optimizer or scheduler runs.
-    insertPass(&FinalizeISelID, createRISCVBOSCIssueIngressPass());
     // Bound custom inserters have materialized physical operands. Normalize
     // record-only words before machine SSA passes can treat them as executed.
     insertPass(&FinalizeISelID, createRISCVTensixReplayTemplatePreparePass());
@@ -538,7 +528,6 @@ bool RISCVPassConfig::addRegAssignAndRewriteFast() {
   addPass(createVirtRegRewriter(false));
   addPass(createRVVRegAllocPass(false));
   addPass(createRISCVInsertVSETVLIPass());
-  addPass(createRISCVBOSCIssueIngressPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
       EnableRISCVDeadRegisterElimination)
     addPass(createRISCVDeadRegisterDefinitionsPass());
@@ -555,7 +544,6 @@ bool RISCVPassConfig::addRegAssignAndRewriteOptimized() {
   addPass(createRVVRegAllocPass(true));
   addPass(createVirtRegRewriter(false));
   addPass(createRISCVInsertVSETVLIPass());
-  addPass(createRISCVBOSCIssueIngressPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
       EnableRISCVDeadRegisterElimination)
     addPass(createRISCVDeadRegisterDefinitionsPass());
@@ -613,7 +601,6 @@ void RISCVPassConfig::addCodeGenPrepare() {
 }
 
 bool RISCVPassConfig::addInstSelector() {
-  addPass(createRISCVBOSCIRVerificationPass());
   addPass(createRISCVTensixIRVerificationPass());
   addPass(createRISCVTensixIssueWordFoldPass());
   addPass(createRISCVISelDagLegacyPass(getRISCVTargetMachine(), getOptLevel()));
@@ -622,7 +609,6 @@ bool RISCVPassConfig::addInstSelector() {
 }
 
 bool RISCVPassConfig::addIRTranslator() {
-  addPass(createRISCVBOSCIRVerificationPass(false));
   addPass(createRISCVTensixIRVerificationPass(false));
   addPass(new IRTranslatorLegacy(getOptLevel()));
   return false;
@@ -716,7 +702,6 @@ void RISCVPassConfig::addPreEmitPass2() {
     addPass(createCFIInstrInserterLegacy());
   addPass(createRISCVTensixHazardsPass(false));
   addPass(createRISCVTensixBoundVerificationPass());
-  addPass(createRISCVBOSCBoundVerificationPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {
@@ -744,7 +729,6 @@ void RISCVPassConfig::addMachineSSAOptimization() {
 }
 
 void RISCVPassConfig::addPreRegAlloc() {
-  addPass(createRISCVBOSCBoundVerificationPass());
   addPass(createRISCVTensixBoundVerificationPass());
   addPass(createRISCVTensixSFPUPhysicalIngressPass());
   addPass(createRISCVExpandPseudoPreRALegacyPass());
@@ -772,7 +756,6 @@ void RISCVPassConfig::addFastRegAlloc() {
 
 
 void RISCVPassConfig::addPostRegAlloc() {
-  addPass(createRISCVBOSCBoundVerificationPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None &&
       EnableRedundantCopyElimination)
     addPass(createRISCVRedundantCopyEliminationPass());

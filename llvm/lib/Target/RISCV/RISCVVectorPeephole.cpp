@@ -27,7 +27,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RISCVBOSCBound.h"
 #include "RISCV.h"
 #include "RISCVSubtarget.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -951,8 +950,6 @@ bool RISCVVectorPeepholeImpl::foldVMANDToMaskedCompare(MachineInstr &MI) const {
 }
 
 bool RISCVVectorPeepholeImpl::run(MachineFunction &MF) {
-  if (isBOSCBoundFunction(MF.getFunction()))
-    return false;
   // Skip if the vector extension is not enabled.
   ST = &MF.getSubtarget<RISCVSubtarget>();
   if (!ST->hasVInstructions())

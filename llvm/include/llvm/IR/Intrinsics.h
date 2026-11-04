@@ -191,8 +191,6 @@ struct IITDescriptor {
     AMX,
     PPCQuad,
     AArch64Svcount,
-    RISCVBOSCAMETr,
-    RISCVBOSCAMEAcc,
     WasmExternref,
     WasmFuncref,
 

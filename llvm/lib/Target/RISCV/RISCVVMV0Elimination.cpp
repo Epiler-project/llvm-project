@@ -29,7 +29,6 @@
 //
 //===---------------------------------------------------------------------===//
 
-#include "RISCVBOSCBound.h"
 #include "RISCV.h"
 #include "RISCVSubtarget.h"
 #ifndef NDEBUG
@@ -79,8 +78,6 @@ static bool isVMV0(const MCOperandInfo &MCOI) {
 }
 
 bool RISCVVMV0Elimination::runOnMachineFunction(MachineFunction &MF) {
-  if (isBOSCBoundFunction(MF.getFunction()))
-    return false;
   // Skip if the vector extension is not enabled.
   const RISCVSubtarget *ST = &MF.getSubtarget<RISCVSubtarget>();
   if (!ST->hasVInstructions())

@@ -26,7 +26,6 @@
 //
 //===---------------------------------------------------------------------===//
 
-#include "RISCVBOSCBound.h"
 #include "RISCV.h"
 #include "RISCVSubtarget.h"
 #include "llvm/ADT/PostOrderIterator.h"
@@ -1401,8 +1400,6 @@ void RISCVVLOptimizerImpl::transfer(const MachineInstr &MI) {
 }
 
 bool RISCVVLOptimizerImpl::run(MachineFunction &MF) {
-  if (isBOSCBoundFunction(MF.getFunction()))
-    return false;
   MRI = &MF.getRegInfo();
 
   const RISCVSubtarget &ST = MF.getSubtarget<RISCVSubtarget>();
