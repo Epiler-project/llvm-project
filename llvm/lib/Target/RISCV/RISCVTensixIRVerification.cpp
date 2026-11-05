@@ -60,6 +60,7 @@ bool llvm::isTensixContentsIntrinsic(Intrinsic::ID ID) {
   case Intrinsic::riscv_tt_contents_mul:
   case Intrinsic::riscv_tt_contents_store:
   case Intrinsic::riscv_tt_contents_load_immediate:
+  case Intrinsic::riscv_tt_contents_load_immediate_full:
   case Intrinsic::riscv_tt_contents_divp2:
   case Intrinsic::riscv_tt_contents_add_immediate:
   case Intrinsic::riscv_tt_contents_mul_immediate:
@@ -870,10 +871,15 @@ Error verifyFullLoadsOutsideRecording(Function &F) {
           RawRemaining = Length->getZExtValue();
         continue;
       }
-      if (ID == Intrinsic::riscv_tt_contents_load_full &&
-          (TemplateActive || RawRemaining))
+      if ((ID == Intrinsic::riscv_tt_contents_load_full ||
+           ID == Intrinsic::riscv_tt_contents_load_immediate_full) &&
+          (TemplateActive || RawRemaining)) {
+        if (ID == Intrinsic::riscv_tt_contents_load_immediate_full)
+          return invalid(
+              F, "contents full immediate is not supported in replay recording");
         return invalid(
             F, "contents full LOAD is not supported in replay recording");
+      }
       const auto *Issue = RISCV::getTensixInstructionByIntrinsic(ID);
       if (RawRemaining && (isTensixContentsIntrinsic(ID) ||
                            (Issue && ID != Issue->MopIntrinsicID)))
@@ -1256,6 +1262,7 @@ Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
 bool requiresDisabledDestIndex(const IntrinsicInst &II) {
   return containsCarrier(II.getType()) &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate_full &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose4 &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose8 &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_index &&
@@ -1570,6 +1577,11 @@ Error verifyContentsLaneConfig(Function &F) {
     unsigned RawRecordRemaining = 0;
     for (const Instruction &I : BB) {
       const auto *II = dyn_cast<IntrinsicInst>(&I);
+      if (II && II->getIntrinsicID() ==
+                    Intrinsic::riscv_tt_contents_load_immediate_full &&
+          (!State.allColumnsEnabled() || !State.RowsUnmasked))
+        return invalid(F, "contents full immediate requires all lanes "
+                          "writable with unmasked rows");
       if (II &&
           II->getIntrinsicID() == Intrinsic::riscv_tt_contents_load_full &&
           (!State.allColumnsEnabled() || !State.DestIndexDisabled ||

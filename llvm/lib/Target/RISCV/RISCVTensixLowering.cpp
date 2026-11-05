@@ -72,6 +72,9 @@ contentsInstruction(Intrinsic::ID ID,
   case Intrinsic::riscv_tt_contents_load_immediate:
     Select(RISCV::TTSFPLOADI, {0, 1, 2});
     break;
+  case Intrinsic::riscv_tt_contents_load_immediate_full:
+    Select(RISCV::TTSFPLOADIFull, {0, 1});
+    break;
   case Intrinsic::riscv_tt_contents_divp2:
     Select(RISCV::TTSFPDIVP2, {0, 1, 2, 3});
     break;
@@ -274,6 +277,11 @@ Expected<MCRegister> contentsSnapshotRegister(Intrinsic::ID ID,
 Error verifyContentsInstructionFields(
     Intrinsic::ID ID, ArrayRef<std::optional<int64_t>> Arguments,
     bool Wormhole) {
+  if (ID == Intrinsic::riscv_tt_contents_load_immediate_full &&
+      (!Arguments[1] || (*Arguments[1] != 0 && *Arguments[1] != 1 &&
+                         *Arguments[1] != 2 && *Arguments[1] != 4)))
+    return createStringError(
+        "contents full immediate requires a complete-word mode");
   if (ID == Intrinsic::riscv_tt_contents_load_full && Arguments[2] &&
       (*Arguments[2] == 14 || *Arguments[2] == 15))
     return createStringError(

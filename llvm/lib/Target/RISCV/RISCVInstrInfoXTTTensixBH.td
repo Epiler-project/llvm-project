@@ -109,6 +109,25 @@ def TTSFPLOADI : TensixPhysicalInst<0x71, (outs SFPR:$dst),
   let Constraints = "$dst = $old";
 }
 
+// Complete-word form selected only after the reaching lane configuration
+// proves a full write.  The native word is unchanged, but allocation must not
+// invent a tied old contents value for a genuine definition.
+def TTSFPLOADIFull : TensixPhysicalInst<0x71, (outs SFPR:$dst),
+    (ins uimm16:$value, uimm4:$mode),
+    "ttsfploadi", "$dst, $value, $mode"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let isCodeGenOnly = 1;
+  bits<4> dst;
+  bits<16> value;
+  bits<4> mode;
+  let ModeOperandIndex = 2;
+  let AllowedModes = 0x0017;
+  let RawWord{23-20} = dst;
+  let RawWord{19-16} = mode;
+  let RawWord{15-0} = value;
+}
+
 class TensixMove<bits<4> Mode, dag Inputs, string Mnemonic, string Operands>
     : TensixPhysicalInst<0x7c, (outs SFPR:$dst), Inputs, Mnemonic, Operands> {
   bits<4> dst;

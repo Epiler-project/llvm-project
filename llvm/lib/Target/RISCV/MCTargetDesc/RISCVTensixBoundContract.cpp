@@ -635,6 +635,13 @@ RISCV::getTensixSFPUInstructionSemantics(
                 false,
                 false,
                 false};
+  } else if (Opcode == RISCV::TTSFPLOADIFull) {
+    if (NativeFields.size() != 3 || !NativeFields[2] ||
+        (*NativeFields[2] != 0 && *NativeFields[2] != 1 &&
+         *NativeFields[2] != 2 && *NativeFields[2] != 4))
+      return invalid("full SFPLOADI requires a complete-word mode");
+    Transfer = {TensixSFPUTransferKind::ImmediateFull,
+                0, 0xffffffffu, 0xffffffffu, true, false, true, true};
   } else if (Opcode == RISCV::TTSFPLOADI) {
     if (NativeFields.size() != 4 || !NativeFields[3])
       return invalid("SFPLOADI transfer requires a constant mode");
@@ -802,7 +809,7 @@ RISCV::getTensixSFPUInstructionSemantics(
     Transfer.DestinationArgument = 0;
     if (Opcode == RISCV::TTSFPMOVAll) {
       Transfer.SourceArgument = 1;
-    } else {
+    } else if (Opcode != RISCV::TTSFPLOADIFull) {
       Transfer.OldArgument = 1;
       if (Transfer.Kind == TensixSFPUTransferKind::Identity ||
           Transfer.Kind == TensixSFPUTransferKind::LanePermutation)
@@ -890,6 +897,9 @@ RISCV::getTensixSFPUInstructionSemantics(
     default:
       break;
     }
+    break;
+  case RISCV::TTSFPLOADIFull:
+    Result.Configuration.emplace();
     break;
   case RISCV::TTSFPTRANSP:
     // SFPTRANSP is exempt from TEN-2932. This native form has VD=0, so it
