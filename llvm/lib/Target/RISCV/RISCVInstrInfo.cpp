@@ -34,6 +34,9 @@
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCDwarf.h"
@@ -536,7 +539,62 @@ static StringRef getContentsCopyError(const MachineFunction &,
   return {};
 }
 
+static bool expandTensixContentsEntry(MachineInstr &MI,
+                                      const TargetRegisterInfo &TRI) {
+  if (MI.getOpcode() != RISCV::TTSFPENTRY)
+    return false;
+  MachineFunction &MF = *MI.getMF();
+  auto *Info = MF.getInfo<RISCVMachineFunctionInfo>();
+  auto Fail = [&](StringRef Message) {
+    MF.getProperties().setFailedRegAlloc();
+    Info->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(
+        DiagnosticInfoUnsupported(MF.getFunction(), Message));
+    return true;
+  };
+  // Machine flags or a hand-authored pseudo cannot create an observation.
+  // Require the actual received entry intrinsic in this function's IR.
+  bool ObservedEntry =
+      llvm::any_of(instructions(MF.getFunction()), [](const Instruction &I) {
+        const auto *II = dyn_cast<IntrinsicInst>(&I);
+        return II &&
+               II->getIntrinsicID() == Intrinsic::riscv_tt_contents_entry &&
+               II->getParent() == &II->getFunction()->getEntryBlock();
+      });
+  if (!Info->usesTensixSFPU() || Info->usesBoundTensixSFPU() ||
+      !ObservedEntry || MI.getParent() != &MF.front())
+    return Fail("Tensix contents entry requires verified entry observation");
+  if (MI.getNumOperands() != 1 || !MI.memoperands_empty() || MI.isBundled())
+    return Fail("Tensix contents entry requires one ordinary SFPR definition");
+  const MachineOperand &Def = MI.getOperand(0);
+  if (!Def.isReg() || !Def.isDef() || Def.isImplicit() || Def.isUndef() ||
+      Def.getSubReg() || !Def.getReg().isPhysical() ||
+      !RISCV::SFPRRegClass.contains(Def.getReg()))
+    return Fail("Tensix contents entry requires one ordinary SFPR definition");
+  Register Reg = Def.getReg();
+  MachineBasicBlock &MBB = *MI.getParent();
+  for (const MachineInstr &Before :
+       make_range(MBB.instr_begin(), MI.getIterator())) {
+    if (Before.getOpcode() != RISCV::TTSFPENTRY &&
+        Before.modifiesRegister(Reg, &TRI))
+      return Fail("Tensix contents entry requires unclobbered entry contents");
+  }
+
+  // The pseudo deliberately survived generic undef processing and allocation.
+  // Receive the selected physical value as a real live-in before erasing its
+  // temporary definition; deleting that definition alone leaves undefined uses.
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  if (!MRI.isLiveIn(Reg))
+    MRI.addLiveIn(Reg.asMCReg());
+  MBB.addLiveIn(Reg.asMCReg());
+  MBB.sortUniqueLiveIns();
+  MI.eraseFromParent();
+  return true;
+}
+
 bool RISCVInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
+  if (expandTensixContentsEntry(MI, *STI.getRegisterInfo()))
+    return true;
   if (expandTensixMacroPseudo(MI, STI))
     return true;
   if (expandTensixContentsGroupPseudo(MI, STI))

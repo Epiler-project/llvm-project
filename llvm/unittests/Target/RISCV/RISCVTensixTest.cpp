@@ -68,6 +68,58 @@ void expectNoBoundNumericalEffects(const ContentsInfo &Info) {
         std::holds_alternative<RISCV::TensixBoundArgumentRef>(Effect.Resource));
 }
 
+TEST(RISCVTensix, ContentsEntryIsObservedIdentityWithoutNativeWriteOrIssue) {
+  for (auto Architecture : {SFPUArchitecture::Blackhole,
+                            SFPUArchitecture::Wormhole}) {
+    auto Entry = RISCV::getTensixContentsIntrinsicInfo(
+        Intrinsic::riscv_tt_contents_entry, {}, Architecture);
+    ASSERT_TRUE(bool(Entry)) << toString(Entry.takeError());
+    EXPECT_EQ(Entry->Origin, RISCV::TensixContentsOrigin::ObservedEntry);
+    EXPECT_EQ(Entry->NumResults, 1u);
+    EXPECT_TRUE(Entry->Effects.empty());
+    EXPECT_TRUE(Entry->Transfers.empty());
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(Entry->LaneControl));
+    ASSERT_TRUE(Entry->Configuration);
+    EXPECT_TRUE(Entry->Configuration->Requirements.empty());
+    ASSERT_EQ(Entry->TransferValues.size(), 1u);
+    const auto *Result = std::get_if<RISCV::TensixContentsResultRef>(
+        &Entry->TransferValues.front());
+    ASSERT_NE(Result, nullptr);
+    EXPECT_EQ(Result->Result, 0u);
+
+    // Observed entry gives an actual numerical SSA origin. It supplies neither
+    // a fixed register nor a payload write/initialization transfer, and must
+    // not change the independent hardware initializedness contract.
+    for (unsigned Number = 0; Number != 8; ++Number) {
+      auto Bits = RISCV::getTensixSFPURegisterContents(Number);
+      ASSERT_TRUE(bool(Bits)) << toString(Bits.takeError());
+      EXPECT_EQ(*Bits, RISCV::TensixSFPURegisterContents::Unknown);
+    }
+
+    auto Add = RISCV::getTensixContentsIntrinsicInfo(
+        Intrinsic::riscv_tt_contents_add,
+        {contents(), contents(), contents(), scalar(0)}, Architecture);
+    ASSERT_TRUE(bool(Add)) << toString(Add.takeError());
+    EXPECT_NE(Add->Origin, RISCV::TensixContentsOrigin::ObservedEntry);
+    ASSERT_EQ(Add->Transfers.size(), 1u);
+    EXPECT_EQ(Add->Transfers.front().Kind,
+              RISCV::TensixSFPUTransferKind::LaneWise);
+  }
+}
+
+TEST(RISCVTensix, ContentsEntryRejectsSelectorOrInventedSourceArgument) {
+  const SmallVector<ContentsValue, 1> Invalid[] = {
+      {scalar(0)}, {dynamicScalar()}, {contents()}};
+  for (auto Architecture : {SFPUArchitecture::Blackhole,
+                            SFPUArchitecture::Wormhole})
+    for (const auto &Arguments : Invalid) {
+      auto Entry = RISCV::getTensixContentsIntrinsicInfo(
+          Intrinsic::riscv_tt_contents_entry, Arguments, Architecture);
+      ASSERT_FALSE(bool(Entry));
+      consumeError(Entry.takeError());
+    }
+}
+
 // Numerical transfer/lane facts must come from the same native evaluator as
 // the bound ABI. Dropping an old/source SSA edge or actual mode fails here.
 TEST(RISCVTensix, ContentsQueryReceivesActualConditionAndConfigurationReset) {

@@ -52,6 +52,7 @@ bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
 
 bool llvm::isTensixContentsIntrinsic(Intrinsic::ID ID) {
   switch (ID) {
+  case Intrinsic::riscv_tt_contents_entry:
   case Intrinsic::riscv_tt_contents_read_constant:
   case Intrinsic::riscv_tt_contents_read_creg:
   case Intrinsic::riscv_tt_contents_load:
@@ -217,7 +218,8 @@ Error range(const IntrinsicInst &II, unsigned Index, uint64_t Lower,
   return Error::success();
 }
 
-static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
+static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE,
+                                   AssumptionCache &AC, DominatorTree &DT) {
   if (!I.getType()->isIntegerTy() ||
       !(isa<PHINode>(I) || isa<BinaryOperator>(I) || isa<CastInst>(I) ||
         isa<ICmpInst>(I) || isa<SelectInst>(I)))
@@ -255,16 +257,25 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE) {
   if (const auto *Disjoint = dyn_cast<PossiblyDisjointInst>(&I);
       Disjoint && Disjoint->isDisjoint()) {
     // InstCombine can express bounded field addition as a disjoint OR.
-    // Prove the flag's obligation from its operands, never from the OR's
-    // result or poison-generating flags elsewhere in their dependency graph.
-    // isDefinedOffset still independently proves both operands are defined.
+    // The OR's own flag is not evidence. Combine plain bit arithmetic with
+    // the operand ranges, including durable ABI load domains. Range facts
+    // are conditional on defined inputs; isDefinedOffset independently
+    // checks every dependency and its poison-generating flags below.
     const DataLayout &DL = I.getModule()->getDataLayout();
-    auto Bits = [&](const Value *V) {
-      return computeKnownBits(V, DL, nullptr, nullptr, nullptr,
-                              /*UseInstrInfo=*/false);
+    auto Bits = [&](const Value *V) -> std::optional<KnownBits> {
+      KnownBits Plain = computeKnownBits(V, DL, &AC, &I, &DT,
+                                         /*UseInstrInfo=*/false);
+      ConstantRange Bounds =
+          SE.getUnsignedRange(SE.getSCEV(const_cast<Value *>(V)));
+      if (Bounds.isEmptySet())
+        return std::nullopt;
+      KnownBits Combined = Plain.unionWith(Bounds.toKnownBits());
+      if (Combined.hasConflict())
+        return std::nullopt;
+      return Combined;
     };
-    return KnownBits::haveNoCommonBitsSet(Bits(I.getOperand(0)),
-                                          Bits(I.getOperand(1)));
+    auto Left = Bits(I.getOperand(0)), Right = Bits(I.getOperand(1));
+    return Left && Right && KnownBits::haveNoCommonBitsSet(*Left, *Right);
   }
 
   // A flag is an obligation, never evidence. Check the actual operand ranges
@@ -356,7 +367,8 @@ static bool isDefinedOffset(const Value *Offset, const Instruction &Use,
     if (It != Numbers.end())
       return It->second; // Deduplication only; SCC certification is below.
     auto *I = dyn_cast<Instruction>(V);
-    if (!I || Nodes.size() == NodeBudget || !preservesDefinedScalar(*I, SE))
+    if (!I || Nodes.size() == NodeBudget ||
+        !preservesDefinedScalar(*I, SE, AC, DT))
       return std::nullopt;
     unsigned Number = Nodes.size();
     Nodes.push_back({I, {}, false});
@@ -881,8 +893,9 @@ Error verifyFullLoadsOutsideRecording(Function &F) {
             F, "contents full LOAD is not supported in replay recording");
       }
       const auto *Issue = RISCV::getTensixInstructionByIntrinsic(ID);
-      if (RawRemaining && (isTensixContentsIntrinsic(ID) ||
-                           (Issue && ID != Issue->MopIntrinsicID)))
+      if (RawRemaining && ID != Intrinsic::riscv_tt_contents_entry &&
+          (isTensixContentsIntrinsic(ID) ||
+           (Issue && ID != Issue->MopIntrinsicID)))
         --RawRemaining;
     }
   }
@@ -1250,6 +1263,53 @@ Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
   return Error::success();
 }
 
+// Entry observations name actual incoming bits before any operation can change
+// their numerical storage. They cannot re-seed contents on a control-flow edge
+// or after numerical work. Only received state-only setup is permitted here;
+// opaque calls and memory effects may issue or clobber hardware through aliases.
+Error verifyContentsEntryPrefix(Function &F) {
+  bool PrefixOpen = true;
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &I : BB) {
+      const auto *II = dyn_cast<IntrinsicInst>(&I);
+      if (II && II->getIntrinsicID() == Intrinsic::riscv_tt_contents_entry) {
+        if (&BB != &F.getEntryBlock() || !PrefixOpen)
+          return invalid(F, "contents entry requires the function entry prefix");
+        continue;
+      }
+      if (&BB != &F.getEntryBlock())
+        continue;
+      if (II) {
+        switch (II->getIntrinsicID()) {
+        case Intrinsic::riscv_tt_contents_encc:
+        case Intrinsic::riscv_tt_contents_pushc:
+        case Intrinsic::riscv_tt_contents_popc:
+        case Intrinsic::riscv_tt_contents_compc:
+        case Intrinsic::riscv_tt_contents_nop:
+        case Intrinsic::riscv_tt_contents_config_reset:
+        case Intrinsic::smax:
+        case Intrinsic::smin:
+        case Intrinsic::umax:
+        case Intrinsic::umin:
+        case Intrinsic::lifetime_start:
+        case Intrinsic::lifetime_end:
+        case Intrinsic::assume:
+        case Intrinsic::dbg_declare:
+        case Intrinsic::dbg_value:
+        case Intrinsic::dbg_label:
+          continue;
+        default:
+          PrefixOpen = false;
+          continue;
+        }
+      }
+      if (isa<CallBase>(I) || I.mayReadOrWriteMemory())
+        PrefixOpen = false;
+    }
+  }
+  return Error::success();
+}
+
 // Scalar numerical results may occupy either half of SFPR, so they cannot
 // hide SFPLOAD's paired destination capture or TEN-2932 writes to L4..7.
 // SFPLOADI has one explicit destination and is exempt from TEN-2932.
@@ -1261,6 +1321,7 @@ Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
 // SWAPIndex similarly receives both values and both companion indices.
 bool requiresDisabledDestIndex(const IntrinsicInst &II) {
   return containsCarrier(II.getType()) &&
+         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_entry &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate_full &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose4 &&
@@ -1309,7 +1370,9 @@ struct ContentsLaneConfig {
 };
 
 bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
-                                 const DataLayout &DL, bool IsLoad) {
+                                 const DataLayout &DL, bool IsLoad,
+                                 AssumptionCache &AC, const Instruction &I,
+                                 DominatorTree &DT) {
   // Only classify complete accesses to known hardware owners. In particular,
   // excluding just the instruction-port base would miss its 64 KiB aliases.
   if (Pointer->getType()->getPointerAddressSpace() != 0 ||
@@ -1321,21 +1384,52 @@ bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
 
   int64_t Offset;
   const Value *Base = GetPointerBaseWithConstantOffset(Pointer, Offset, DL);
-  APInt Address(32, 0);
+  KnownBits Address(32);
+  Address.setAllZero();
   if (!isa<ConstantPointerNull>(Base)) {
     const auto *Cast = dyn_cast<Operator>(Base);
     if (!Cast || Cast->getOpcode() != Instruction::IntToPtr)
       return false;
-    // ConstantHoisting may have materialized the integer in scalar SSA.
-    // Accept only an exact known value, never a guessed address range.
-    KnownBits Integer = computeKnownBits(Cast->getOperand(0), DL);
-    if (!Integer.isConstant())
-      return false;
-    Address = Integer.getConstant().zextOrTrunc(32);
+    const Value *Integer = Cast->getOperand(0);
+    // RV32 observes only the low32 address bits. Casts whose source and
+    // result retain all those bits are equivalent at inttoptr; peel them
+    // before bounded ValueTracking reaches the typed ABI load domain.
+    while (const auto *Cast = dyn_cast<CastInst>(Integer)) {
+      if ((Cast->getOpcode() != Instruction::ZExt &&
+           Cast->getOpcode() != Instruction::SExt &&
+           Cast->getOpcode() != Instruction::Trunc) ||
+          Cast->getSrcTy()->getIntegerBitWidth() < 32 ||
+          Cast->getDestTy()->getIntegerBitWidth() < 32)
+        break;
+      Integer = Cast->getOperand(0);
+    }
+    Address = computeKnownBits(Integer, DL, &AC, &I, &DT).zextOrTrunc(32);
   }
-  Address += APInt(32, Offset);
-  uint64_t Start = Address.getZExtValue();
+  Address = KnownBits::add(Address,
+                          KnownBits::makeConstant(APInt(32, Offset)));
   uint64_t Bytes = Size.getFixedValue();
+
+  // The TT stream-bank ABI ranges over 64 physical overlay banks. Only a
+  // complete i32 observation of the existing Ready/Reusable counter registers
+  // is classified here: WH register indices 3/4, BH indices 8/10. These reads
+  // observe overlay state and cannot issue SFPCONFIG. An unbounded bank,
+  // unknown offset, partial access or other MMIO address remains unknown.
+  KnownBits OffsetInBank = Address.trunc(12);
+  if (IsLoad && AccessType->isIntegerTy(32) && Bytes == 4 &&
+      OffsetInBank.isConstant() &&
+      Address.getMinValue().uge(0xffb40000) &&
+      Address.getMaxValue().ule(0xffb7fffc)) {
+    uint64_t RegisterOffset = OffsetInBank.getConstant().getZExtValue();
+    if (RegisterOffset == 3 * 4 || RegisterOffset == 4 * 4 ||
+        RegisterOffset == 8 * 4 || RegisterOffset == 10 * 4)
+      return true;
+  }
+
+  // Other owners continue to require an exact address, including constants
+  // materialized into SSA by ConstantHoisting.
+  if (!Address.isConstant())
+    return false;
+  uint64_t Start = Address.getConstant().getZExtValue();
   auto Within = [&](uint64_t Begin, uint64_t End) {
     return Start >= Begin && Start < End && Bytes <= End - Start;
   };
@@ -1354,22 +1448,29 @@ bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
 }
 
 void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
-                              bool &RecordOnly, unsigned &RawRecordRemaining) {
+                              bool &RecordOnly, unsigned &RawRecordRemaining,
+                              AssumptionCache &AC, DominatorTree &DT) {
   const auto *II = dyn_cast<IntrinsicInst>(&I);
   if (!II) {
+    // A scalar ordering fence neither issues a Tensix instruction nor changes
+    // LaneConfig. LLVM's generic mayWriteToMemory includes FenceInst.
+    if (isa<FenceInst>(I))
+      return;
     // Volatile loads are ordered effects in LLVM, so mayWriteToMemory alone
     // cannot distinguish completion observation from an instruction issue.
     if (const auto *Load = dyn_cast<LoadInst>(&I)) {
       if (!preservesContentsLaneConfig(Load->getPointerOperand(),
                                        Load->getType(),
-                                       I.getModule()->getDataLayout(), true))
+                                       I.getModule()->getDataLayout(), true,
+                                       AC, I, DT))
         State = {};
       return;
     }
     if (const auto *Store = dyn_cast<StoreInst>(&I)) {
       if (!preservesContentsLaneConfig(Store->getPointerOperand(),
                                        Store->getValueOperand()->getType(),
-                                       I.getModule()->getDataLayout(), false))
+                                       I.getModule()->getDataLayout(), false,
+                                       AC, I, DT))
         State = {};
       return;
     }
@@ -1380,6 +1481,10 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
     return;
   }
   Intrinsic::ID ID = II->getIntrinsicID();
+  // A typed observation neither issues a word nor changes numerical or
+  // architectural configuration facts, including inside replay accounting.
+  if (ID == Intrinsic::riscv_tt_contents_entry || ID == Intrinsic::assume)
+    return;
   if (ID == Intrinsic::riscv_tt_replay_template_begin) {
     RecordOnly = cast<ConstantInt>(II->getArgOperand(1))->isZero();
     return;
@@ -1518,7 +1623,8 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
   State = {};
 }
 
-Error verifyContentsLaneConfig(Function &F) {
+Error verifyContentsLaneConfig(Function &F, AssumptionCache &AC,
+                               DominatorTree &DT) {
   // Absent entries are not-yet-reached CFG nodes. Entry has unknown hardware
   // configuration. Iterate the actual CFG to convergence; no source iteration
   // or replay sequence is expanded to approximate a loop's reaching facts.
@@ -1545,7 +1651,7 @@ Error verifyContentsLaneConfig(Function &F) {
       bool RecordOnly = false;
       unsigned RawRecordRemaining = 0;
       for (const Instruction &I : BB)
-        updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining);
+        updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining, AC, DT);
       if (RawRecordRemaining)
         return invalid(F, "contents SFPU raw replay recording must end in its "
                           "basic block");
@@ -1601,7 +1707,7 @@ Error verifyContentsLaneConfig(Function &F) {
           return invalid(F, "contents CReg snapshot requires all eight columns "
                             "initialized");
       }
-      updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining);
+      updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining, AC, DT);
     }
   }
   return Error::success();
@@ -1684,9 +1790,12 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
 
   if (!Facts.UsesSFPU)
     return Facts;
-  if (Contents)
-    if (Error E = verifyContentsLaneConfig(F))
+  if (Contents) {
+    if (Error E = verifyContentsEntryPrefix(F))
       return std::move(E);
+    if (Error E = verifyContentsLaneConfig(F, AC, DT))
+      return std::move(E);
+  }
   for (Instruction &I : instructions(F)) {
     // Includes indirect calls, inline assembly, invokes and callbr. Scalar
     // calls do not prove preservation of the fixed SFPU state of this

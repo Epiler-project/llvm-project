@@ -483,6 +483,7 @@ TEST(RISCVTensixConfiguration, ConfigurationResetClearsReceivedLaneFields) {
   EXPECT_TRUE(Reset->ClearsDstReadColumnExchange);
   EXPECT_TRUE(Reset->ClearsDstWriteColumnExchange);
   EXPECT_TRUE(Reset->ClearsDstIndexCapture);
+  EXPECT_TRUE(Reset->ClearsDstMoveBlock);
 }
 
 class RISCVTensixUnreceivedConfigurationTest

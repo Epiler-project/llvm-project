@@ -253,6 +253,7 @@ struct TensixSFPULaneConfigReset {
   bool ClearsDstReadColumnExchange = false;
   bool ClearsDstWriteColumnExchange = false;
   bool ClearsDstIndexCapture = false;
+  bool ClearsDstMoveBlock = false;
 };
 using TensixSFPULaneControl =
     std::variant<std::monostate, TensixSFPUConditionUpdate,
@@ -279,10 +280,14 @@ struct TensixContentsArgumentRef {
 using TensixContentsTransferValue =
     std::variant<TensixContentsResultRef, TensixContentsArgumentRef,
                  TensixFixedRegisterRef>;
+enum class TensixContentsOrigin : uint8_t { NativeInstruction, ObservedEntry };
 struct TensixContentsIntrinsicInfo {
   // Zero means void, one means v32i32, and larger values name the generated
   // intrinsic's exact flat literal tuple of v32i32 results.
   unsigned NumResults;
+  // An observation supplies current contents identity, not a native write or
+  // an initialized-payload fact. Empty transfers alone never imply this origin.
+  TensixContentsOrigin Origin = TensixContentsOrigin::NativeInstruction;
   SmallVector<TensixSFPUArchitecturalEffect, 16> Effects;
   // Transfer/configuration indices address this typed value map, never an
   // inferred physical register or a mixed result/argument integer namespace.

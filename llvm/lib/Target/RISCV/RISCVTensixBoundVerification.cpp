@@ -352,6 +352,11 @@ public:
             MI.getOpcode() == RISCV::PseudoTTSFPURecordWord ||
             MI.getOpcode() == RISCV::PseudoTTSFPUDstRecordWord)
           continue;
+        if (MI.getOpcode() == RISCV::PseudoTTCoprocessorWait) {
+          if (Error E = verifyTensixCoprocessorWait(MI, ST))
+            return Fail(toString(std::move(E)));
+          continue;
+        }
         if (!isNativeIssue(MI)) {
           if (TouchesSFPU)
             return Fail("bound Tensix SFPU register is used by an unsupported "

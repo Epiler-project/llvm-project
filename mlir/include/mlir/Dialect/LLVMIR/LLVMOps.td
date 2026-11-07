@@ -26,6 +26,15 @@ include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 
+// An absent range is not a full/empty numerical range. Keep the optional
+// attribute's wrapped-builder default null; existing convenience builders
+// continue to receive unrestricted loads when the domain is absent.
+def LLVM_OptionalConstantRangeAttr
+    : DefaultValuedOptionalAttr<LLVM_ConstantRangeAttr,
+                               "::mlir::LLVM::ConstantRangeAttr{}"> {
+  let constBuilderCall = "$0";
+}
+
 class LLVM_Builder<string builder> {
   string llvmBuilder = builder;
 }
@@ -396,13 +405,20 @@ def LLVM_LoadOp : LLVM_MemAccessOpBase<"load",
               OptionalAttr<StrAttr>:$syncscope,
               OptionalAttr<LLVM_DereferenceableAttr>:$dereferenceable);
   // Append the aliasing related attributes defined in LLVM_MemAccessOpBase.
-  let arguments = !con(args, aliasAttrs);
+  let arguments = !con(args, aliasAttrs,
+                       (ins LLVM_OptionalConstantRangeAttr:$range,
+                            UnitAttr:$noundef));
   let results = (outs LLVM_LoadableType:$res);
   string llvmInstName = "Load";
   let description = [{
     The `load` operation is used to read from memory. A load may be marked as
     atomic, volatile, and/or nontemporal, and takes a number of optional
-    attributes that specify aliasing information.
+    attributes that specify aliasing information. The optional `range` records
+    one nonempty, nonfull integer interval as LLVM range metadata. A wrapping
+    interval is allowed; integer vectors apply that interval to every element.
+    The independent `noundef` attribute records LLVM noundef load metadata.
+    Import rejects range metadata containing more than one interval instead of
+    silently dropping or widening it.
 
     An atomic load only supports a limited set of pointer, integer, and
     floating point types, and requires an explicit alignment.
@@ -441,6 +457,13 @@ def LLVM_LoadOp : LLVM_MemAccessOpBase<"load",
     }
     if ($dereferenceable)
       moduleTranslation.setDereferenceableMetadata(op, inst);
+    if ($range)
+      inst->setMetadata(llvm::LLVMContext::MD_range,
+                        llvm::MDBuilder(inst->getContext()).createRange(
+                            $range.getLower(), $range.getUpper()));
+    if ($noundef)
+      inst->setMetadata(llvm::LLVMContext::MD_noundef,
+                        llvm::MDNode::get(inst->getContext(), {}));
   }] # setOrderingCode
      # setSyncScopeCode
      # setAlignmentCode
@@ -451,13 +474,29 @@ def LLVM_LoadOp : LLVM_MemAccessOpBase<"load",
   string mlirBuilder = [{
     auto *loadInst = cast<llvm::LoadInst>(inst);
     unsigned alignment = loadInst->getAlign().value();
-    $res = LLVM::LoadOp::create($_builder, $_location, $_resultType, $addr,
+    auto op = LLVM::LoadOp::create($_builder, $_location, $_resultType, $addr,
         alignment, loadInst->isVolatile(),
         loadInst->hasMetadata(llvm::LLVMContext::MD_nontemporal),
         loadInst->hasMetadata(llvm::LLVMContext::MD_invariant_load),
         loadInst->hasMetadata(llvm::LLVMContext::MD_invariant_group),
         convertAtomicOrderingFromLLVM(loadInst->getOrdering()),
         getLLVMSyncScope(loadInst));
+    if (auto *range = loadInst->getMetadata(llvm::LLVMContext::MD_range)) {
+      if (range->getNumOperands() != 2)
+        return emitError($_location,
+                         "load range metadata requires one interval");
+      auto *lower = llvm::mdconst::dyn_extract<llvm::ConstantInt>(
+          range->getOperand(0));
+      auto *upper = llvm::mdconst::dyn_extract<llvm::ConstantInt>(
+          range->getOperand(1));
+      if (!lower || !upper)
+        return emitError($_location,
+                         "load range metadata requires integer bounds");
+      op.setRangeAttr(LLVM::ConstantRangeAttr::get(
+          $_builder.getContext(), lower->getValue(), upper->getValue()));
+    }
+    op.setNoundef(loadInst->hasMetadata(llvm::LLVMContext::MD_noundef));
+    $res = op;
   }];
   let builders = [
     OpBuilder<(ins "Type":$type, "Value":$addr,

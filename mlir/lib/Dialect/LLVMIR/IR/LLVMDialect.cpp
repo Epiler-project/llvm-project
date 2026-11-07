@@ -23,6 +23,7 @@
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Transforms/InliningUtils.h"
 
@@ -886,6 +887,17 @@ verifyAtomicMemOp(OpTy memOp, Type valueType,
 
 LogicalResult LoadOp::verify() {
   Type valueType = getResult().getType();
+  if (auto range = getRangeAttr()) {
+    auto integer = dyn_cast<IntegerType>(getElementTypeOrSelf(valueType));
+    if (!integer)
+      return emitOpError("range requires an integer or integer-vector result");
+    if (range.getLower().getBitWidth() != integer.getWidth() ||
+        range.getUpper().getBitWidth() != integer.getWidth())
+      return emitOpError(
+          "range bounds must match the result element bit width");
+    if (range.getLower() == range.getUpper())
+      return emitOpError("range must not be empty or full");
+  }
   return verifyAtomicMemOp(*this, valueType,
                            {AtomicOrdering::release, AtomicOrdering::acq_rel});
 }
@@ -901,7 +913,7 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Type type,
         /*dereferenceable=*/nullptr,
         /*access_groups=*/nullptr,
         /*alias_scopes=*/nullptr, /*noalias_scopes=*/nullptr,
-        /*tbaa=*/nullptr);
+        /*tbaa=*/nullptr, /*range=*/nullptr, /*noundef=*/false);
 }
 
 //===----------------------------------------------------------------------===//

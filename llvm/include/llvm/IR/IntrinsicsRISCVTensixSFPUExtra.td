@@ -8,6 +8,10 @@
 // their previous destination explicitly; the machine receiver ties it to the
 // result and diagnoses any allocation that would require an implicit copy.
 let TargetPrefix = "riscv" in {
+  // Observe arbitrary stable entry contents in an ordinary allocated LReg.
+  // This supplies numerical SSA identity, without issuing or initializing it.
+  def int_riscv_tt_contents_entry : TensixIntrinsic<[llvm_v32i32_ty], []>;
+
   // WH/BH FP32 AddrMod0 macro profile. These state operations really program
   // architecture-specific address/macro hardware, including BH Sp and SpBase;
   // no caller readiness attribute is consumed.

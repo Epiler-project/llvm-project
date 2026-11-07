@@ -2,6 +2,20 @@
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+// Keep entry observations as ordinary SFPR definitions through allocation.
+// Post-RA reception turns the chosen register into a physical entry live-in;
+// no instruction, copy, initialization, or fixed-register selector is emitted.
+def TTSFPENTRY : Pseudo<(outs SFPR:$dst), (ins), []> {
+  let Size = 0;
+  let Predicates = [HasVendorXTTTensix];
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let isConvergent = 1;
+  let mayLoad = 0;
+  let mayStore = 0;
+  let hasNoSchedulingInfo = 1;
+}
+
 // Destination passthroughs model predication for both ingress paths. Legacy
 // numerical SSA delegates placement to the allocator; bound ingress directly
 // constructs these native instructions with verified physical defs and uses.

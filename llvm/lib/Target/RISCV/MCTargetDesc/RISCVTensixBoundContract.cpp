@@ -835,7 +835,8 @@ RISCV::getTensixSFPUInstructionSemantics(
     // Configuration low bits are cleared under the first eight columns' CC
     // predicates, independently of the current Configuration ROW_MASK field.
     Result.LaneControl =
-        TensixSFPULaneConfigReset{8, true, true, true, true, true, true, true};
+        TensixSFPULaneConfigReset{8, true, true, true, true, true, true, true,
+                                 true};
   } else if (Opcode == RISCV::TTSFPPUSHC) {
     Result.LaneControl =
         TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Push};

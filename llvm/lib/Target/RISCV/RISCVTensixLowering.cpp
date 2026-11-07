@@ -277,6 +277,11 @@ Expected<MCRegister> contentsSnapshotRegister(Intrinsic::ID ID,
 Error verifyContentsInstructionFields(
     Intrinsic::ID ID, ArrayRef<std::optional<int64_t>> Arguments,
     bool Wormhole) {
+  if (ID == Intrinsic::riscv_tt_contents_entry) {
+    if (!Arguments.empty())
+      return createStringError("contents entry does not accept arguments");
+    return Error::success();
+  }
   if (ID == Intrinsic::riscv_tt_contents_load_immediate_full &&
       (!Arguments[1] || (*Arguments[1] != 0 && *Arguments[1] != 1 &&
                          *Arguments[1] != 2 && *Arguments[1] != 4)))
@@ -412,6 +417,13 @@ RISCV::getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
     Info.NumResults = Tuple->getNumElements();
   } else {
     return createStringError("intrinsic has no local contents result ABI");
+  }
+
+  if (ID == Intrinsic::riscv_tt_contents_entry) {
+    Info.Origin = TensixContentsOrigin::ObservedEntry;
+    Info.TransferValues.push_back(TensixContentsResultRef{0});
+    Info.Configuration.emplace();
+    return Info;
   }
 
   const bool Wormhole = Architecture == TensixSFPUArchitecture::Wormhole;
@@ -710,6 +722,9 @@ SDValue llvm::lowerTensixContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
   bool Dynamic =
       (Load || Store) && !isa<ConstantSDNode>(Op.getOperand(DstOffset));
   switch (ID) {
+  case Intrinsic::riscv_tt_contents_entry:
+    Opcode = RISCV::TTSFPENTRY;
+    break;
   case Intrinsic::riscv_tt_contents_read_constant:
   case Intrinsic::riscv_tt_contents_read_creg:
     Opcode = RISCV::TTSFPMOVAll;
