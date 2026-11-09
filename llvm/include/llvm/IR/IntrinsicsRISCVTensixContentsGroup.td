@@ -7,6 +7,18 @@
 // Literal struct results may only be projected with extractvalue, not passed
 // through an ordinary function ABI or assembled into arbitrary aggregates.
 let TargetPrefix = "riscv" in {
+  // One scalar-selected write receives every real cell, including the exact
+  // old values preserved in unselected cells and inactive lanes. Selection is
+  // a defined unsigned ordinal in [0, Count), never a physical register ID.
+  foreach Count = 2-8 in {
+    def int_riscv_tt_contents_load_immediate_selected_#Count :
+        TensixIntrinsic<!listsplat(llvm_v32i32_ty, Count),
+                        !listconcat(!listsplat(llvm_v32i32_ty, Count),
+                                    [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty]),
+                        [ImmArg<ArgIndex<!add(Count, 1)>>,
+                         ImmArg<ArgIndex<!add(Count, 2)>>]>;
+  }
+
   // Paired LOAD returns the primary value and its hardware +4 companion.
   // LLVM selects one of four legal low-primary groups without source IDs.
   // Both old contents preserve disabled/blocked lanes; capture itself is

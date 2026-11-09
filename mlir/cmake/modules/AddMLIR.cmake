@@ -40,11 +40,12 @@ function(_pdll_tablegen project ofn)
     set(additional_cmdline
       -o ${ofn}
       -d ${ofn}.d
-      DEPFILE ${ofn}.d
       )
     set(local_tds)
     set(global_tds)
+    set(_pdll_depfile "${CMAKE_CURRENT_BINARY_DIR}/${ofn}.d")
   else()
+    set(_pdll_depfile)
     file(GLOB local_tds "*.td")
     file(GLOB_RECURSE global_tds "${LLVM_MAIN_INCLUDE_DIR}/llvm/*.td")
     set(additional_cmdline
@@ -86,21 +87,14 @@ function(_pdll_tablegen project ofn)
   set(tablegen_exe ${${project}_TABLEGEN_EXE})
   set(tablegen_depends ${${project}_TABLEGEN_TARGET} ${tablegen_exe})
 
-  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${ofn}
+  _llvm_tablegen_command(${ofn}
     COMMAND ${tablegen_exe} ${ARG_UNPARSED_ARGUMENTS} -I ${CMAKE_CURRENT_SOURCE_DIR}
-    ${tblgen_includes}
-    ${LLVM_TARGET_DEFINITIONS_ABSOLUTE}
-    ${tblgen_change_flag}
-    ${additional_cmdline}
-    # The file in LLVM_TARGET_DEFINITIONS may be not in the current
-    # directory and local_tds may not contain it, so we must
-    # explicitly list it here:
-    DEPENDS ${ARG_DEPENDS} ${tablegen_depends}
-      ${local_tds} ${global_tds}
-    ${LLVM_TARGET_DEFINITIONS_ABSOLUTE}
-    ${LLVM_TARGET_DEPENDS}
-    COMMENT "Building ${ofn}..."
-    )
+      ${tblgen_includes} ${LLVM_TARGET_DEFINITIONS_ABSOLUTE}
+      ${tblgen_change_flag} ${additional_cmdline}
+    DEPFILE "${_pdll_depfile}"
+    PRIMARY_INPUT "${LLVM_TARGET_DEFINITIONS_ABSOLUTE}"
+    DEPENDS ${ARG_DEPENDS} ${tablegen_depends} ${local_tds} ${global_tds}
+      ${LLVM_TARGET_DEFINITIONS_ABSOLUTE} ${LLVM_TARGET_DEPENDS})
 
   # `make clean' must remove all those generated files:
   set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${ofn})
@@ -325,9 +319,12 @@ endfunction()
 #   are compatible with building an object library.
 # STANDALONE
 #   Don't link against LLVMSupport.
+# EXPLICIT_HEADER_DEPENDENCIES
+#   Use only declared generated-header dependencies. External projects with
+#   an immutable MLIR SDK must not inherit upstream header generation groups.
 function(add_mlir_library name)
   cmake_parse_arguments(ARG
-    "SHARED;INSTALL_WITH_TOOLCHAIN;EXCLUDE_FROM_LIBMLIR;DISABLE_INSTALL;ENABLE_AGGREGATION;OBJECT;STANDALONE"
+    "SHARED;INSTALL_WITH_TOOLCHAIN;EXCLUDE_FROM_LIBMLIR;DISABLE_INSTALL;ENABLE_AGGREGATION;OBJECT;STANDALONE;EXPLICIT_HEADER_DEPENDENCIES"
     ""
     "ADDITIONAL_HEADERS;DEPENDS;LINK_COMPONENTS;LINK_LIBS"
     ${ARGN})
@@ -386,7 +383,9 @@ function(add_mlir_library name)
   endif()
   _check_llvm_components_usage(${name} ${ARG_LINK_LIBS})
 
-  list(APPEND ARG_DEPENDS mlir-generic-headers)
+  if(NOT ARG_EXPLICIT_HEADER_DEPENDENCIES)
+    list(APPEND ARG_DEPENDS mlir-generic-headers)
+  endif()
   llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs} DEPENDS ${ARG_DEPENDS} LINK_COMPONENTS ${ARG_LINK_COMPONENTS} LINK_LIBS ${ARG_LINK_LIBS})
 
   if(TARGET ${name})

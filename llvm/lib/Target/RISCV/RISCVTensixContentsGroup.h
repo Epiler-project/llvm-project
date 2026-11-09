@@ -19,6 +19,10 @@ class SelectionDAG;
 bool isTensixContentsGroupIntrinsic(Intrinsic::ID ID);
 bool isTensixWormholeContentsGroupIntrinsic(Intrinsic::ID ID);
 unsigned getTensixContentsGroupResultCount(Intrinsic::ID ID);
+unsigned getTensixContentsSelectedImmediateCount(Intrinsic::ID ID);
+unsigned getTensixContentsSelectedImmediateOpcodeCount(unsigned Opcode);
+Error verifyTensixContentsSelectedImmediateNative(const MachineInstr &MI,
+                                                  const RISCVSubtarget &ST);
 // Private projections consume the exact generated intrinsic ABI. Constants
 // retain their actual i32 bits; absent entries are numerical/scalar SSA.
 Expected<unsigned>

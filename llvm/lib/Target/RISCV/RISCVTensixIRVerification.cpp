@@ -1176,6 +1176,21 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
 Error verifyIntrinsic(const IntrinsicInst &II, ScalarEvolution &SE,
                       AssumptionCache &AC, DominatorTree &DT) {
   if (isTensixContentsIntrinsic(II.getIntrinsicID())) {
+    if (unsigned Count =
+            getTensixContentsSelectedImmediateCount(II.getIntrinsicID())) {
+      if (Error E = verifyTensixContentsIntrinsicFields(II))
+        return E;
+      Value *Selector = II.getArgOperand(Count);
+      if (!isDefinedOffset(Selector, II, SE, AC, DT))
+        return invalid(*II.getFunction(),
+                       "contents selected immediate selector must be defined "
+                       "and non-poison");
+      if (SE.getUnsignedRange(SE.getSCEV(Selector)).getUnsignedMax().uge(Count))
+        return invalid(*II.getFunction(),
+                       "contents selected immediate selector must be proven "
+                       "within its finite group");
+      return Error::success();
+    }
     switch (II.getIntrinsicID()) {
     case Intrinsic::riscv_tt_contents_replay_template_begin:
     case Intrinsic::riscv_tt_contents_replay_template_end:
@@ -1321,9 +1336,11 @@ Error verifyContentsEntryPrefix(Function &F) {
 // SWAPIndex similarly receives both values and both companion indices.
 bool requiresDisabledDestIndex(const IntrinsicInst &II) {
   return containsCarrier(II.getType()) &&
+         !getTensixContentsSelectedImmediateCount(II.getIntrinsicID()) &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_entry &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate &&
-         II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_immediate_full &&
+         II.getIntrinsicID() !=
+             Intrinsic::riscv_tt_contents_load_immediate_full &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose4 &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_transpose8 &&
          II.getIntrinsicID() != Intrinsic::riscv_tt_contents_load_index &&
@@ -1544,15 +1561,18 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
     return;
   }
   case Intrinsic::riscv_tt_contents_load_immediate: {
-    if (!State.IndexBitZeroValues.contains(II->getArgOperand(0)))
-      return;
+    const bool OldZero =
+        State.IndexBitZeroValues.contains(II->getArgOperand(0));
+    const bool FullWrite = State.allColumnsEnabled() && State.RowsUnmasked;
     unsigned Value = cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
     unsigned Mode = cast<ConstantInt>(II->getArgOperand(2))->getZExtValue();
-    // Both inactive old contents and the written value must have bit 2 clear.
-    // This deliberately does not infer full overwrite from the current CC:
-    // numerical writes also observe ROW_MASK, unlike SFPCONFIG's broadcast.
-    if (Mode == 0 || Mode == 1 || Mode == 8 ||
-        ((Mode == 2 || Mode == 4 || Mode == 10) && !(Value & 4)))
+    // A low-half or complete-word write defines bit 2 on every lane only
+    // when both effective CC and ROW_MASK admit all lanes. Otherwise inactive
+    // lanes retain old contents. Upper16 always preserves the old low half.
+    if ((Mode == 8 && OldZero) ||
+        ((OldZero || FullWrite) &&
+         (Mode == 0 || Mode == 1 ||
+          ((Mode == 2 || Mode == 4 || Mode == 10) && !(Value & 4)))))
       State.IndexBitZeroValues.insert(II);
     return;
   }

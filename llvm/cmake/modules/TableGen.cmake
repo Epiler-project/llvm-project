@@ -4,6 +4,120 @@
 # Adds the name of the generated file to TABLEGEN_OUTPUT.
 include(LLVMDistributionSupport)
 
+# Capture helper paths before entering caller-owned functions.
+set(_LLVM_TABLEGEN_DEPFILE_REWRITER
+  "${CMAKE_CURRENT_LIST_DIR}/RewriteTableGenDepfile.cmake")
+set(_LLVM_TABLEGEN_OUTPUT_RECOVERY
+  "${CMAKE_CURRENT_LIST_DIR}/RecoverTableGenOutput.cmake")
+
+# Record successful generation separately from the artifact's content mtime.
+# Make does not restore missing BYPRODUCTS, so it additionally needs a recovery
+# rule per artifact. A custom-target dependency orders those rules after the
+# stamp without making an unchanged artifact perpetually older than the stamp.
+function(_llvm_tablegen_command ofn)
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "DEPFILE;PRIMARY_INPUT" "COMMAND;DEPENDS;EXTRA_OUTPUTS")
+  # Several upstream callers spell option values as -key="Value". Before
+  # VERBATIM these quotes belonged to the shell, not the tool argument. Keep
+  # that established argv while quoting actual path arguments correctly.
+  set(_command)
+  foreach(_argument IN LISTS ARG_COMMAND)
+    if(_argument MATCHES "^(-[^=]+)=\"([^\"]*)\"$")
+      set(_argument "${CMAKE_MATCH_1}=${CMAKE_MATCH_2}")
+    endif()
+    list(APPEND _command "${_argument}")
+  endforeach()
+  set(ARG_COMMAND ${_command})
+  # The recovery script receives the command as arguments, where CMake cannot
+  # perform its usual executable-target substitution. Normalize it once for
+  # both primary generation and recovery, preserving cross-tool emulators.
+  list(GET ARG_COMMAND 0 _executable)
+  if(TARGET "${_executable}")
+    get_target_property(_kind "${_executable}" TYPE)
+    if(_kind STREQUAL "EXECUTABLE")
+      list(REMOVE_AT ARG_COMMAND 0)
+      list(PREPEND ARG_COMMAND "$<TARGET_FILE:${_executable}>")
+      if(CMAKE_CROSSCOMPILING)
+        get_target_property(_emulator "${_executable}" CROSSCOMPILING_EMULATOR)
+        if(_emulator)
+          list(PREPEND ARG_COMMAND ${_emulator})
+        endif()
+      endif()
+    endif()
+  endif()
+  set(_stamp "${CMAKE_CURRENT_BINARY_DIR}/${ofn}.stamp")
+  set(_outputs "${CMAKE_CURRENT_BINARY_DIR}/${ofn}" ${ARG_EXTRA_OUTPUTS})
+  # Build-tree consumers need the complete artifact inventory before the first
+  # native build. This is output metadata, not a second scheduling authority.
+  set_property(GLOBAL APPEND PROPERTY LLVM_TABLEGEN_GENERATED_OUTPUTS ${_outputs})
+  set(_byproducts)
+  if(NOT CMAKE_GENERATOR MATCHES "Makefiles")
+    set(_byproducts BYPRODUCTS ${_outputs})
+  endif()
+  set(_depfile_arguments)
+  set(_rewrite)
+  if(ARG_DEPFILE)
+    set(_depfile_arguments DEPFILE "${ARG_DEPFILE}")
+    set(_rewrite COMMAND "${CMAKE_COMMAND}"
+      "-DINPUT=${ARG_DEPFILE}" "-DOUTPUT=${_stamp}"
+      "-DPRIMARY_INPUT=${ARG_PRIMARY_INPUT}"
+      -P "${_LLVM_TABLEGEN_DEPFILE_REWRITER}")
+  endif()
+  add_custom_command(OUTPUT "${_stamp}"
+    ${_byproducts}
+    COMMAND ${ARG_COMMAND}
+    ${_rewrite}
+    COMMAND "${CMAKE_COMMAND}" -E touch "${_stamp}"
+    DEPENDS ${ARG_DEPENDS}
+      "${_LLVM_TABLEGEN_DEPFILE_REWRITER}"
+      "${_LLVM_TABLEGEN_OUTPUT_RECOVERY}"
+    ${_depfile_arguments}
+    ${LLVM_TABLEGEN_JOB_POOL}
+    COMMENT "Building ${ofn}..."
+    VERBATIM)
+  if(CMAKE_GENERATOR MATCHES "Makefiles")
+    string(SHA256 _identity "${_stamp}")
+    set(_owner "tablegen-stamp-${_identity}")
+    add_custom_target(${_owner} DEPENDS "${_stamp}")
+    set_property(GLOBAL APPEND PROPERTY LLVM_TABLEGEN_GENERATION_TARGETS ${_owner})
+    foreach(_output IN LISTS _outputs)
+      add_custom_command(OUTPUT "${_output}"
+        COMMAND "${CMAKE_COMMAND}"
+          "-DREQUIRED_OUTPUT=${_output}" "-DSTAMP=${_stamp}"
+          "-DDEPFILE=${ARG_DEPFILE}"
+          "-DPRIMARY_INPUT=${ARG_PRIMARY_INPUT}"
+          "-DDEPFILE_REWRITER=${_LLVM_TABLEGEN_DEPFILE_REWRITER}"
+          -P "${_LLVM_TABLEGEN_OUTPUT_RECOVERY}" -- ${ARG_COMMAND}
+        DEPENDS ${_owner}
+        COMMENT "Restoring ${ofn}..."
+        VERBATIM)
+    endforeach()
+  endif()
+  set_source_files_properties(${_outputs} PROPERTIES
+    GENERATED 1 LLVM_TABLEGEN_STAMP "${_stamp}"
+    LLVM_TABLEGEN_OUTPUTS "${_outputs}")
+endfunction()
+
+# Preserve TABLEGEN_OUTPUT as the single caller-owned output list. In
+# particular its existing reset behavior must also reset generation ordering;
+# non-TableGen outputs (e.g. mixed PDLL libraries) remain real dependencies.
+function(_llvm_tablegen_dependencies result)
+  set(_dependencies)
+  foreach(_output IN LISTS ARGN)
+    get_source_file_property(_stamp "${_output}" LLVM_TABLEGEN_STAMP)
+    if(_stamp)
+      list(APPEND _dependencies "${_stamp}")
+    endif()
+    get_source_file_property(_outputs "${_output}" LLVM_TABLEGEN_OUTPUTS)
+    if(_outputs)
+      list(APPEND _dependencies ${_outputs})
+    else()
+      list(APPEND _dependencies "${_output}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _dependencies)
+  set(${result} "${_dependencies}" PARENT_SCOPE)
+endfunction()
+
 function(tablegen project ofn)
   cmake_parse_arguments(ARG "" "" "DEPENDS;EXTRA_INCLUDES" ${ARGN})
 
@@ -44,9 +158,9 @@ function(tablegen project ofn)
     set(additional_cmdline
       -o ${ofn}
       -d ${ofn}.d
-      DEPFILE ${ofn}.d
       )
     set(global_tds)
+    set(_tablegen_depfile_enabled ON)
   else()
     set(include_td_dirs "${tblgen_includes}")
     list(TRANSFORM include_td_dirs APPEND "/*.td")
@@ -58,6 +172,7 @@ function(tablegen project ofn)
     set(additional_cmdline
       -o ${CMAKE_CURRENT_BINARY_DIR}/${ofn}
       )
+    set(_tablegen_depfile_enabled OFF)
   endif()
 
   if (LLVM_ENABLE_DAGISEL_COV AND "-gen-dag-isel" IN_LIST ARGN)
@@ -143,23 +258,19 @@ function(tablegen project ofn)
     set(LLVM_TABLEGEN_JOB_POOL "")
   endif()
 
-  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${ofn} ${EXTRA_OUTPUTS}
+  set(_depfile)
+  if(_tablegen_depfile_enabled)
+    set(_depfile "${CMAKE_CURRENT_BINARY_DIR}/${ofn}.d")
+  endif()
+  _llvm_tablegen_command(${ofn}
     COMMAND ${tablegen_exe} ${ARG_UNPARSED_ARGUMENTS}
-    ${tblgen_includes}
-    ${LLVM_TABLEGEN_FLAGS}
-    ${LLVM_TARGET_DEFINITIONS_ABSOLUTE}
-    ${tblgen_change_flag}
-    ${additional_cmdline}
-    # The file in LLVM_TARGET_DEFINITIONS may be not in the current
-    # directory and local_tds may not contain it, so we must
-    # explicitly list it here:
-    DEPENDS ${ARG_DEPENDS} ${tablegen_depends}
-      ${global_tds}
-    ${LLVM_TARGET_DEFINITIONS_ABSOLUTE}
-    ${LLVM_TARGET_DEPENDS}
-    ${LLVM_TABLEGEN_JOB_POOL}
-    COMMENT "Building ${ofn}..."
-    )
+      ${tblgen_includes} ${LLVM_TABLEGEN_FLAGS}
+      ${LLVM_TARGET_DEFINITIONS_ABSOLUTE}
+      ${tblgen_change_flag} ${additional_cmdline}
+    DEPFILE "${_depfile}"
+    EXTRA_OUTPUTS ${EXTRA_OUTPUTS}
+    DEPENDS ${ARG_DEPENDS} ${tablegen_depends} ${global_tds}
+      ${LLVM_TARGET_DEFINITIONS_ABSOLUTE} ${LLVM_TARGET_DEPENDS})
 
   # `make clean' must remove all those generated files:
   set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${ofn})
@@ -174,8 +285,18 @@ function(add_public_tablegen_target target)
   if(NOT TABLEGEN_OUTPUT)
     message(FATAL_ERROR "Requires tablegen() definitions as TABLEGEN_OUTPUT.")
   endif()
-  add_custom_target(${target}
-    DEPENDS ${TABLEGEN_OUTPUT})
+  _llvm_tablegen_dependencies(_dependencies ${TABLEGEN_OUTPUT})
+  add_custom_target(${target} DEPENDS ${_dependencies})
+  set(_artifacts)
+  foreach(_output IN LISTS TABLEGEN_OUTPUT)
+    get_source_file_property(_outputs "${_output}" LLVM_TABLEGEN_OUTPUTS)
+    if(_outputs)
+      list(APPEND _artifacts ${_outputs})
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _artifacts)
+  set_property(TARGET ${target} PROPERTY LLVM_TABLEGEN_ARTIFACTS "${_artifacts}")
+  set_property(GLOBAL APPEND PROPERTY LLVM_TABLEGEN_PUBLIC_TARGETS ${target})
   if(LLVM_COMMON_DEPENDS)
     add_dependencies(${target} ${LLVM_COMMON_DEPENDS})
   endif()

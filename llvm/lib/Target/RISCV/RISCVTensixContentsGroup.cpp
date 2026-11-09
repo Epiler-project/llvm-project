@@ -172,7 +172,51 @@ bool expandIndexGroup(MachineInstr &MI, const RISCVSubtarget &ST) {
 
 } // namespace
 
+unsigned llvm::getTensixContentsSelectedImmediateCount(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_2:
+    return 2;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_3:
+    return 3;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_4:
+    return 4;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_5:
+    return 5;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_6:
+    return 6;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_7:
+    return 7;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_8:
+    return 8;
+  default:
+    return 0;
+  }
+}
+
+unsigned llvm::getTensixContentsSelectedImmediateOpcodeCount(unsigned Opcode) {
+  switch (Opcode) {
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected2:
+    return 2;
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected3:
+    return 3;
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected4:
+    return 4;
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected5:
+    return 5;
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected6:
+    return 6;
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected7:
+    return 7;
+  case RISCV::PseudoTTSFPContentsLoadImmediateSelected8:
+    return 8;
+  default:
+    return 0;
+  }
+}
+
 unsigned llvm::getTensixContentsGroupResultCount(Intrinsic::ID ID) {
+  if (unsigned Count = getTensixContentsSelectedImmediateCount(ID))
+    return Count;
   switch (ID) {
   case Intrinsic::riscv_tt_contents_transpose8:
   case Intrinsic::riscv_tt_contents_lutfp32_three:
@@ -205,7 +249,8 @@ bool llvm::isTensixWormholeContentsGroupIntrinsic(Intrinsic::ID ID) {
   // selects its architecture-specific encoding only after allocation; no
   // Blackhole scheduler mirror is emitted on Wormhole. Lane configuration
   // uses the same masked VD15 native form on both architectures.
-  return ID == Intrinsic::riscv_tt_contents_load_index ||
+  return getTensixContentsSelectedImmediateCount(ID) ||
+         ID == Intrinsic::riscv_tt_contents_load_index ||
          ID == Intrinsic::riscv_tt_contents_config_creg ||
          ID == Intrinsic::riscv_tt_contents_config_lane ||
          ID == Intrinsic::riscv_tt_contents_swap ||
@@ -284,6 +329,24 @@ Error llvm::verifyTensixContentsGroupFields(
       return std::nullopt;
     return static_cast<uint32_t>(*Arguments[Index]);
   };
+  if (unsigned Count = getTensixContentsSelectedImmediateCount(ID)) {
+    if (Immediate(Count) && *Immediate(Count) >= Count)
+      return createStringError(
+          "contents selected immediate selector exceeds its finite group");
+    if (!Immediate(Count + 1) || !Immediate(Count + 2))
+      return createStringError(
+          "contents selected immediate value and mode must be immediate");
+    static const auto Instructions = RISCV::createTensixBoundMCInstrInfo();
+    MCInst Native;
+    Native.setOpcode(RISCV::TTSFPLOADI);
+    Native.addOperand(MCOperand());
+    Native.addOperand(MCOperand());
+    Native.addOperand(MCOperand::createImm(*Immediate(Count + 1)));
+    Native.addOperand(MCOperand::createImm(*Immediate(Count + 2)));
+    return Wormhole
+               ? RISCV::verifyTensixWormholeInstruction(Native, *Instructions)
+               : RISCV::verifyTensixMCInstructionFields(Native, *Instructions);
+  }
   switch (ID) {
   case Intrinsic::riscv_tt_contents_load_index: {
     if (Immediate(2) && *Immediate(2) > 1023)
@@ -369,6 +432,20 @@ Expected<unsigned>
 llvm::getTensixContentsGroupOpcode(Intrinsic::ID ID,
                                    ArrayRef<std::optional<int64_t>> Arguments) {
   switch (ID) {
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_2:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected2;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_3:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected3;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_4:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected4;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_5:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected5;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_6:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected6;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_7:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected7;
+  case Intrinsic::riscv_tt_contents_load_immediate_selected_8:
+    return RISCV::PseudoTTSFPContentsLoadImmediateSelected8;
   case Intrinsic::riscv_tt_contents_load_index:
     return Arguments[2] ? RISCV::PseudoTTSFPContentsLoadIndex
                         : RISCV::PseudoTTSFPContentsLoadIndexDynamic;
@@ -446,16 +523,34 @@ SDValue llvm::lowerTensixContentsGroupIntrinsic(SDValue Op, SelectionDAG &DAG,
     if (ID == Intrinsic::riscv_tt_contents_config_creg && I == 3)
       continue;
     SDValue Input = Op.getOperand(I);
-    if (const auto *Immediate = dyn_cast<ConstantSDNode>(Input))
+    // The selector remains a GPR even when optimization proves it constant.
+    bool Selector =
+        getTensixContentsSelectedImmediateCount(ID) && I == Count + 2;
+    if (const auto *Immediate = dyn_cast<ConstantSDNode>(Input);
+        Immediate && !Selector)
       Input = DAG.getTargetConstant(Immediate->getSExtValue(), DL, MVT::i32);
     Operands.push_back(Input);
   }
   Operands.push_back(Op.getOperand(0));
   SmallVector<EVT, 11> Results(Count, MVT::v32i32);
+  bool SelectedImmediate = getTensixContentsSelectedImmediateCount(ID) != 0;
+  if (SelectedImmediate)
+    Results.append(3, MVT::i32);
+  unsigned Chain = Results.size();
   Results.push_back(MVT::Other);
   MachineSDNode *Node =
       DAG.getMachineNode(Opcode, DL, DAG.getVTList(Results), Operands);
-  return SDValue(Node, 0);
+  if (!SelectedImmediate)
+    return SDValue(Node, 0);
+  auto *MMO = DAG.getMachineFunction().getMachineMemOperand(
+      MachinePointerInfo(),
+      MachineMemOperand::MOStore | MachineMemOperand::MOVolatile, 4, Align(4));
+  DAG.setNodeMemRefs(Node, {MMO});
+  SmallVector<SDValue, 9> Values;
+  for (unsigned I = 0; I != Count; ++I)
+    Values.push_back(SDValue(Node, I));
+  Values.push_back(SDValue(Node, Chain));
+  return DAG.getMergeValues(Values, DL);
 }
 
 Error llvm::verifyTensixContentsIndexNative(const MachineInstr &MI,
@@ -693,4 +788,46 @@ bool llvm::expandTensixContentsGroupPseudo(MachineInstr &MI,
   Native.setMIFlags(MI.getFlags());
   MI.eraseFromParent();
   return true;
+}
+
+Error llvm::verifyTensixContentsSelectedImmediateNative(
+    const MachineInstr &MI, const RISCVSubtarget &ST) {
+  unsigned Count =
+      getTensixContentsSelectedImmediateOpcodeCount(MI.getOpcode());
+  if (!Count)
+    return Error::success();
+  if (ST.is64Bit() ||
+      (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH()))
+    return createStringError(
+        "contents selected immediate requires RV32 Tensix");
+  if (Error E = verifyTensixMachineEffects(MI))
+    return E;
+  if (Error E = verifyTensixMachineOperands(MI, MI.getMF()->getRegInfo(),
+                                            *ST.getRegisterInfo()))
+    return E;
+  for (const MachineOperand &MO : MI.explicit_operands())
+    if (MO.isReg() && !MO.getReg().isPhysical())
+      return createStringError(
+          "contents selected immediate requires allocated native operands");
+  if (!MI.hasOneMemOperand())
+    return createStringError(
+        "contents selected immediate requires one volatile port store");
+  const MachineMemOperand &MMO = **MI.memoperands_begin();
+  if (!MMO.isVolatile() || !MMO.isStore() || MMO.isLoad() || MMO.isAtomic() ||
+      MMO.getSize() != LocationSize::precise(4))
+    return createStringError(
+        "contents selected immediate requires one volatile port store");
+  MCInst Native;
+  Native.setOpcode(RISCV::TTSFPLOADI);
+  Native.addOperand(MCOperand::createReg(MI.getOperand(0).getReg()));
+  Native.addOperand(MCOperand::createReg(MI.getOperand(Count + 3).getReg()));
+  Native.addOperand(
+      MCOperand::createImm(MI.getOperand(2 * Count + 4).getImm()));
+  Native.addOperand(
+      MCOperand::createImm(MI.getOperand(2 * Count + 5).getImm()));
+  return ST.hasVendorXTTTensixWH()
+             ? RISCV::verifyTensixWormholeInstruction(Native,
+                                                      *ST.getInstrInfo())
+             : RISCV::verifyTensixMCInstructionFields(Native,
+                                                      *ST.getInstrInfo());
 }

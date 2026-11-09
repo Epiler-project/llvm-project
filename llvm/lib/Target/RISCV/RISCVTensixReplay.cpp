@@ -9,6 +9,7 @@
 #include "RISCVRegisterInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixContentsGroup.h"
 #include "RISCVTensixReplayTemplate.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -18,8 +19,8 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
@@ -422,6 +423,9 @@ MachineInstrBuilder llvm::insertTensixRecordedPayload(
 
 Expected<TensixRecordedWord>
 llvm::getTensixRecordedWord(const MachineInstr &MI, const MachineFunction &MF) {
+  if (getTensixContentsSelectedImmediateOpcodeCount(MI.getOpcode()))
+    return createStringError(
+        "contents selected immediate has no replay capture receiver");
   if (MI.getOpcode() == RISCV::TTSFPLOADFull ||
       MI.getOpcode() == RISCV::PseudoTTSFPLOADFull)
     return createStringError(
@@ -553,6 +557,8 @@ struct Issue {
 };
 
 std::optional<Issue> getIssue(const MachineInstr &MI) {
+  if (getTensixContentsSelectedImmediateOpcodeCount(MI.getOpcode()))
+    return Issue{MI.getOpcode(), 0, 0};
   if (MI.getOpcode() == RISCV::PseudoTTSFPUReplay ||
       MI.getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
       MI.getOpcode() == RISCV::PseudoTTContentsSFPUReplay)
@@ -897,12 +903,14 @@ Expected<Inventory> findRecords(const MachineFunction &MF,
       }
       if (Issued->Opcode == RISCV::TTMOP)
         return createStringError("Tensix replay recording cannot contain MOP");
-      bool IsSFPU = (RISCV::getTensixEncoding(Issued->Opcode) &&
-                     !RISCV::getTensixMachineInfo(Issued->Opcode)) ||
-                    MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
-                    MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
-                    MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex ||
-                    MI.getOpcode() == RISCV::PseudoTTSFPSTORE;
+      bool IsSFPU =
+          getTensixContentsSelectedImmediateOpcodeCount(MI.getOpcode()) ||
+          (RISCV::getTensixEncoding(Issued->Opcode) &&
+           !RISCV::getTensixMachineInfo(Issued->Opcode)) ||
+          MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
+          MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
+          MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex ||
+          MI.getOpcode() == RISCV::PseudoTTSFPSTORE;
       Active->Body.push_back(&MI);
       bool Received = IsPayload || IsSFPU || isOrdinaryRecordedCandidate(MI) ||
                       Active->Header->getOpcode() ==

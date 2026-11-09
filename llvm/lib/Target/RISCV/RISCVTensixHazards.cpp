@@ -24,6 +24,8 @@ using namespace llvm;
 namespace {
 constexpr unsigned SFPUCooldown = 1u << 16;
 bool isSFPU(const MachineInstr &MI) {
+  if (getTensixContentsSelectedImmediateOpcodeCount(MI.getOpcode()))
+    return true;
   if (MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
       MI.getOpcode() == RISCV::PseudoTTSFPLOADFull ||
       MI.getOpcode() == RISCV::PseudoTTSFPLOADIndex ||
@@ -546,6 +548,8 @@ public:
                    MF.getRegInfo().getRegClass(MO.getReg()))))
             return Fail("unallocated SFPU register reached final legality");
         if (Error E = verifyTensixContentsIndexNative(MI, ST))
+          return Fail(toString(std::move(E)));
+        if (Error E = verifyTensixContentsSelectedImmediateNative(MI, ST))
           return Fail(toString(std::move(E)));
       }
     // Stack lifecycle is source-owned for bound operations. Keep the legacy

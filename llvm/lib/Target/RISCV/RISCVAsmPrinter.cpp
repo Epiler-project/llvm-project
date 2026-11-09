@@ -655,6 +655,96 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
     return;
   }
 
+  if (unsigned Count =
+          getTensixContentsSelectedImmediateOpcodeCount(MI->getOpcode())) {
+    if (Error E = verifyTensixContentsSelectedImmediateNative(*MI, *STI)) {
+      OutContext.reportError(SMLoc(), toString(std::move(E)));
+      return;
+    }
+    MCRegister Word = MI->getOperand(Count).getReg();
+    MCRegister Field = MI->getOperand(Count + 1).getReg();
+    MCRegister Address = MI->getOperand(Count + 2).getReg();
+    MCRegister Selector = MI->getOperand(2 * Count + 3).getReg();
+    uint32_t RegisterMap = 0;
+    for (unsigned I = 0; I != Count; ++I)
+      RegisterMap |=
+          STI->getRegisterInfo()->getEncodingValue(MI->getOperand(I).getReg())
+          << (4 * I);
+    auto Encode = [&](MCRegister Reg) -> Expected<uint32_t> {
+      MCInstBuilder Native(RISCV::TTSFPLOADI);
+      Native.addReg(Reg)
+          .addReg(Reg)
+          .addImm(MI->getOperand(2 * Count + 4).getImm())
+          .addImm(MI->getOperand(2 * Count + 5).getImm());
+      std::unique_ptr<MCCodeEmitter> Encoder(
+          createRISCVMCCodeEmitter(*TM.getMCInstrInfo(), OutContext));
+      SmallVector<char, 4> Bytes;
+      SmallVector<MCFixup, 0> Fixups;
+      Encoder->encodeInstruction(Native, Bytes, Fixups, *STI);
+      if (Bytes.size() != 4 || !Fixups.empty())
+        return createStringError("failed to encode selected SFPLOADI base");
+      return rotr(support::endian::read32le(Bytes.data()), 2);
+    };
+    auto Zero = Encode(RISCV::TT_L0);
+    auto One = Encode(RISCV::TT_L1);
+    if (!Zero || !One) {
+      std::string Message;
+      if (!Zero)
+        Message += toString(Zero.takeError());
+      if (!One)
+        Message += toString(One.takeError());
+      OutContext.reportError(SMLoc(), Message);
+      return;
+    }
+    uint32_t SelectorBit = *Zero ^ *One;
+    if (!isPowerOf2_32(SelectorBit) || (*Zero & (7 * SelectorBit))) {
+      OutContext.reportError(
+          SMLoc(), "selected SFPLOADI has no received MC selector field");
+      return;
+    }
+    // Materialize exact i32 bits in two instructions, including sign-adjusted
+    // low immediates. This keeps the pseudo's declared size exact.
+    auto Constant = [&](MCRegister Destination, uint32_t Value) {
+      EmitToStreamer(*OutStreamer,
+                     MCInstBuilder(RISCV::LUI)
+                         .addReg(Destination)
+                         .addImm(((uint64_t(Value) + 0x800) >> 12) & 0xfffff));
+      EmitToStreamer(*OutStreamer,
+                     MCInstBuilder(RISCV::ADDI)
+                         .addReg(Destination)
+                         .addReg(Destination)
+                         .addImm(SignExtend64<12>(Value & 0xfff)));
+    };
+    Constant(Word, RegisterMap);
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::SLLI).addReg(Field).addReg(Selector).addImm(2));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::SRL).addReg(Field).addReg(Word).addReg(Field));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::ANDI).addReg(Field).addReg(Field).addImm(7));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SLLI)
+                                     .addReg(Field)
+                                     .addReg(Field)
+                                     .addImm(countr_zero(SelectorBit)));
+    Constant(Word, *Zero);
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::OR).addReg(Word).addReg(Word).addReg(Field));
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::LUI)
+                       .addReg(Address)
+                       .addImm(RISCV::getTensixInstructionPortAddress(
+                                   RISCV::TensixInstructionPort::Local) >>
+                               12));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::SW).addReg(Word).addReg(Address).addImm(0));
+    return;
+  }
+
   switch (MI->getOpcode()) {
   case RISCV::PseudoTTSFPLOAD:
   case RISCV::PseudoTTSFPLOADFull:

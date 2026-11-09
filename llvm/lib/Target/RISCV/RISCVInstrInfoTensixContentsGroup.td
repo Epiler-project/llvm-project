@@ -189,3 +189,64 @@ def PseudoTTSFPContentsConfigLane : TensixContentsGroupPseudo<
   let Predicates = [HasVendorXTTTensix];
   let Defs = [TT_CONFIG, TT_ISSUE];
 }
+
+// Scalar selection changes exactly one numerical cell. Distinct early-clobber
+// tied results keep every other old cell alive without staging copies. Scratch
+// is ordinary RV32 state; its post-RA expansion issues one instruction word.
+class TensixContentsSelectedImmediate<dag Outputs, dag Inputs, string Ties>
+    : Pseudo<Outputs, Inputs, []> {
+  let Predicates = [HasVendorXTTTensix];
+  let Constraints = Ties;
+  let hasSideEffects = 1;
+  let isNotDuplicable = 1;
+  let isConvergent = 1;
+  let hasNoSchedulingInfo = 1;
+  let mayLoad = 0;
+  let mayStore = 1;
+  let Uses = [TT_CC, TT_CONFIG, TT_ISSUE];
+  let Defs = [TT_ISSUE];
+  // Two constant materializations, selector shifts/mask, OR and one port SW.
+  let Size = 44;
+}
+
+def PseudoTTSFPContentsLoadImmediateSelected2 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;
+
+def PseudoTTSFPContentsLoadImmediateSelected3 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, SFPR:$r2, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, SFPR:$old2, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,$r2 = $old2,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $r2,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;
+
+def PseudoTTSFPContentsLoadImmediateSelected4 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, SFPR:$r2, SFPR:$r3, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, SFPR:$old2, SFPR:$old3, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,$r2 = $old2,$r3 = $old3,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $r2,@earlyclobber $r3,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;
+
+def PseudoTTSFPContentsLoadImmediateSelected5 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, SFPR:$r2, SFPR:$r3, SFPR:$r4, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, SFPR:$old2, SFPR:$old3, SFPR:$old4, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,$r2 = $old2,$r3 = $old3,$r4 = $old4,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $r2,@earlyclobber $r3,@earlyclobber $r4,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;
+
+def PseudoTTSFPContentsLoadImmediateSelected6 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, SFPR:$r2, SFPR:$r3, SFPR:$r4, SFPR:$r5, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, SFPR:$old2, SFPR:$old3, SFPR:$old4, SFPR:$old5, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,$r2 = $old2,$r3 = $old3,$r4 = $old4,$r5 = $old5,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $r2,@earlyclobber $r3,@earlyclobber $r4,@earlyclobber $r5,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;
+
+def PseudoTTSFPContentsLoadImmediateSelected7 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, SFPR:$r2, SFPR:$r3, SFPR:$r4, SFPR:$r5, SFPR:$r6, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, SFPR:$old2, SFPR:$old3, SFPR:$old4, SFPR:$old5, SFPR:$old6, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,$r2 = $old2,$r3 = $old3,$r4 = $old4,$r5 = $old5,$r6 = $old6,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $r2,@earlyclobber $r3,@earlyclobber $r4,@earlyclobber $r5,@earlyclobber $r6,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;
+
+def PseudoTTSFPContentsLoadImmediateSelected8 :
+    TensixContentsSelectedImmediate<
+      (outs SFPR:$r0, SFPR:$r1, SFPR:$r2, SFPR:$r3, SFPR:$r4, SFPR:$r5, SFPR:$r6, SFPR:$r7, GPR:$word, GPR:$field, GPR:$address),
+      (ins SFPR:$old0, SFPR:$old1, SFPR:$old2, SFPR:$old3, SFPR:$old4, SFPR:$old5, SFPR:$old6, SFPR:$old7, GPR:$selector, uimm16:$value, uimm4:$mode),
+      "$r0 = $old0,$r1 = $old1,$r2 = $old2,$r3 = $old3,$r4 = $old4,$r5 = $old5,$r6 = $old6,$r7 = $old7,@earlyclobber $r0,@earlyclobber $r1,@earlyclobber $r2,@earlyclobber $r3,@earlyclobber $r4,@earlyclobber $r5,@earlyclobber $r6,@earlyclobber $r7,@earlyclobber $word,@earlyclobber $field,@earlyclobber $address">;

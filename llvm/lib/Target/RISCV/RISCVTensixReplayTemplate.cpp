@@ -8,6 +8,7 @@
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixContentsGroup.h"
 #include "RISCVTensixReplay.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -261,7 +262,8 @@ bool hasRawReplayOwner(const MachineInstr &MI) {
 }
 
 bool isRecordedIssue(const MachineInstr &MI) {
-  return contentsReplayRecipeOpcode(MI.getOpcode()) ||
+  return getTensixContentsSelectedImmediateOpcodeCount(MI.getOpcode()) ||
+         contentsReplayRecipeOpcode(MI.getOpcode()) ||
          RISCV::getTensixEncoding(MI.getOpcode()) ||
          RISCV::getTensixMachineInfoByPort(MI.getOpcode()) ||
          MI.getOpcode() == RISCV::PseudoTTSFPLOAD ||
