@@ -1,5 +1,6 @@
 # RUN: split-file %s %t
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -show-encoding %t/full.s | FileCheck %s --check-prefix=WH
+# RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -show-encoding %t/face.s | FileCheck %s --check-prefix=FACE
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixbh -show-encoding %t/full.s | FileCheck %s --check-prefix=BH
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixbh -show-encoding %t/bh-upper.s | FileCheck %s --check-prefix=BH-UPPER
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -filetype=obj %t/full.s | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixwh - | FileCheck %s --check-prefix=DIS
@@ -24,13 +25,14 @@
 # BH-UPPER: ttzeroacc 16383, 7, 1, 1, 31{{ *}}# encoding: [0xfc,0xff,0xff,0x43]
 # DIS: 0: {{.*}}ttzeroacc 0, 1, 0, 0, 3
 # DIS-NEXT: 4: {{.*}}ttzeroacc 0, 1, 0, 1, 3
-# INVALID: error: Wormhole ZEROACC field where must be in [0, 0]
-# INVALID: error: Wormhole ZEROACC field addr_mode must be in [1, 1]
-# INVALID: error: Wormhole ZEROACC field addr_mode must be in [1, 1]
+# INVALID: error: Wormhole ZEROACC field where must be in [0, 63]
+# INVALID: error: Wormhole ZEROACC does not match an admitted logical form
+# INVALID: error: Wormhole ZEROACC does not match an admitted logical form
+# INVALID: error: Wormhole ZEROACC field addr_mode must be in [0, 1]
 # INVALID: error: Wormhole ZEROACC field clear_zero_flags must be in [0, 0]
 # INVALID: error: ZEROACC field use_32_bit_mode must be in [0, 1]
-# INVALID: error: Wormhole ZEROACC field clear_mode must be in [3, 3]
-# INVALID: error: Wormhole ZEROACC field clear_mode must be in [3, 3]
+# INVALID: error: Wormhole ZEROACC does not match an admitted logical form
+# INVALID: error: Wormhole ZEROACC field clear_mode must be in [0, 3]
 # INVALID: error: ZEROACC field clear_mode must be in [0, 31]
 # NOFEATURE: error: instruction requires the following: 'XTTTensixBH' or 'XTTTensixWH'
 
@@ -51,8 +53,8 @@ ttzeroacc 0, 1, 0, 1, 3
 ttzeroacc 16383, 7, 1, 1, 31
 
 #--- invalid.s
-# These first four and the mode2/7 forms fit BH's logical field envelope,
-# but are not canonical Full forms received by the WH native subset.
+# These forms violate WH field bounds or its admitted Full/16-row forms.
+ttzeroacc 64, 1, 0, 0, 3
 ttzeroacc 1, 1, 0, 0, 3
 ttzeroacc 0, 0, 0, 0, 3
 ttzeroacc 0, 2, 0, 0, 3
@@ -70,3 +72,9 @@ ttzeroacc 0, 1, 0, 0, 32
 0x00 0x00 0x6a 0x40 0x00 0x00 0xe2 0x40 0x67 0x80 0x00 0x00
 #--- reserved22.txt
 0x00 0x00 0x62 0x41 0x00 0x00 0xe2 0x40 0x67 0x80 0x00 0x00
+
+#--- face.s
+# FACE: ttzeroacc 11, 0, 0, 0, 1{{ *}}# encoding: [0x2c,0x00,0x20,0x40]
+# FACE: ttzeroacc 11, 0, 0, 1, 1{{ *}}# encoding: [0x2c,0x00,0xa0,0x40]
+ttzeroacc 11, 0, 0, 0, 1
+ttzeroacc 11, 0, 0, 1, 1

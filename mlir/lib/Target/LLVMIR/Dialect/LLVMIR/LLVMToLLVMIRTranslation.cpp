@@ -23,6 +23,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/MatrixBuilder.h"
 #include "llvm/IR/MemoryModelRelaxationAnnotations.h"
@@ -88,8 +89,14 @@ getOverloadedDeclaration(CallIntrinsicOp op, llvm::Intrinsic::ID id,
   else
     resTy = moduleTranslation.convertType(op.getResult(0).getType());
 
-  // ATM we do not support variadic intrinsics.
-  llvm::FunctionType *ft = llvm::FunctionType::get(resTy, allArgTys, false);
+  // Match only the fixed prefix of a variadic intrinsic declaration. The call
+  // below keeps all actual operands, including the variadic tail.
+  SmallVector<llvm::Intrinsic::IITDescriptor, 8> descriptors;
+  auto [entries, numArgs, isVarArg] =
+      llvm::Intrinsic::getIntrinsicInfoTableEntries(id, descriptors);
+  if (isVarArg && allArgTys.size() > numArgs)
+    allArgTys.resize(numArgs);
+  llvm::FunctionType *ft = llvm::FunctionType::get(resTy, allArgTys, isVarArg);
 
   std::string errorMsg;
   llvm::raw_string_ostream errorOS(errorMsg);

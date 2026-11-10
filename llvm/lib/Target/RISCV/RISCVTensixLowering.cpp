@@ -354,6 +354,166 @@ void attachIssueMemory(MachineSDNode *Node, SelectionDAG &DAG,
 }
 } // namespace
 
+bool RISCV::isTensixContentsReplayIntrinsic(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_replay_template_begin:
+  case Intrinsic::riscv_tt_contents_replay_template_end:
+  case Intrinsic::riscv_tt_contents_replay_template_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_mop_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_mop:
+  case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+  case Intrinsic::riscv_tt_contents_replay_template_record_and:
+  case Intrinsic::riscv_tt_contents_replay_template_record_or:
+  case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+  case Intrinsic::riscv_tt_contents_replay_template_record_not:
+    return true;
+  default:
+    return false;
+  }
+}
+
+Expected<RISCV::TensixContentsReplayIntrinsicInfo>
+RISCV::getTensixContentsReplayIntrinsicInfo(
+    Intrinsic::ID ID, ArrayRef<TensixContentsValue> Arguments) {
+  if (!isTensixContentsReplayIntrinsic(ID))
+    return createStringError("intrinsic has no local contents replay ABI");
+
+  const bool Execute =
+      ID == Intrinsic::riscv_tt_contents_replay_template_execute ||
+      ID == Intrinsic::riscv_tt_contents_replay_template_mop_execute;
+  unsigned MutableCount = 0;
+  if (Execute) {
+    if (Arguments.size() < 3 ||
+        Arguments[1].Kind != TensixContentsValueKind::Scalar ||
+        !Arguments[1].Constant || *Arguments[1].Constant < 1 ||
+        *Arguments[1].Constant > 8)
+      return createStringError(
+          "contents replay execute requires an unpacked literal tuple matching mutable count");
+    MutableCount = *Arguments[1].Constant;
+  }
+
+  // Reuse generated signatures for fixed operands, varargs and ImmArg. Only
+  // execute's result is overloaded; the received count selects its exact tuple
+  // type, including a literal one-field tuple rather than a bare carrier.
+  LLVMContext Context;
+  Type *Carrier = FixedVectorType::get(Type::getInt32Ty(Context), 32);
+  SmallVector<Type *, 1> Overloads;
+  if (Execute) {
+    SmallVector<Type *, 8> Fields(MutableCount, Carrier);
+    Overloads.push_back(StructType::get(Context, Fields));
+  }
+  FunctionType *Signature = Intrinsic::getType(Context, ID, Overloads);
+  AttributeList Attributes = Intrinsic::getAttributes(Context, ID, Signature);
+  unsigned FirstRole = Signature->getNumParams();
+  if (Arguments.size() < FirstRole ||
+      (!Signature->isVarArg() && Arguments.size() != FirstRole))
+    return createStringError("incorrect number of contents replay operands");
+  for (unsigned I = 0; I != Arguments.size(); ++I) {
+    const TensixContentsValue &Argument = Arguments[I];
+    Type *Expected = I < FirstRole ? Signature->getParamType(I) : Carrier;
+    if (Expected == Carrier) {
+      if (Argument.Kind != TensixContentsValueKind::Contents ||
+          Argument.Constant)
+        return createStringError(
+            "contents replay roles require flat full contents values");
+    } else if (Expected->isIntegerTy(32)) {
+      if (Argument.Kind != TensixContentsValueKind::Scalar)
+        return createStringError("contents replay scalar operand requires i32");
+      if (Attributes.hasParamAttr(I, Attribute::ImmArg) && !Argument.Constant)
+        return createStringError(
+            "contents replay immediate operand must be constant");
+    } else {
+      return createStringError("intrinsic has no local contents replay ABI");
+    }
+  }
+
+  TensixContentsReplayIntrinsicInfo Info;
+  Info.Identity = *Arguments[0].Constant;
+  unsigned RoleCount = Arguments.size() - FirstRole;
+  if (Signature->isVarArg() && (RoleCount < 1 || RoleCount > 8))
+    return createStringError(
+        "contents replay requires one to eight flat contents roles");
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_replay_template_begin: {
+    unsigned Mode = *Arguments[1].Constant;
+    unsigned Placement = *Arguments[2].Constant;
+    unsigned Start = *Arguments[3].Constant;
+    MutableCount = *Arguments[4].Constant;
+    if (Mode > 1 || Placement > 1 || Start > 31)
+      return createStringError("contents replay requires static mode and placement in range");
+    if (!Placement && Start)
+      return createStringError(
+          "contents replay automatic placement requires zero start");
+    if (!MutableCount || MutableCount > RoleCount)
+      return createStringError(
+          "contents replay mutable count differs from its flat roles");
+    Info.Action = TensixContentsReplayBegin{
+        Mode ? TensixContentsReplayMode::RecordAndExecute
+             : TensixContentsReplayMode::RecordOnly,
+        Placement ? TensixContentsReplayPlacement::Fixed
+                  : TensixContentsReplayPlacement::Automatic,
+        Start, {FirstRole, MutableCount},
+        {FirstRole + MutableCount, RoleCount - MutableCount}};
+    break;
+  }
+  case Intrinsic::riscv_tt_contents_replay_template_end:
+    Info.Action = TensixContentsReplayEnd{{FirstRole, RoleCount}};
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_execute:
+  case Intrinsic::riscv_tt_contents_replay_template_mop_execute:
+    if (MutableCount > RoleCount)
+      return createStringError(
+          "contents replay execute mutable count differs from its flat roles");
+    Info.NumResults = MutableCount;
+    Info.ResultForm = TensixContentsResultForm::LiteralTuple;
+    Info.Action = TensixContentsReplayExecute{
+        ID == Intrinsic::riscv_tt_contents_replay_template_mop_execute
+            ? TensixContentsReplayExecution::MOP
+            : TensixContentsReplayExecution::Direct,
+        {FirstRole, MutableCount},
+        {FirstRole + MutableCount, RoleCount - MutableCount}};
+    break;
+  case Intrinsic::riscv_tt_contents_replay_template_mop: {
+    unsigned Slot = *Arguments[1].Constant;
+    if (Slot != 5 && Slot != 7 && Slot != 8)
+      return createStringError(
+          "contents MOP binding requires slot5, slot7 or slot8");
+    Info.Action = TensixContentsReplayMOPBind{Slot};
+    break;
+  }
+  default: {
+    TensixContentsReplayRecipeKind Operation;
+    switch (ID) {
+    case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
+      Operation = TensixContentsReplayRecipeKind::IAdd;
+      break;
+    case Intrinsic::riscv_tt_contents_replay_template_record_and:
+      Operation = TensixContentsReplayRecipeKind::And;
+      break;
+    case Intrinsic::riscv_tt_contents_replay_template_record_or:
+      Operation = TensixContentsReplayRecipeKind::Or;
+      break;
+    case Intrinsic::riscv_tt_contents_replay_template_record_xor:
+      Operation = TensixContentsReplayRecipeKind::Xor;
+      break;
+    case Intrinsic::riscv_tt_contents_replay_template_record_not:
+      Operation = TensixContentsReplayRecipeKind::Not;
+      break;
+    default:
+      llvm_unreachable("classified contents replay intrinsic");
+    }
+    // Actual dst<M and src<R require the associated live begin, not this query.
+    Info.Action = TensixContentsReplayRecipe{
+        Operation, *Arguments[1].Constant,
+        Arguments.size() == 3
+            ? std::optional<unsigned>(*Arguments[2].Constant)
+            : std::nullopt};
+    break;
+  }
+  }
+  return Info;
+}
+
 Expected<RISCV::TensixContentsIntrinsicInfo>
 RISCV::getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
                                       ArrayRef<TensixContentsValue> Arguments,
@@ -415,6 +575,7 @@ RISCV::getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
       return createStringError(
           "contents result requires its exact literal tuple");
     Info.NumResults = Tuple->getNumElements();
+    Info.ResultForm = TensixContentsResultForm::LiteralTuple;
   } else {
     return createStringError("intrinsic has no local contents result ABI");
   }
@@ -821,6 +982,11 @@ SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
   }
   const auto *Info = RISCV::getTensixInstructionByIntrinsic(ID);
   bool Word = ID == Intrinsic::riscv_tt_issue_word;
+  const auto *WordMachine =
+      Word ? RISCV::getTensixMachineInfoByRawOpcode(Op.getConstantOperandVal(3))
+           : nullptr;
+  const bool WormholeZeroaccWord =
+      WordMachine && WordMachine->Opcode == RISCV::TTZEROACC;
   if (!Info && !Clear && !Control && !End && !TemplateOpcode && !Word)
     return SDValue();
   if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH())
@@ -830,14 +996,13 @@ SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
   if (ST.hasVendorXTTTensixWH() &&
       (ID == Intrinsic::riscv_tt_replay || ID == Intrinsic::riscv_tt_mop ||
        (ID != Intrinsic::riscv_tt_mop_control_write &&
-        ID != Intrinsic::riscv_tt_mop_clear &&
+        ID != Intrinsic::riscv_tt_mop_clear && !WormholeZeroaccWord &&
         !RISCV::isTensixWormholeIntrinsic(ID))))
     reportFatalUsageError("Tensix intrinsic is not supported on Wormhole");
   SDLoc DL(Op);
   if (Word) {
     // The issue-word fold encoded every field; only the port store remains.
-    const auto *Machine =
-        RISCV::getTensixMachineInfoByRawOpcode(Op.getConstantOperandVal(3));
+    const auto *Machine = WordMachine;
     unsigned Port = Op.getConstantOperandVal(2);
     if (!Machine || RISCV::isTensixFieldPortOpcode(Machine->Opcode) ||
         Port > unsigned(RISCV::TensixInstructionPort::BriscToTrisc2))

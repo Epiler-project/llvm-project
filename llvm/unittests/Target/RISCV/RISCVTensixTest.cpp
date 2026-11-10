@@ -43,6 +43,125 @@ ContentsValue contents() { return {ContentsKind::Contents, std::nullopt}; }
 ContentsValue scalar(uint32_t Value) { return {ContentsKind::Scalar, Value}; }
 ContentsValue dynamicScalar() { return {ContentsKind::Scalar, std::nullopt}; }
 
+TEST(RISCVTensix, ReplayLocalAbiKeepsOneResultLiteralTupleAndRoleSegments) {
+  for (auto ID : {Intrinsic::riscv_tt_contents_replay_template_execute,
+                  Intrinsic::riscv_tt_contents_replay_template_mop_execute}) {
+    auto Info = RISCV::getTensixContentsReplayIntrinsicInfo(
+        ID, {scalar(0), scalar(1), contents(), contents()});
+    ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+    EXPECT_EQ(Info->Identity, 0u);
+    EXPECT_EQ(Info->NumResults, 1u);
+    EXPECT_EQ(Info->ResultForm,
+              RISCV::TensixContentsResultForm::LiteralTuple);
+    const auto *Execute =
+        std::get_if<RISCV::TensixContentsReplayExecute>(&Info->Action);
+    ASSERT_NE(Execute, nullptr);
+    EXPECT_EQ(Execute->Mutables.FirstArgument, 2u);
+    EXPECT_EQ(Execute->Mutables.Count, 1u);
+    EXPECT_EQ(Execute->Captures.FirstArgument, 3u);
+    EXPECT_EQ(Execute->Captures.Count, 1u);
+    EXPECT_EQ(Execute->Kind == RISCV::TensixContentsReplayExecution::MOP,
+              ID == Intrinsic::riscv_tt_contents_replay_template_mop_execute);
+  }
+}
+
+TEST(RISCVTensix, ReplayLocalAbiReceivesGeneratedVarargsAndRecordOnlyRecipe) {
+  auto Begin = RISCV::getTensixContentsReplayIntrinsicInfo(
+      Intrinsic::riscv_tt_contents_replay_template_begin,
+      {scalar(37), scalar(0), scalar(1), scalar(31), scalar(1), contents(),
+       contents()});
+  ASSERT_TRUE(bool(Begin)) << toString(Begin.takeError());
+  EXPECT_EQ(Begin->NumResults, 0u);
+  const auto *Definition =
+      std::get_if<RISCV::TensixContentsReplayBegin>(&Begin->Action);
+  ASSERT_NE(Definition, nullptr);
+  EXPECT_EQ(Definition->Mode, RISCV::TensixContentsReplayMode::RecordOnly);
+  EXPECT_EQ(Definition->Placement, RISCV::TensixContentsReplayPlacement::Fixed);
+  EXPECT_EQ(Definition->Start, 31u);
+  EXPECT_EQ(Definition->Mutables.FirstArgument, 5u);
+  EXPECT_EQ(Definition->Captures.FirstArgument, 6u);
+
+  auto Recipe = RISCV::getTensixContentsReplayIntrinsicInfo(
+      Intrinsic::riscv_tt_contents_replay_template_record_iadd,
+      {scalar(37), scalar(0), scalar(1)});
+  ASSERT_TRUE(bool(Recipe)) << toString(Recipe.takeError());
+  EXPECT_EQ(Recipe->NumResults, 0u);
+  const auto *Word =
+      std::get_if<RISCV::TensixContentsReplayRecipe>(&Recipe->Action);
+  ASSERT_NE(Word, nullptr);
+  EXPECT_EQ(Word->Operation, RISCV::TensixContentsReplayRecipeKind::IAdd);
+  EXPECT_EQ(Word->DestinationRole, 0u);
+  ASSERT_TRUE(Word->SourceRole);
+  EXPECT_EQ(*Word->SourceRole, 1u);
+
+  // A local recipe is syntax, not numerical transfer or an observed entry.
+  auto Numerical = RISCV::getTensixContentsIntrinsicInfo(
+      Intrinsic::riscv_tt_contents_replay_template_record_iadd,
+      {scalar(37), scalar(0), scalar(1)}, SFPUArchitecture::Blackhole);
+  ASSERT_FALSE(bool(Numerical));
+  consumeError(Numerical.takeError());
+
+  auto End = RISCV::getTensixContentsReplayIntrinsicInfo(
+      Intrinsic::riscv_tt_contents_replay_template_end,
+      {scalar(37), contents()});
+  ASSERT_TRUE(bool(End)) << toString(End.takeError());
+  const auto *Final = std::get_if<RISCV::TensixContentsReplayEnd>(&End->Action);
+  ASSERT_NE(Final, nullptr);
+  EXPECT_EQ(Final->Mutables.FirstArgument, 1u);
+  EXPECT_EQ(Final->Mutables.Count, 1u);
+}
+
+TEST(RISCVTensix, ReplayLocalAbiRejectsMalformedFieldsAndFlatRoles) {
+  const SmallVector<ContentsValue, 8> InvalidBegins[] = {
+      {scalar(1), scalar(0), scalar(0), scalar(0), scalar(0), contents()},
+      {scalar(1), scalar(0), scalar(0), scalar(0), scalar(2), contents()},
+      {scalar(1), scalar(0), scalar(0), scalar(1), scalar(1), contents()},
+      {scalar(1), scalar(2), scalar(0), scalar(0), scalar(1), contents()},
+      {scalar(1), scalar(0), scalar(2), scalar(0), scalar(1), contents()},
+      {scalar(1), scalar(0), scalar(1), scalar(32), scalar(1), contents()},
+      {dynamicScalar(), scalar(0), scalar(0), scalar(0), scalar(1), contents()},
+      {scalar(1), scalar(0), scalar(0), scalar(0), scalar(1), scalar(7)}};
+  for (const auto &Arguments : InvalidBegins) {
+    auto Info = RISCV::getTensixContentsReplayIntrinsicInfo(
+        Intrinsic::riscv_tt_contents_replay_template_begin, Arguments);
+    ASSERT_FALSE(bool(Info));
+    consumeError(Info.takeError());
+  }
+  for (unsigned Count : {0u, 9u}) {
+    auto Info = RISCV::getTensixContentsReplayIntrinsicInfo(
+        Intrinsic::riscv_tt_contents_replay_template_execute,
+        {scalar(1), scalar(Count), contents()});
+    ASSERT_FALSE(bool(Info));
+    consumeError(Info.takeError());
+  }
+  auto DynamicRole = RISCV::getTensixContentsReplayIntrinsicInfo(
+      Intrinsic::riscv_tt_contents_replay_template_record_iadd,
+      {scalar(1), scalar(0), dynamicScalar()});
+  ASSERT_FALSE(bool(DynamicRole));
+  consumeError(DynamicRole.takeError());
+  auto ExtraRecipeArgument = RISCV::getTensixContentsReplayIntrinsicInfo(
+      Intrinsic::riscv_tt_contents_replay_template_record_not,
+      {scalar(1), scalar(0), scalar(0)});
+  ASSERT_FALSE(bool(ExtraRecipeArgument));
+  consumeError(ExtraRecipeArgument.takeError());
+}
+
+TEST(RISCVTensix, ReplayLocalAbiReceivesAllMutableAritiesWithoutPhysicalBinding) {
+  for (unsigned Count = 1; Count <= 8; ++Count) {
+    SmallVector<ContentsValue, 10> Arguments = {scalar(7), scalar(Count)};
+    Arguments.append(Count, contents());
+    auto Info = RISCV::getTensixContentsReplayIntrinsicInfo(
+        Intrinsic::riscv_tt_contents_replay_template_execute, Arguments);
+    ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+    EXPECT_EQ(Info->NumResults, Count);
+    EXPECT_EQ(Info->ResultForm,
+              RISCV::TensixContentsResultForm::LiteralTuple);
+    EXPECT_EQ(std::get<RISCV::TensixContentsReplayExecute>(Info->Action)
+                  .Captures.Count,
+              0u);
+  }
+}
+
 std::optional<SFPUAccess> stateAccess(const ContentsInfo &Info,
                                       SFPUState State) {
   for (const auto &Effect : Info.Effects)

@@ -45,3 +45,35 @@ define void @full_fp32() "tensix-executor"="trisc2" {
   call void @llvm.riscv.tt.zeroacc(i32 0, i32 1, i32 0, i32 1, i32 3)
   ret void
 }
+
+define void @face_fp16() "tensix-executor"="trisc1" {
+; WH-LABEL: face_fp16:
+; WH: .word 0x4020002c
+; WH: ret
+; BH-LABEL: face_fp16:
+; BH: .word 0x4020002c
+; BH: ret
+; ISEL-LABEL: name: face_fp16
+; ISEL: TTZEROACC 11, 0, 0, 0, 1
+; OBJ-LABEL: <face_fp16>:
+; OBJ: ttzeroacc 11, 0, 0, 0, 1
+; OBJ-NEXT: {{.*}}ret
+  call void @llvm.riscv.tt.zeroacc(i32 11, i32 0, i32 0, i32 0, i32 1)
+  ret void
+}
+
+define void @face_fp32() "tensix-executor"="trisc1" {
+; WH-LABEL: face_fp32:
+; WH: .word 0x40a0002c
+; WH: ret
+; BH-LABEL: face_fp32:
+; BH: .word 0x4030002c
+; BH: ret
+; ISEL-LABEL: name: face_fp32
+; ISEL: TTZEROACC 11, 0, 0, 1, 1
+; OBJ-LABEL: <face_fp32>:
+; OBJ: ttzeroacc 11, 0, 0, 1, 1
+; OBJ-NEXT: {{.*}}ret
+  call void @llvm.riscv.tt.zeroacc(i32 11, i32 0, i32 0, i32 1, i32 1)
+  ret void
+}

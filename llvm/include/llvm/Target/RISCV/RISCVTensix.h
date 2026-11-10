@@ -281,10 +281,12 @@ using TensixContentsTransferValue =
     std::variant<TensixContentsResultRef, TensixContentsArgumentRef,
                  TensixFixedRegisterRef>;
 enum class TensixContentsOrigin : uint8_t { NativeInstruction, ObservedEntry };
+enum class TensixContentsResultForm : uint8_t { Direct, LiteralTuple };
 struct TensixContentsIntrinsicInfo {
-  // Zero means void, one means v32i32, and larger values name the generated
-  // intrinsic's exact flat literal tuple of v32i32 results.
+  // Direct has zero (void) or one v32i32 result. LiteralTuple has NumResults
+  // independent v32i32 fields; cardinality alone never selects the container.
   unsigned NumResults;
+  TensixContentsResultForm ResultForm = TensixContentsResultForm::Direct;
   // An observation supplies current contents identity, not a native write or
   // an initialized-payload fact. Empty transfers alone never imply this origin.
   TensixContentsOrigin Origin = TensixContentsOrigin::NativeInstruction;
@@ -308,6 +310,65 @@ Expected<TensixContentsIntrinsicInfo>
 getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
                                ArrayRef<TensixContentsValue> Arguments,
                                TensixSFPUArchitecture Architecture);
+
+// Local Replay ABI only. These facts deliberately have no numerical transfer,
+// observed-entry origin, lane/configuration or issue/completion projection.
+// The complete same-live sequence receiver owns the active definition/body,
+// role identity and bounds, dominance, ancestry and actual execution effects.
+struct TensixContentsReplayRoleRange {
+  unsigned FirstArgument;
+  unsigned Count;
+};
+enum class TensixContentsReplayMode : uint8_t {
+  RecordOnly,
+  RecordAndExecute
+};
+enum class TensixContentsReplayPlacement : uint8_t { Automatic, Fixed };
+struct TensixContentsReplayBegin {
+  TensixContentsReplayMode Mode;
+  TensixContentsReplayPlacement Placement;
+  unsigned Start;
+  TensixContentsReplayRoleRange Mutables;
+  TensixContentsReplayRoleRange Captures;
+};
+struct TensixContentsReplayEnd {
+  TensixContentsReplayRoleRange Mutables;
+};
+enum class TensixContentsReplayRecipeKind : uint8_t { IAdd, And, Or, Xor, Not };
+struct TensixContentsReplayRecipe {
+  TensixContentsReplayRecipeKind Operation;
+  unsigned DestinationRole;
+  std::optional<unsigned> SourceRole;
+};
+enum class TensixContentsReplayExecution : uint8_t { Direct, MOP };
+struct TensixContentsReplayExecute {
+  TensixContentsReplayExecution Kind;
+  // Result field i corresponds to mutable argument FirstArgument+i. Captures
+  // are readonly roles. These edges alone do not describe the recorded body.
+  TensixContentsReplayRoleRange Mutables;
+  TensixContentsReplayRoleRange Captures;
+};
+struct TensixContentsReplayMOPBind {
+  unsigned Slot;
+};
+struct TensixContentsReplayIntrinsicInfo {
+  uint32_t Identity;
+  unsigned NumResults = 0;
+  TensixContentsResultForm ResultForm = TensixContentsResultForm::Direct;
+  std::variant<TensixContentsReplayBegin, TensixContentsReplayEnd,
+               TensixContentsReplayRecipe, TensixContentsReplayExecute,
+               TensixContentsReplayMOPBind>
+      Action;
+};
+
+// Generated fixed/overloaded/vararg signature and ImmArg positions remain the
+// ABI authority. This query receives only flat v32i32 roles and actual scalar
+// fields, constructing no IR, physical assignment or sequence receipt. Execute
+// always selects LiteralTuple, including NumResults=1. BH/WH share this ABI.
+bool isTensixContentsReplayIntrinsic(Intrinsic::ID ID);
+Expected<TensixContentsReplayIntrinsicInfo>
+getTensixContentsReplayIntrinsicInfo(
+    Intrinsic::ID ID, ArrayRef<TensixContentsValue> Arguments);
 
 class TensixBoundSFPUContract final {
 public:

@@ -600,17 +600,38 @@ bool isRecordedContents(const Value *Root, const Value *Seed,
   return Seeded.size() == Visited.size();
 }
 
-bool isContentsReplayRecipe(Intrinsic::ID ID) {
-  switch (ID) {
-  case Intrinsic::riscv_tt_contents_replay_template_record_iadd:
-  case Intrinsic::riscv_tt_contents_replay_template_record_and:
-  case Intrinsic::riscv_tt_contents_replay_template_record_or:
-  case Intrinsic::riscv_tt_contents_replay_template_record_xor:
-  case Intrinsic::riscv_tt_contents_replay_template_record_not:
-    return true;
-  default:
-    return false;
+Expected<RISCV::TensixContentsReplayIntrinsicInfo>
+getContentsReplayInfo(const IntrinsicInst &II) {
+  SmallVector<RISCV::TensixContentsValue, 13> Arguments;
+  for (Value *Argument : II.args()) {
+    if (isCarrier(Argument->getType())) {
+      Arguments.push_back(
+          {RISCV::TensixContentsValueKind::Contents, std::nullopt});
+      continue;
+    }
+    if (!Argument->getType()->isIntegerTy(32))
+      return createStringError(
+          "contents replay roles require flat full contents values");
+    std::optional<uint32_t> Bits;
+    if (const auto *Constant = dyn_cast<ConstantInt>(Argument))
+      Bits = Constant->getZExtValue();
+    Arguments.push_back({RISCV::TensixContentsValueKind::Scalar, Bits});
   }
+  auto Info = RISCV::getTensixContentsReplayIntrinsicInfo(
+      II.getIntrinsicID(), Arguments);
+  if (!Info)
+    return Info.takeError();
+  if (Info->ResultForm == RISCV::TensixContentsResultForm::LiteralTuple) {
+    const auto *Tuple = dyn_cast<StructType>(II.getType());
+    if (!Tuple || !Tuple->isLiteral() || Tuple->isPacked() ||
+        Tuple->getNumElements() != Info->NumResults ||
+        !all_of(Tuple->elements(), [](Type *Ty) { return isCarrier(Ty); }))
+      return createStringError(
+          "contents replay execute requires an unpacked literal tuple matching mutable count");
+  } else if (!II.getType()->isVoidTy()) {
+    return createStringError("contents replay definition requires void result");
+  }
+  return Info;
 }
 
 // A Replay tuple only packs independent SFPR results. It is not a fixed
@@ -622,13 +643,12 @@ bool isContentsReplayTuple(const IntrinsicInst &II) {
            Intrinsic::riscv_tt_contents_replay_template_mop_execute) ||
       II.arg_size() < 3)
     return false;
-  const auto *Count = dyn_cast<ConstantInt>(II.getArgOperand(1));
-  const auto *Tuple = dyn_cast<StructType>(II.getType());
-  if (!Count || Count->getZExtValue() < 1 || Count->getZExtValue() > 8 ||
-      !Tuple || !Tuple->isLiteral() || Tuple->isPacked() ||
-      Tuple->getNumElements() != Count->getZExtValue())
+  auto Info = getContentsReplayInfo(II);
+  if (!Info) {
+    consumeError(Info.takeError());
     return false;
-  return all_of(Tuple->elements(), [](Type *Ty) { return isCarrier(Ty); });
+  }
+  return Info->ResultForm == RISCV::TensixContentsResultForm::LiteralTuple;
 }
 
 Error verifyContentsReplayTemplates(Function &F, DominatorTree &DT) {
@@ -641,6 +661,8 @@ Error verifyContentsReplayTemplates(Function &F, DominatorTree &DT) {
     bool RecordOnly = false;
   };
   DenseMap<uint32_t, Template> Templates;
+  DenseMap<const IntrinsicInst *, RISCV::TensixContentsReplayIntrinsicInfo>
+      Calls;
   SmallVector<const IntrinsicInst *, 4> Executions, MOPBindings;
   for (const BasicBlock &BB : F) {
     Template *Active = nullptr;
@@ -650,65 +672,43 @@ Error verifyContentsReplayTemplates(Function &F, DominatorTree &DT) {
         continue;
       const auto *II = dyn_cast<IntrinsicInst>(&I);
       auto Kind = II ? II->getIntrinsicID() : Intrinsic::not_intrinsic;
+      const RISCV::TensixContentsReplayIntrinsicInfo *Local = nullptr;
+      if (RISCV::isTensixContentsReplayIntrinsic(Kind)) {
+        auto Received = getContentsReplayInfo(*II);
+        if (!Received)
+          return invalid(F, toString(Received.takeError()));
+        Local = &Calls.try_emplace(II, std::move(*Received)).first->second;
+      }
       if (Kind == Intrinsic::riscv_tt_contents_replay_template_begin) {
-        if (II->arg_size() < 6 || II->arg_size() > 13)
-          return invalid(F,
-              "contents replay begin requires one to eight flat contents roles");
-        auto ID = immediate(*II, 0);
-        if (!ID)
-          return ID.takeError();
-        if (Active || Templates.contains(*ID))
+        const auto &Begin =
+            std::get<RISCV::TensixContentsReplayBegin>(Local->Action);
+        uint32_t ID = Local->Identity;
+        if (Active || Templates.contains(ID))
           return invalid(F, "contents replay requires one non-nested producer");
-        if (Error E = range(*II, 1, 0, 1))
-          return E;
-        if (Error E = range(*II, 2, 0, 1))
-          return E;
-        if (Error E = range(*II, 3, 0, 31))
-          return E;
-        auto Placement = immediate(*II, 2);
-        auto Start = immediate(*II, 3);
-        if (!Placement || !Start)
-          return invalid(F, "contents replay requires static placement");
-        if (!*Placement && *Start)
-          return invalid(F,
-              "contents replay automatic placement requires zero start");
-        auto Count = immediate(*II, 4);
-        if (!Count)
-          return Count.takeError();
-        if (!*Count || *Count > II->arg_size() - 5)
-          return invalid(F,
-              "contents replay mutable count differs from its flat roles");
-        bool RecordOnly = cast<ConstantInt>(II->getArgOperand(1))->isZero();
         SmallPtrSet<const Value *, 8> Roles;
-        for (unsigned R = 5; R < II->arg_size(); ++R) {
-          if (!isCarrier(II->getArgOperand(R)->getType()))
-            return invalid(F,
-                "contents replay roles require flat full contents values");
+        for (unsigned R = Begin.Mutables.FirstArgument; R < II->arg_size(); ++R) {
           if (!Roles.insert(II->getArgOperand(R)).second)
             return invalid(F,
                 "contents replay capture and mutable roles must be distinct");
         }
-        ActiveID = *ID;
-        Active = &Templates.try_emplace(*ID, Template{II}).first->second;
-        for (unsigned R = 5; R < II->arg_size(); ++R)
-          (R < 5 + *Count ? Active->Mutables : Active->Captures)
+        ActiveID = ID;
+        Active = &Templates.try_emplace(ID, Template{II}).first->second;
+        for (unsigned R = Begin.Mutables.FirstArgument; R < II->arg_size(); ++R)
+          (R < Begin.Captures.FirstArgument ? Active->Mutables : Active->Captures)
               .push_back(II->getArgOperand(R));
-        Active->RecordOnly = RecordOnly;
+        Active->RecordOnly =
+            Begin.Mode == RISCV::TensixContentsReplayMode::RecordOnly;
         continue;
       }
       if (Kind == Intrinsic::riscv_tt_contents_replay_template_end) {
-        if (II->arg_size() < 2)
-          return invalid(F,
-              "contents replay end requires its actual final contents");
-        auto ID = immediate(*II, 0);
-        if (!ID)
-          return ID.takeError();
-        if (!Active || *ID != ActiveID || !Active->Words ||
-            II->arg_size() != 1 + Active->Mutables.size())
+        const auto &End =
+            std::get<RISCV::TensixContentsReplayEnd>(Local->Action);
+        if (!Active || Local->Identity != ActiveID || !Active->Words ||
+            End.Mutables.Count != Active->Mutables.size())
           return invalid(F,
               "contents replay end requires its actual final contents");
         for (auto [R, Final] : enumerate(Active->Mutables))
-          if (II->getArgOperand(1 + R) != Final)
+          if (II->getArgOperand(End.Mutables.FirstArgument + R) != Final)
             return invalid(F,
                 "contents replay end requires its actual final contents");
         Active->End = II;
@@ -716,41 +716,27 @@ Error verifyContentsReplayTemplates(Function &F, DominatorTree &DT) {
         continue;
       }
       if (Kind == Intrinsic::riscv_tt_contents_replay_template_mop && !Active) {
-        auto Slot = immediate(*II, 1);
-        if (!Slot)
-          return Slot.takeError();
-        if (*Slot != 5 && *Slot != 7 && *Slot != 8)
-          return invalid(F, "contents MOP binding requires slot5, slot7 or slot8");
         MOPBindings.push_back(II);
         continue;
       }
       if ((Kind == Intrinsic::riscv_tt_contents_replay_template_execute ||
            Kind == Intrinsic::riscv_tt_contents_replay_template_mop_execute) &&
           !Active) {
-        if (!isContentsReplayTuple(*II))
-          return invalid(F,
-              "contents replay execute requires an unpacked literal tuple matching mutable count");
         Executions.push_back(II);
         continue;
       }
-      if (isContentsReplayRecipe(Kind)) {
-        auto ID = immediate(*II, 0);
-        if (!ID)
-          return ID.takeError();
-        if (!Active || !Active->RecordOnly || *ID != ActiveID)
+      if (const auto *Recipe =
+              Local ? std::get_if<RISCV::TensixContentsReplayRecipe>(&Local->Action)
+                    : nullptr) {
+        if (!Active || !Active->RecordOnly || Local->Identity != ActiveID)
           return invalid(F,
               "contents replay recipe requires its active record-only owner");
-        auto Mutable = immediate(*II, 1);
-        if (!Mutable)
-          return Mutable.takeError();
-        if (*Mutable >= Active->Mutables.size())
+        if (Recipe->DestinationRole >= Active->Mutables.size())
           return invalid(F,
               "contents replay recipe destination requires a declared mutable role");
-        if (Kind != Intrinsic::riscv_tt_contents_replay_template_record_not) {
-          auto Source = immediate(*II, 2);
-          if (!Source)
-            return Source.takeError();
-          if (*Source >= Active->Mutables.size() + Active->Captures.size())
+        if (Recipe->SourceRole) {
+          if (*Recipe->SourceRole >=
+              Active->Mutables.size() + Active->Captures.size())
             return invalid(F,
                 "contents replay recipe source requires a declared contents role");
         }
@@ -802,37 +788,27 @@ Error verifyContentsReplayTemplates(Function &F, DominatorTree &DT) {
       return invalid(F, "contents replay requires an end in its basic block");
   }
   for (const IntrinsicInst *Bind : MOPBindings) {
-    auto ID = immediate(*Bind, 0);
-    if (!ID)
-      return ID.takeError();
-    auto Found = Templates.find(*ID);
+    auto Found = Templates.find(Calls.find(Bind)->second.Identity);
     if (Found == Templates.end() || !Found->second.End ||
         !DT.dominates(Found->second.End, Bind))
       return invalid(F, "contents MOP binding requires a dominating record");
   }
   for (const IntrinsicInst *Execute : Executions) {
-    auto ID = immediate(*Execute, 0);
-    if (!ID)
-      return ID.takeError();
-    auto Found = Templates.find(*ID);
+    const auto &Local = Calls.find(Execute)->second;
+    const auto &Execution =
+        std::get<RISCV::TensixContentsReplayExecute>(Local.Action);
+    auto Found = Templates.find(Local.Identity);
     if (Found == Templates.end() || !Found->second.End ||
         !DT.dominates(Found->second.End, Execute))
       return invalid(F, "contents replay execute requires a dominating record");
     const Template &T = Found->second;
-    unsigned First = 2;
+    unsigned First = Execution.Mutables.FirstArgument;
     if (Execute->arg_size() != First + T.Mutables.size() + T.Captures.size())
       return invalid(F,
           "contents replay execute arity differs from its recorded roles");
-    auto Count = immediate(*Execute, 1);
-    if (!Count)
-      return Count.takeError();
-    if (*Count != T.Mutables.size())
+    if (Execution.Mutables.Count != T.Mutables.size())
       return invalid(F,
           "contents replay execute mutable count differs from its record");
-    for (unsigned R = First; R < Execute->arg_size(); ++R)
-      if (!isCarrier(Execute->getArgOperand(R)->getType()))
-        return invalid(F,
-            "contents replay roles require flat full contents values");
     for (auto [R, Capture] : enumerate(T.Captures))
       if (!isRecordedContents(
               Execute->getArgOperand(First + T.Mutables.size() + R), Capture,
@@ -1087,7 +1063,16 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     if (Wormhole) {
       SmallVector<uint32_t, 16> Fields;
       for (unsigned N = 0; N != Info->NumFields; ++N) {
-        auto Value = immediate(*II, N);
+        // Only ZEROACC's absolute face is dynamic on the ordinary WH port.
+        // Other fields retain the exact static form checked by MC. A zero
+        // placeholder receives the form; the issuing-use range check below
+        // receives the actual dynamic face without masking or truncation.
+        if (ID == Intrinsic::riscv_tt_zeroacc_port && N == 0 &&
+            !isa<ConstantInt>(II->getArgOperand(First + N))) {
+          Fields.push_back(0);
+          continue;
+        }
+        auto Value = immediate(*II, First + N);
         if (!Value)
           return Value.takeError();
         Fields.push_back(static_cast<uint32_t>(*Value));
@@ -1116,8 +1101,17 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     }
     for (unsigned N = 0; N != Info->NumFields; ++N) {
       const auto *Field = RISCV::getTensixInstructionField(*Info, N);
+      uint64_t Maximum = Field->MaxValue;
+      if (Wormhole && Port) {
+        const auto *Machine =
+            RISCV::getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
+        Maximum = RISCV::getTensixWormholeField(Machine->Opcode, N)->MaxValue;
+        if (ID == Intrinsic::riscv_tt_zeroacc_port && N == 0)
+          Maximum >>=
+              cast<ConstantInt>(II->getArgOperand(First + 3))->getZExtValue();
+      }
       if (!Port || Replay) {
-        if (Error E = range(*II, First + N, 0, Field->MaxValue))
+        if (Error E = range(*II, First + N, 0, Maximum))
           return E;
         continue;
       }
@@ -1133,25 +1127,24 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
       // Combine the recurrence's global bounds with edge constraints at this
       // use. Neither alone need prove derived fields such as 1 - induction.
       ConstantRange Bounds = SE.getUnsignedRange(FieldValue);
-      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Field->MaxValue))
+      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Maximum))
         Bounds = Bounds.intersectWith(
             LVI.getConstantRangeAtUse(II->getArgOperandUse(First + N),
                                       /*UndefAllowed=*/false),
             ConstantRange::Unsigned);
-      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Field->MaxValue))
+      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Maximum))
         Bounds = refineWithRelatedInductions(FieldValue, Bounds, *II, SE, LVI,
                                              AC, DT);
-      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Field->MaxValue))
+      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Maximum))
         Bounds = refineWithScalarExpressions(const_cast<Value *>(V), Bounds,
                                              *II, SE, LVI);
       if (Bounds.isEmptySet() ||
-          (Bounds.getUnsignedMax().ugt(Field->MaxValue) &&
+          (Bounds.getUnsignedMax().ugt(Maximum) &&
            !SE.isKnownPredicateAt(ICmpInst::ICMP_ULE, FieldValue,
-                                  SE.getConstant(V->getType(), Field->MaxValue),
-                                  II)))
+                                  SE.getConstant(V->getType(), Maximum), II)))
         return invalid(F, Twine(Info->getName()) + " field " +
                               Field->getName() + " must be proven in [0, " +
-                              Twine(Field->MaxValue) + "]");
+                              Twine(Maximum) + "]");
     }
     if (Replay) {
       if (Error E = range(*II, First + 1, 0, 1))
@@ -1389,7 +1382,8 @@ struct ContentsLaneConfig {
 bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
                                  const DataLayout &DL, bool IsLoad,
                                  AssumptionCache &AC, const Instruction &I,
-                                 DominatorTree &DT) {
+                                 DominatorTree &DT,
+                                 RISCV::TensixSFPUArchitecture Architecture) {
   // Only classify complete accesses to known hardware owners. In particular,
   // excluding just the instruction-port base would miss its 64 KiB aliases.
   if (Pointer->getType()->getPointerAddressSpace() != 0 ||
@@ -1427,18 +1421,27 @@ bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
   uint64_t Bytes = Size.getFixedValue();
 
   // The TT stream-bank ABI ranges over 64 physical overlay banks. Only a
-  // complete i32 observation of the existing Ready/Reusable counter registers
-  // is classified here: WH register indices 3/4, BH indices 8/10. These reads
-  // observe overlay state and cannot issue SFPCONFIG. An unbounded bank,
-  // unknown offset, partial access or other MMIO address remains unknown.
+  // complete i32 access to the existing Ready/Reusable counter registers is
+  // classified here: WH register indices 3/4, BH indices 8/10. START/SIZE
+  // writes update overlay pointers/free space, not SFPU LaneConfig. Stores
+  // must use the actual architecture's pair: e.g. BH register 3 and WH
+  // register 10 are MISC_CFG, whose writes can activate the overlay engine.
+  // An unbounded bank, unknown offset, partial access or other MMIO address
+  // remains unknown. Reads retain their existing read-only address domain.
   KnownBits OffsetInBank = Address.trunc(12);
-  if (IsLoad && AccessType->isIntegerTy(32) && Bytes == 4 &&
+  if (AccessType->isIntegerTy(32) && Bytes == 4 &&
       OffsetInBank.isConstant() &&
       Address.getMinValue().uge(0xffb40000) &&
       Address.getMaxValue().ule(0xffb7fffc)) {
     uint64_t RegisterOffset = OffsetInBank.getConstant().getZExtValue();
-    if (RegisterOffset == 3 * 4 || RegisterOffset == 4 * 4 ||
-        RegisterOffset == 8 * 4 || RegisterOffset == 10 * 4)
+    bool WormholeCounter = RegisterOffset == 3 * 4 || RegisterOffset == 4 * 4;
+    bool BlackholeCounter = RegisterOffset == 8 * 4 || RegisterOffset == 10 * 4;
+    bool ArchitectureCounter =
+        Architecture == RISCV::TensixSFPUArchitecture::Wormhole
+            ? WormholeCounter
+            : BlackholeCounter;
+    if ((IsLoad && (WormholeCounter || BlackholeCounter)) ||
+        (!IsLoad && ArchitectureCounter))
       return true;
   }
 
@@ -1466,7 +1469,8 @@ bool preservesContentsLaneConfig(const Value *Pointer, Type *AccessType,
 
 void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
                               bool &RecordOnly, unsigned &RawRecordRemaining,
-                              AssumptionCache &AC, DominatorTree &DT) {
+                              AssumptionCache &AC, DominatorTree &DT,
+                              RISCV::TensixSFPUArchitecture Architecture) {
   const auto *II = dyn_cast<IntrinsicInst>(&I);
   if (!II) {
     // A scalar ordering fence neither issues a Tensix instruction nor changes
@@ -1479,7 +1483,7 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
       if (!preservesContentsLaneConfig(Load->getPointerOperand(),
                                        Load->getType(),
                                        I.getModule()->getDataLayout(), true,
-                                       AC, I, DT))
+                                       AC, I, DT, Architecture))
         State = {};
       return;
     }
@@ -1487,7 +1491,7 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
       if (!preservesContentsLaneConfig(Store->getPointerOperand(),
                                        Store->getValueOperand()->getType(),
                                        I.getModule()->getDataLayout(), false,
-                                       AC, I, DT))
+                                       AC, I, DT, Architecture))
         State = {};
       return;
     }
@@ -1644,7 +1648,8 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
 }
 
 Error verifyContentsLaneConfig(Function &F, AssumptionCache &AC,
-                               DominatorTree &DT) {
+                               DominatorTree &DT,
+                               RISCV::TensixSFPUArchitecture Architecture) {
   // Absent entries are not-yet-reached CFG nodes. Entry has unknown hardware
   // configuration. Iterate the actual CFG to convergence; no source iteration
   // or replay sequence is expanded to approximate a loop's reaching facts.
@@ -1671,7 +1676,8 @@ Error verifyContentsLaneConfig(Function &F, AssumptionCache &AC,
       bool RecordOnly = false;
       unsigned RawRecordRemaining = 0;
       for (const Instruction &I : BB)
-        updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining, AC, DT);
+        updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining, AC, DT,
+                                 Architecture);
       if (RawRecordRemaining)
         return invalid(F, "contents SFPU raw replay recording must end in its "
                           "basic block");
@@ -1727,7 +1733,8 @@ Error verifyContentsLaneConfig(Function &F, AssumptionCache &AC,
           return invalid(F, "contents CReg snapshot requires all eight columns "
                             "initialized");
       }
-      updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining, AC, DT);
+      updateContentsLaneConfig(I, State, RecordOnly, RawRecordRemaining, AC, DT,
+                               Architecture);
     }
   }
   return Error::success();
@@ -1737,7 +1744,8 @@ Error verifyContentsLaneConfig(Function &F, AssumptionCache &AC,
 
 Expected<TensixSFPUFunctionFacts>
 llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
-                               AssumptionCache &AC, DominatorTree &DT) {
+                               AssumptionCache &AC, DominatorTree &DT,
+                               RISCV::TensixSFPUArchitecture Architecture) {
   TensixSFPUFunctionFacts Facts;
   bool Bound = false, Contents = false;
   for (const Instruction &I : instructions(F)) {
@@ -1763,11 +1771,14 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
   for (Instruction &I : instructions(F)) {
     auto *II = dyn_cast<IntrinsicInst>(&I);
     bool SFPU = II && isTensixSFPUIntrinsic(II->getIntrinsicID());
-    if (II && II->getIntrinsicID() ==
-                  Intrinsic::riscv_tt_contents_replay_template_execute &&
-        !isContentsReplayTuple(*II))
-      return invalid(F,
-          "contents replay execute requires an unpacked literal tuple matching mutable count");
+    // Receive local ABI errors before aggregate-use classification. In
+    // particular, malformed flat roles must retain their own diagnostic rather
+    // than appearing to grant or reject generic aggregate transport.
+    if (II && RISCV::isTensixContentsReplayIntrinsic(II->getIntrinsicID())) {
+      auto Local = getContentsReplayInfo(*II);
+      if (!Local)
+        return invalid(F, toString(Local.takeError()));
+    }
     bool GroupTuple =
         II && (getTensixContentsGroupResultCount(II->getIntrinsicID()) > 1 ||
                isContentsReplayTuple(*II));
@@ -1813,7 +1824,7 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
   if (Contents) {
     if (Error E = verifyContentsEntryPrefix(F))
       return std::move(E);
-    if (Error E = verifyContentsLaneConfig(F, AC, DT))
+    if (Error E = verifyContentsLaneConfig(F, AC, DT, Architecture))
       return std::move(E);
   }
   for (Instruction &I : instructions(F)) {
@@ -1903,7 +1914,9 @@ Error llvm::RISCV::verifyTensixModule(Module &M) {
     ScalarEvolution SE(F, TLI, AC, DT, LI);
     if (Error E = verifyIssue(F, HasFeature, Wormhole, SE, AC, DT))
       return E;
-    auto Facts = verifyTensixSFPUFunction(F, SE, AC, DT);
+    auto Facts = verifyTensixSFPUFunction(
+        F, SE, AC, DT, Wormhole ? TensixSFPUArchitecture::Wormhole
+                               : TensixSFPUArchitecture::Blackhole);
     if (!Facts)
       return Facts.takeError();
   }
@@ -1955,7 +1968,9 @@ public:
     auto Facts = verifyTensixSFPUFunction(
         F, getAnalysis<ScalarEvolutionWrapperPass>().getSE(),
         getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F),
-        getAnalysis<DominatorTreeWrapperPass>().getDomTree());
+        getAnalysis<DominatorTreeWrapperPass>().getDomTree(),
+        ST.hasVendorXTTTensixWH() ? RISCV::TensixSFPUArchitecture::Wormhole
+                                 : RISCV::TensixSFPUArchitecture::Blackhole);
     if (!Facts)
       reportFatalUsageError(Twine(toString(Facts.takeError())));
     return false;
@@ -1999,7 +2014,10 @@ PreservedAnalyses RISCVTensixNewPMGate::run(Function &F,
   auto Facts =
       verifyTensixSFPUFunction(F, FAM.getResult<ScalarEvolutionAnalysis>(F),
                                FAM.getResult<AssumptionAnalysis>(F),
-                               FAM.getResult<DominatorTreeAnalysis>(F));
+                               FAM.getResult<DominatorTreeAnalysis>(F),
+                               ST.hasVendorXTTTensixWH()
+                                   ? RISCV::TensixSFPUArchitecture::Wormhole
+                                   : RISCV::TensixSFPUArchitecture::Blackhole);
   if (!Facts)
     reportFatalUsageError(Twine(toString(Facts.takeError())));
   if (UsesSFPU)

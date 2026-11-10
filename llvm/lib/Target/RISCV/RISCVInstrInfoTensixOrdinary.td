@@ -2192,8 +2192,9 @@ def TTXMOV : TensixOrdinaryInst<"XMOV", 0x40,
   let RawWord{23} = mov_block_selection;
 }
 
-// Both models retain the same five logical fields. The WH Full subset fixes
-// four fields and keeps use32 separate from Mode; it is not SDK packed Mode7.
+// Both models retain the same five logical fields. WH keeps use32 separate
+// from Mode; it is not the SDK's packed Mode7. Its Full and absolute 16-row
+// forms share this exact encoding, including instruction-port issue.
 class TensixZeroaccEncoding : InstructionEncoding {
   let Size = 4;
   let DecoderNamespace = "Tensix";
@@ -2217,19 +2218,16 @@ def TTZEROACCBlackholeEncoding : TensixZeroaccEncoding {
   let RawWord{23-19} = clear_mode;
 }
 def TTZEROACCWormholeEncoding : TensixZeroaccEncoding {
-  // Constant-valued named fields also restore all five decoded operands.
-  // Revert at bit18 and all reserved bits remain zero.
-  let where = 0;
-  let addr_mode = 1;
-  let clear_zero_flags = 0;
-  let clear_mode = 3;
   let RawWord{9-0} = where{9-0};
   let RawWord{16-15} = addr_mode{1-0};
+  let RawWord{18} = clear_zero_flags;
   let RawWord{20-19} = clear_mode{1-0};
   let RawWord{21} = use_32_bit_mode;
 }
 
-def PseudoTTZEROACCPort : TensixOrdinaryPort;
+def PseudoTTZEROACCPort : TensixOrdinaryPort {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTZEROACCMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$where, uimm32:$addr_mode, uimm32:$clear_zero_flags, uimm32:$use_32_bit_mode, uimm32:$clear_mode)>;
 def TTZEROACC : TensixOrdinaryInst<"ZEROACC", 0x10,
@@ -2239,8 +2237,8 @@ def TTZEROACC : TensixOrdinaryInst<"ZEROACC", 0x10,
     [16383, 7, 1, 1, 31]> {
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
-  let WormholeFieldMinima = [0, 1, 0, 0, 3];
-  let WormholeFieldMaxima = [0, 1, 0, 1, 3];
+  let WormholeFieldMaxima = [63, 1, 0, 1, 3];
+  let WormholeLogicalForms = [[0, 1, 0, -1, 3], [-1, 0, 0, -1, 1]];
   let EncodingInfos = EncodingByHwMode<
       [DefaultMode, TensixWormholeEncoding],
       [TTZEROACCBlackholeEncoding, TTZEROACCWormholeEncoding]>;

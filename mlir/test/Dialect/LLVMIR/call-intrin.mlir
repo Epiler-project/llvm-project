@@ -146,3 +146,57 @@ llvm.func @read_named_register() -> i32 {
       : (!llvm.metadata) -> i32
   llvm.return %r : i32
 }
+
+// -----
+
+// CHECK-LABEL: define i64 @overloaded_variadic_empty_tail(
+// CHECK: call i64 (i64, i32, ptr, i32, ...) @llvm.experimental.patchpoint.i64(i64 0, i32 0, ptr null, i32 0)
+llvm.func @overloaded_variadic_empty_tail() -> i64 {
+  %target = llvm.mlir.zero : !llvm.ptr
+  %id = llvm.mlir.constant(0 : i64) : i64
+  %zero = llvm.mlir.constant(0 : i32) : i32
+  %result = llvm.call_intrinsic "llvm.experimental.patchpoint"(%id, %zero, %target, %zero) : (i64, i32, !llvm.ptr, i32) -> i64
+  llvm.return %result : i64
+}
+
+// -----
+
+// CHECK-LABEL: define i64 @overloaded_variadic_live_tail(
+// CHECK: call i64 (i64, i32, ptr, i32, ...) @llvm.experimental.patchpoint.i64(i64 0, i32 0, ptr null, i32 0, i64 %{{.*}}, i32 %{{.*}})
+llvm.func @overloaded_variadic_live_tail(%wide: i64, %narrow: i32) -> i64 {
+  %target = llvm.mlir.zero : !llvm.ptr
+  %id = llvm.mlir.constant(0 : i64) : i64
+  %zero = llvm.mlir.constant(0 : i32) : i32
+  %result = llvm.call_intrinsic "llvm.experimental.patchpoint"(%id, %zero, %target, %zero, %wide, %narrow) : (i64, i32, !llvm.ptr, i32, i64, i32) -> i64
+  llvm.return %result : i64
+}
+
+// -----
+
+llvm.func @overloaded_variadic_missing_prefix(%target: !llvm.ptr) -> i64 {
+  %id = llvm.mlir.constant(0 : i64) : i64
+  %zero = llvm.mlir.constant(0 : i32) : i32
+  // expected-error@below {{intrinsic has incorrect number of args. Expected 4, but got 3}}
+  // expected-error@below {{LLVM Translation failed for operation: llvm.call_intrinsic}}
+  %result = llvm.call_intrinsic "llvm.experimental.patchpoint"(%id, %zero, %target) : (i64, i32, !llvm.ptr) -> i64
+  llvm.return %result : i64
+}
+
+// -----
+
+llvm.func @overloaded_variadic_wrong_prefix(%target: !llvm.ptr) -> i64 {
+  %zero = llvm.mlir.constant(0 : i32) : i32
+  // expected-error@below {{intrinsic argument 0 type expected i64, but got i32}}
+  // expected-error@below {{LLVM Translation failed for operation: llvm.call_intrinsic}}
+  %result = llvm.call_intrinsic "llvm.experimental.patchpoint"(%zero, %zero, %target, %zero) : (i32, i32, !llvm.ptr, i32) -> i64
+  llvm.return %result : i64
+}
+
+// -----
+
+llvm.func @overloaded_fixed_extra_argument(%value: f32) -> f32 {
+  // expected-error@below {{intrinsic has incorrect number of args. Expected 1, but got 2}}
+  // expected-error@below {{LLVM Translation failed for operation: llvm.call_intrinsic}}
+  %result = llvm.call_intrinsic "llvm.round"(%value, %value) : (f32, f32) -> f32
+  llvm.return %result : f32
+}

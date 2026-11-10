@@ -32,6 +32,7 @@ struct TensixSFPUFunctionFacts {
 // Selection/ABI integration consumes these facts; no string metadata is trusted.
 Expected<TensixSFPUFunctionFacts>
 verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
-                          AssumptionCache &AC, DominatorTree &DT);
+                          AssumptionCache &AC, DominatorTree &DT,
+                          RISCV::TensixSFPUArchitecture Architecture);
 } // namespace llvm
 #endif

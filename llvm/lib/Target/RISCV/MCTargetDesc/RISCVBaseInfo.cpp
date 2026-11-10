@@ -85,54 +85,6 @@ unsigned getTensixPortOperandIndex(const MCInstrDesc &Desc) {
   return Desc.getNumDefs();
 }
 
-Expected<TensixPortLayout> getTensixPortLayout(unsigned MachineOpcode,
-                                               const MCInstrInfo &MCII,
-                                               const MCSubtargetInfo &STI,
-                                               MCContext &Context) {
-  const auto *Machine = getTensixMachineInfo(MachineOpcode);
-  const auto *Info =
-      Machine ? getTensixInstructionByIntrinsic(
-                    static_cast<Intrinsic::ID>(Machine->IntrinsicID))
-              : nullptr;
-  if (!Info || isTensixFieldPortOpcode(MachineOpcode))
-    return createStringError("not an ordinary Tensix port instruction");
-  std::unique_ptr<MCCodeEmitter> Encoder(
-      createRISCVMCCodeEmitter(MCII, Context));
-  // The MC encoding owns the opcode and every logical field position. Encode
-  // with each field at zero or one; no second mask/shift table exists.
-  auto Encode = [&](int FieldNumber) -> Expected<uint32_t> {
-    MCInst Static;
-    Static.setOpcode(MachineOpcode);
-    for (unsigned I = 0; I != Info->NumFields; ++I)
-      Static.addOperand(MCOperand::createImm(int(I) == FieldNumber ? 1 : 0));
-    SmallVector<char, 4> Bytes;
-    SmallVector<MCFixup, 0> Fixups;
-    Encoder->encodeInstruction(Static, Bytes, Fixups, STI);
-    if (Bytes.size() != 4 || !Fixups.empty())
-      return createStringError("failed to encode a Tensix port instruction");
-    return rotr(support::endian::read32le(Bytes.data()), 2);
-  };
-  TensixPortLayout Layout;
-  auto Base = Encode(-1);
-  if (!Base)
-    return Base.takeError();
-  if ((*Base & 0x00ffffffu) != 0 || (*Base >> 24) != Machine->RawOpcode)
-    return createStringError(
-        "Tensix port base must contain only its raw opcode");
-  Layout.Base = *Base;
-  for (unsigned I = 0; I != Info->NumFields; ++I) {
-    auto One = Encode(I);
-    if (!One)
-      return One.takeError();
-    uint32_t Position = *One ^ *Base;
-    if (!isPowerOf2_32(Position) || Position >= (1u << 24))
-      return createStringError(
-          "Tensix logical field has no single bit position");
-    Layout.Shifts.push_back(countr_zero(Position));
-  }
-  return Layout;
-}
-
 Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits) {
   bool Blackhole = FeatureBits[RISCV::FeatureVendorXTTTensixBH];
   bool Wormhole = FeatureBits[RISCV::FeatureVendorXTTTensixWH];
@@ -195,9 +147,10 @@ getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index) {
 
 bool isTensixWormholeIntrinsic(Intrinsic::ID ID) {
   const auto *Info = getTensixInstructionByIntrinsic(ID);
-  if (!Info || ID != Info->IntrinsicID)
+  if (!Info ||
+      (ID != Info->IntrinsicID && ID != Intrinsic::riscv_tt_zeroacc_port))
     return false;
-  const auto *Machine = getTensixMachineInfoByIntrinsic(ID);
+  const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
   const auto *Encoding = getTensixEncoding(Machine->Opcode);
   return Encoding && Encoding->WormholeSupported;
 }
@@ -206,18 +159,26 @@ Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
                                             ArrayRef<uint32_t> Fields) {
   if (!isTensixWormholeIntrinsic(ID))
     return createStringError("Tensix instruction is not supported on Wormhole");
-  const auto *Machine = getTensixMachineInfoByIntrinsic(ID);
   const auto *Info = getTensixInstructionByIntrinsic(ID);
+  const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
   if (Fields.size() != Info->NumFields)
     return createStringError("incorrect number of Tensix instruction operands");
   for (unsigned I = 0; I != Info->NumFields; ++I) {
     const auto *Field = getTensixWormholeField(Machine->Opcode, I);
     if (Fields[I] < Field->MinValue || Fields[I] > Field->MaxValue)
-      return createStringError(
-          "Wormhole " + Info->getName() + " field " +
-          getTensixInstructionField(*Info, I)->getName() + " must be in [" +
-          Twine(Field->MinValue) + ", " + Twine(Field->MaxValue) + "]");
+      return createStringError("Wormhole " + Info->getName() + " field " +
+                               getTensixInstructionField(*Info, I)->getName() +
+                               " must be in [" + Twine(Field->MinValue) + ", " +
+                               Twine(Field->MaxValue) + "]");
   }
+  if (ID == Intrinsic::riscv_tt_zeroacc_port && Fields[4] != 1)
+    return createStringError(
+        "Wormhole ZEROACC instruction-port emission requires 16-row mode");
+  if (Info->IntrinsicID == Intrinsic::riscv_tt_zeroacc && Fields[4] == 1 &&
+      Fields[3] &&
+      Fields[0] > (getTensixWormholeField(Machine->Opcode, 0)->MaxValue >> 1))
+    return createStringError(
+        "Wormhole ZEROACC 16-row FP32 face must be in [0, 31]");
   if (ID == Intrinsic::riscv_tt_replay) {
     // Independent field bounds cannot establish that this contiguous range
     // stays inside the bank. Its capacity comes from the same native TableGen
@@ -229,8 +190,7 @@ Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
   }
   if (!getTensixWormholeFormField(Machine->Opcode, 0, 0))
     return Error::success();
-  for (unsigned F = 0;
-       getTensixWormholeFormField(Machine->Opcode, F, 0); ++F) {
+  for (unsigned F = 0; getTensixWormholeFormField(Machine->Opcode, F, 0); ++F) {
     bool Matches = true;
     for (unsigned I = 0; I != Info->NumFields; ++I) {
       const auto *Field = getTensixWormholeFormField(Machine->Opcode, F, I);

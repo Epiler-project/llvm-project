@@ -137,6 +137,53 @@ MCCodeEmitter *llvm::createRISCVMCCodeEmitter(const MCInstrInfo &MCII,
   return new RISCVMCCodeEmitter(Ctx, MCII);
 }
 
+Expected<RISCV::TensixPortLayout> llvm::RISCV::getTensixPortLayout(
+    unsigned MachineOpcode, const MCInstrInfo &MCII, const MCSubtargetInfo &STI,
+    MCContext &Context) {
+  const auto *Machine = getTensixMachineInfo(MachineOpcode);
+  const auto *Info = Machine
+                         ? getTensixInstructionByIntrinsic(
+                               static_cast<Intrinsic::ID>(Machine->IntrinsicID))
+                         : nullptr;
+  if (!Info || isTensixFieldPortOpcode(MachineOpcode))
+    return createStringError("not an ordinary Tensix port instruction");
+  RISCVMCCodeEmitter Encoder(Context, MCII);
+  // Query the generated bit encoder directly. Zero/one probes describe a
+  // field's position, not executable instructions, and need not satisfy a
+  // target's admitted logical forms. Actual MC emission still verifies the
+  // complete instruction; no unchecked instruction escapes this function.
+  auto Encode = [&](int FieldNumber) -> Expected<uint32_t> {
+    MCInst Probe;
+    Probe.setOpcode(MachineOpcode);
+    for (unsigned I = 0; I != Info->NumFields; ++I)
+      Probe.addOperand(MCOperand::createImm(int(I) == FieldNumber ? 1 : 0));
+    SmallVector<MCFixup, 0> Fixups;
+    uint64_t Bits = Encoder.getBinaryCodeForInstr(Probe, Fixups, STI);
+    if (Bits > UINT32_MAX || !Fixups.empty())
+      return createStringError("failed to encode a Tensix port field");
+    return rotr(static_cast<uint32_t>(Bits), 2);
+  };
+  TensixPortLayout Layout;
+  auto Base = Encode(-1);
+  if (!Base)
+    return Base.takeError();
+  if ((*Base & 0x00ffffffu) != 0 || (*Base >> 24) != Machine->RawOpcode)
+    return createStringError(
+        "Tensix port base must contain only its raw opcode");
+  Layout.Base = *Base;
+  for (unsigned I = 0; I != Info->NumFields; ++I) {
+    auto One = Encode(I);
+    if (!One)
+      return One.takeError();
+    uint32_t Position = *One ^ *Base;
+    if (!isPowerOf2_32(Position) || Position >= (1u << 24))
+      return createStringError(
+          "Tensix logical field has no single bit position");
+    Layout.Shifts.push_back(countr_zero(Position));
+  }
+  return Layout;
+}
+
 static void addFixup(SmallVectorImpl<MCFixup> &Fixups, uint32_t Offset,
                      const MCExpr *Value, uint16_t Kind) {
   bool PCRel = false;
