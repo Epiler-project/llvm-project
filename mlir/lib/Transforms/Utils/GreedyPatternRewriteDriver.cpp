@@ -841,6 +841,7 @@ private:
 
 LogicalResult RegionPatternRewriteDriver::simplify(bool *changed) && {
   bool continueRewrites = false;
+  bool anyChanged = false;
   int64_t iteration = 0;
   MLIRContext *ctx = rewriter.getContext();
   do {
@@ -859,9 +860,20 @@ LogicalResult RegionPatternRewriteDriver::simplify(bool *changed) && {
       // Check for existing constants when populating the worklist. This avoids
       // accidentally reversing the constant order during processing.
       Attribute constValue;
-      if (matchPattern(op, m_Constant(&constValue)))
-        if (!folder.insertKnownConstant(op, constValue))
+      if (matchPattern(op, m_Constant(&constValue))) {
+        Block *previousBlock = op->getBlock();
+        Operation *previousOperation = op->getPrevNode();
+        Location previousLocation = op->getLoc();
+        if (!folder.insertKnownConstant(op, constValue)) {
+          anyChanged = true;
           return true;
+        }
+        // The folder can move a constant or erase its location directly,
+        // without a rewrite notification or another greedy iteration.
+        anyChanged |= op->getBlock() != previousBlock ||
+                      op->getPrevNode() != previousOperation ||
+                      op->getLoc() != previousLocation;
+      }
       return false;
     };
 
@@ -921,10 +933,11 @@ LogicalResult RegionPatternRewriteDriver::simplify(bool *changed) && {
           }
         },
         {&region}, iteration);
+    anyChanged |= continueRewrites;
   } while (continueRewrites);
 
   if (changed)
-    *changed = iteration > 1;
+    *changed = anyChanged;
 
   // Whether the rewrite converges, i.e. wasn't changed in the last iteration.
   return success(!continueRewrites);

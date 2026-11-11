@@ -43,6 +43,10 @@ struct ReconcileUnrealizedCasts
     SmallVector<UnrealizedConversionCastOp> ops;
     getOperation()->walk(
         [&](UnrealizedConversionCastOp castOp) { ops.push_back(castOp); });
+    if (ops.empty()) {
+      markAllAnalysesPreserved();
+      return;
+    }
     reconcileUnrealizedCasts(ops);
   }
 };

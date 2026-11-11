@@ -559,13 +559,16 @@ walkSymbolRefs(Operation *op,
 /// into any nested symbol tables.
 static std::optional<WalkResult>
 walkSymbolUses(MutableArrayRef<Region> regions,
-               function_ref<WalkResult(SymbolTable::SymbolUse)> callback) {
+               function_ref<WalkResult(SymbolTable::SymbolUse)> callback,
+               function_ref<bool(Operation *)> userFilter = {}) {
   return walkSymbolTable(regions,
                          [&](Operation *op) -> std::optional<WalkResult> {
                            // Check that this isn't a potentially unknown symbol
                            // table.
                            if (isPotentiallyUnknownSymbolTable(op))
                              return std::nullopt;
+                           if (userFilter && !userFilter(op))
+                             return WalkResult::advance();
 
                            return walkSymbolRefs(op, callback);
                          });
@@ -575,7 +578,8 @@ walkSymbolUses(MutableArrayRef<Region> regions,
 /// traverse into any nested symbol tables.
 static std::optional<WalkResult>
 walkSymbolUses(Operation *from,
-               function_ref<WalkResult(SymbolTable::SymbolUse)> callback) {
+               function_ref<WalkResult(SymbolTable::SymbolUse)> callback,
+               function_ref<bool(Operation *)> userFilter = {}) {
   // If this operation has regions, and it, as well as its dialect, isn't
   // registered then conservatively fail. The operation may define a
   // symbol table, so we can't opaquely know if we should traverse to find
@@ -583,15 +587,16 @@ walkSymbolUses(Operation *from,
   if (isPotentiallyUnknownSymbolTable(from))
     return std::nullopt;
 
-  // Walk the uses on this operation.
-  if (walkSymbolRefs(from, callback).wasInterrupted())
+  // The filter selects this operation's references without pruning regions.
+  if ((!userFilter || userFilter(from)) &&
+      walkSymbolRefs(from, callback).wasInterrupted())
     return WalkResult::interrupt();
 
   // Only recurse if this operation is not a symbol table. A symbol table
   // defines a new scope, so we can't walk the attributes from within the symbol
   // table op.
   if (!from->hasTrait<OpTrait::SymbolTable>())
-    return walkSymbolUses(from->getRegions(), callback);
+    return walkSymbolUses(from->getRegions(), callback, userFilter);
   return WalkResult::advance();
 }
 
@@ -609,10 +614,11 @@ struct SymbolScope {
             std::enable_if_t<!std::is_same<
                 typename llvm::function_traits<CallbackT>::result_t,
                 void>::value> * = nullptr>
-  std::optional<WalkResult> walk(CallbackT cback) {
+  std::optional<WalkResult>
+  walk(CallbackT cback, function_ref<bool(Operation *)> userFilter = {}) {
     if (Region *region = llvm::dyn_cast_if_present<Region *>(limit))
-      return walkSymbolUses(*region, cback);
-    return walkSymbolUses(cast<Operation *>(limit), cback);
+      return walkSymbolUses(*region, cback, userFilter);
+    return walkSymbolUses(cast<Operation *>(limit), cback, userFilter);
   }
   /// This variant is used when the callback type matches a stripped down type:
   /// void(SymbolTable::SymbolUse use)
@@ -620,10 +626,13 @@ struct SymbolScope {
             std::enable_if_t<std::is_same<
                 typename llvm::function_traits<CallbackT>::result_t,
                 void>::value> * = nullptr>
-  std::optional<WalkResult> walk(CallbackT cback) {
-    return walk([=](SymbolTable::SymbolUse use) {
-      return cback(use), WalkResult::advance();
-    });
+  std::optional<WalkResult>
+  walk(CallbackT cback, function_ref<bool(Operation *)> userFilter = {}) {
+    return walk(
+        [=](SymbolTable::SymbolUse use) {
+          return cback(use), WalkResult::advance();
+        },
+        userFilter);
   }
 
   /// Walk all of the operations nested under the current scope without
@@ -783,14 +792,17 @@ auto SymbolTable::getSymbolUses(Region *from) -> std::optional<UseRange> {
 
 /// The implementation of SymbolTable::getSymbolUses below.
 template <typename SymbolT, typename IRUnitT>
-static std::optional<SymbolTable::UseRange> getSymbolUsesImpl(SymbolT symbol,
-                                                              IRUnitT *limit) {
+static std::optional<SymbolTable::UseRange>
+getSymbolUsesImpl(SymbolT symbol, IRUnitT *limit,
+                  function_ref<bool(Operation *)> userFilter = {}) {
   std::vector<SymbolTable::SymbolUse> uses;
   for (SymbolScope &scope : collectSymbolScopes(symbol, limit)) {
-    if (!scope.walk([&](SymbolTable::SymbolUse symbolUse) {
-          if (isReferencePrefixOf(scope.symbol, symbolUse.getSymbolRef()))
-            uses.push_back(symbolUse);
-        }))
+    if (!scope.walk(
+            [&](SymbolTable::SymbolUse symbolUse) {
+              if (isReferencePrefixOf(scope.symbol, symbolUse.getSymbolRef()))
+                uses.push_back(symbolUse);
+            },
+            userFilter))
       return std::nullopt;
   }
   return SymbolTable::UseRange(std::move(uses));
@@ -807,6 +819,11 @@ auto SymbolTable::getSymbolUses(StringAttr symbol, Operation *from)
 auto SymbolTable::getSymbolUses(Operation *symbol, Operation *from)
     -> std::optional<UseRange> {
   return getSymbolUsesImpl(symbol, from);
+}
+auto SymbolTable::getSymbolUses(Operation *symbol, Operation *from,
+                                function_ref<bool(Operation *)> userFilter)
+    -> std::optional<UseRange> {
+  return getSymbolUsesImpl(symbol, from, userFilter);
 }
 auto SymbolTable::getSymbolUses(StringAttr symbol, Region *from)
     -> std::optional<UseRange> {

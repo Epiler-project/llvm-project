@@ -752,6 +752,49 @@ struct IntRangeOptimizationsPass final
   }
 };
 
+// Range analysis is useful only when one of its consumers may change a type.
+// Keep this predicate with the patterns it guards. Ordinary greedy folding and
+// the index-cast-chain patterns still run when no range analysis is needed.
+static bool hasRangeNarrowingCandidate(Operation *root,
+                                       ArrayRef<unsigned> targetBitwidths) {
+  if (targetBitwidths.empty())
+    return false;
+  unsigned minimumBitwidth = *llvm::min_element(targetBitwidths);
+  auto canNarrow = [&](Type type) {
+    type = getElementTypeOrSelf(type);
+    if (isa<IndexType>(type))
+      return true;
+    auto integer = dyn_cast<IntegerType>(type);
+    return integer && integer.getWidth() > minimumBitwidth;
+  };
+  return root->walk([&](Operation *op) {
+    // NarrowElementwise requires all operands and results to have one type.
+    // In particular, a widening/narrowing cast is not such a consumer.
+    if (op->hasTrait<OpTrait::Elementwise>() && op->getNumResults() &&
+        op->getNumOperands()) {
+      Type type = op->getResult(0).getType();
+      if (canNarrow(type) && llvm::all_equal(op->getResultTypes()) &&
+          llvm::all_of(op->getOperandTypes(),
+                       [&](Type operand) { return operand == type; }))
+        return WalkResult::interrupt();
+    }
+    if (auto compare = dyn_cast<arith::CmpIOp>(op))
+      if (canNarrow(compare.getLhs().getType()))
+        return WalkResult::interrupt();
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(op)) {
+      // NarrowLoopBounds derives the replacement type from each actual lower
+      // bound. Attribute bounds are not candidates for that pattern.
+      auto bounds = loop.getLoopLowerBounds();
+      if (bounds && llvm::any_of(*bounds, [&](OpFoldResult bound) {
+            auto value = dyn_cast<Value>(bound);
+            return value && canNarrow(value.getType());
+          }))
+        return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  }).wasInterrupted();
+}
+
 struct IntRangeNarrowingPass final
     : arith::impl::ArithIntRangeNarrowingBase<IntRangeNarrowingPass> {
   using ArithIntRangeNarrowingBase::ArithIntRangeNarrowingBase;
@@ -760,10 +803,12 @@ struct IntRangeNarrowingPass final
     Operation *op = getOperation();
     MLIRContext *ctx = op->getContext();
     DataFlowSolver solver;
-    loadBaselineAnalyses(solver);
-    solver.load<IntegerRangeAnalysis>();
-    if (failed(solver.initializeAndRun(op)))
-      return signalPassFailure();
+    if (hasRangeNarrowingCandidate(op, bitwidthsSupported)) {
+      loadBaselineAnalyses(solver);
+      solver.load<IntegerRangeAnalysis>();
+      if (failed(solver.initializeAndRun(op)))
+        return signalPassFailure();
+    }
 
     DataFlowListener listener(solver);
 
@@ -774,11 +819,17 @@ struct IntRangeNarrowingPass final
 
     // We specifically need bottom-up traversal as cmpi pattern needs range
     // data, attached to its original argument values.
+    bool changed = false;
     if (failed(applyPatternsGreedily(
             op, std::move(patterns),
             GreedyRewriteConfig().setUseTopDownTraversal(false).setListener(
-                &listener))))
+                &listener),
+            &changed))) {
       signalPassFailure();
+      return;
+    }
+    if (!changed)
+      markAllAnalysesPreserved();
   }
 };
 } // namespace

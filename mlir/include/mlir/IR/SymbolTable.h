@@ -227,6 +227,15 @@ public:
                                                Operation *from);
   static std::optional<UseRange> getSymbolUses(Operation *symbol,
                                                Operation *from);
+
+  /// Get uses whose owning operation is selected by `userFilter`. The filter
+  /// must not mutate the IR. Rejected operations still participate in scope
+  /// traversal: their regions are not pruned, and potentially unknown symbol
+  /// tables still produce std::nullopt. Included uses retain their original
+  /// order and multiplicity.
+  static std::optional<UseRange>
+  getSymbolUses(Operation *symbol, Operation *from,
+                function_ref<bool(Operation *)> userFilter);
   static std::optional<UseRange> getSymbolUses(StringAttr symbol, Region *from);
   static std::optional<UseRange> getSymbolUses(Operation *symbol, Region *from);
 
