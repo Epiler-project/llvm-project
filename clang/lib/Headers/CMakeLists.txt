@@ -464,9 +464,13 @@ function(copy_header_to_output_dir src_dir file)
 endfunction(copy_header_to_output_dir)
 
 function(clang_generate_header td_option td_file out_file)
+  # Resource headers are consumed through copy rules rather than a compiled
+  # source target. Retain the TableGen stamp producer in that build graph.
+  string(MAKE_C_IDENTIFIER "clang-resource-${out_file}" tablegen_target)
   clang_tablegen(${out_file} ${td_option}
   EXTRA_INCLUDES ${CLANG_SOURCE_DIR}/include/clang/Basic/
-  SOURCE ${CLANG_SOURCE_DIR}/include/clang/Basic/${td_file})
+  SOURCE ${CLANG_SOURCE_DIR}/include/clang/Basic/${td_file}
+  TARGET ${tablegen_target})
 
   copy_header_to_output_dir(${CMAKE_CURRENT_BINARY_DIR} ${out_file})
   set(out_files ${out_files} PARENT_SCOPE)
