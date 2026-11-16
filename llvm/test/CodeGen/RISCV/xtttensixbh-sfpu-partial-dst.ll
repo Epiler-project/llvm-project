@@ -14,9 +14,9 @@
 ; No replay recipe or source-loop expansion is involved.
 ; RETIRED: unsupported Tensix intrinsic ABI:
 ;--- bound.ll
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @bound_partial_words() "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: bound_partial_words
@@ -42,11 +42,11 @@ define void @bound_partial_words() "tensix-executor"="trisc1" {
 ; MC-NEXT: {{.*}}ttsfpload l3, 514, 7, 15
 ; MC-NEXT: {{.*}}ttsfpstore l3, 1022, 7, 15
 ; MC-NEXT: {{.*}}ret
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 3, i32 8)
-  call void @llvm.riscv.tt.bound.sfpload(i32 3, i32 3, i32 513, i32 7, i32 14)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 3, i32 1023, i32 7, i32 14)
-  call void @llvm.riscv.tt.bound.sfpload(i32 3, i32 3, i32 514, i32 7, i32 15)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 3, i32 1022, i32 7, i32 15)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 3, i32 8)
+  call void @llvm.tt.bh.sfpu.load(i32 3, i32 3, i32 513, i32 7, i32 14)
+  call void @llvm.tt.bh.sfpu.store(i32 3, i32 1023, i32 7, i32 14)
+  call void @llvm.tt.bh.sfpu.load(i32 3, i32 3, i32 514, i32 7, i32 15)
+  call void @llvm.tt.bh.sfpu.store(i32 3, i32 1022, i32 7, i32 15)
   ret void
 }
 
@@ -66,9 +66,9 @@ define void @bound_partial_dynamic(i10 noundef %index) "tensix-executor"="trisc2
 ; MC: sw
 ; MC: ret
   %offset = zext i10 %index to i32
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 6, i32 8)
-  call void @llvm.riscv.tt.bound.sfpload(i32 6, i32 6, i32 %offset, i32 7, i32 14)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 6, i32 %offset, i32 7, i32 15)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 6, i32 8)
+  call void @llvm.tt.bh.sfpu.load(i32 6, i32 6, i32 %offset, i32 7, i32 14)
+  call void @llvm.tt.bh.sfpu.store(i32 6, i32 %offset, i32 7, i32 15)
   ret void
 }
 

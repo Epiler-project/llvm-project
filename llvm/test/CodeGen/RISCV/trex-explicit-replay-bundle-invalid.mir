@@ -1,0 +1,65 @@
+# RUN: split-file %s %t
+# RUN: %python %t/mutate.py %t/valid.mir %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-bound-verify %t/valid.mir -o /dev/null
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/internal.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=INTERNAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/length.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=LENGTH
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/end.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=END
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/aggregate.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=AGGREGATE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/missing-internal.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MISSING-INTERNAL
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/memory.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MEMORY
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/selected.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=SELECTED
+#
+# Validate the supplied live bundle directly, without running normalization.
+# A repaired or unbundled copy cannot stand in for admission of these operands.
+# Generic verification stays enabled for the valid native window. Semantic
+# mutations disable it so that the precise target-owned failure is observable.
+#
+# INTERNAL: explicit replay bundle internal read lacks its earlier definition
+# LENGTH: explicit replay bundle final issue count 2 differs from declared length 1
+# END: explicit replay bundle requires its final record end marker
+# AGGREGATE: explicit replay bundle aggregate effects differ from its members
+# MISSING-INTERNAL: explicit replay bundle earlier definition requires an internal read
+# MEMORY: explicit replay bundle aggregate memory differs from its members
+# SELECTED: contents selected immediate has no replay capture receiver
+
+#--- valid.mir
+--- |
+  define void @bundle_validation() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: bundle_validation
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    BUNDLE implicit-def $tt_issue, implicit-def $tt_l0, implicit-def $tt_l1, implicit $tt_config, implicit $tt_issue, implicit $tt_c9 {
+      PseudoTTExplicitSFPUReplay 1, 1, 2, 5, implicit-def $tt_issue, implicit $tt_config, implicit $tt_issue
+      $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+      $tt_l1 = TTSFPMOVAll internal $tt_l0, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+      PseudoTTReplayRecordEnd implicit internal $tt_issue, implicit-def $tt_issue
+    }
+    PseudoRET
+...
+
+#--- mutate.py
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+out = pathlib.Path(sys.argv[2])
+first = "$tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue"
+selected = "early-clobber $tt_l0, early-clobber $tt_l1, early-clobber $x10, early-clobber $x11, early-clobber $x12 = PseudoTTSFPContentsLoadImmediateSelected2 $tt_l0, $tt_l1, $x13, 123, 0, implicit $tt_cc, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue"
+cases = {
+    "selected": source.replace(first, selected, 1),
+    "internal": source.replace("TTSFPMOVAll $tt_c9,", "TTSFPMOVAll internal $tt_c9,", 1),
+    "length": source.replace("PseudoTTExplicitSFPUReplay 1, 1, 2, 5,", "PseudoTTExplicitSFPUReplay 1, 1, 1, 5,", 1),
+    "end": source.replace("      PseudoTTReplayRecordEnd implicit internal $tt_issue, implicit-def $tt_issue\n", "", 1),
+    "aggregate": source.replace("BUNDLE implicit-def $tt_issue, implicit-def $tt_l0, implicit-def $tt_l1,", "BUNDLE implicit-def $tt_issue, implicit-def $tt_l0,", 1),
+    "missing-internal": source.replace("TTSFPMOVAll internal $tt_l0,", "TTSFPMOVAll $tt_l0,", 1),
+    "memory": source.replace("implicit $tt_issue, implicit $tt_c9 {", "implicit $tt_issue, implicit $tt_c9 :: (volatile load store (s32)) {", 1),
+}
+for name, text in cases.items():
+    assert text != source, name
+    (out / (name + ".mir")).write_text(text)

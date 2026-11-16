@@ -6,18 +6,20 @@
 #include "RISCVSubtarget.h"
 #include "RISCVTargetMachine.h"
 #include "RISCVTensixContentsGroup.h"
-#include "RISCVTensixReplay.h"
+#include "RISCVTensixExplicitReplay.h"
 #include "RISCVTensixMacro.h"
+#include "RISCVTensixReplay.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/Support/Error.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
 
@@ -421,6 +423,7 @@ Error verifyCC(const MachineFunction &MF) {
 }
 class RISCVTensixHazards : public MachineFunctionPass {
   bool Repair;
+
 public:
   static char ID;
   explicit RISCVTensixHazards(bool Repair = false)
@@ -528,8 +531,15 @@ public:
                     "hazard gap across slots or hardware-loop edges");
     for (const auto &BB : MF)
       for (const auto &MI : BB.instrs()) {
-        if (MI.isBundled())
-          return Fail("bundled instructions have no verified Tensix SFPU issue order");
+        if (MI.isBundle()) {
+          auto Bundle = getTensixReplayBundle(MI);
+          if (!Bundle)
+            return Fail(toString(Bundle.takeError()));
+          continue;
+        }
+        if (MI.isBundled() && !isTensixReplayBundleMember(MI))
+          return Fail(
+              "bundled instructions have no verified Tensix SFPU issue order");
         if (MI.isInlineAsm())
           return Fail("inline assembly has no verified Tensix SFPU preservation ABI");
         if (MI.isCall())
@@ -578,7 +588,9 @@ public:
         Entry[&BB] = Incoming;
         DstEntry[&BB] = DstIncoming;
         unsigned Outgoing = Incoming;
-        for (const auto &MI : BB) {
+        for (const auto &MI : BB.instrs()) {
+          if (MI.isBundle())
+            continue;
           if (auto MOP = MOPExecutions.find(&MI); MOP != MOPExecutions.end()) {
             auto Next = MOP->second.Hazards.apply({Outgoing, DstIncoming});
             Outgoing = Next.State.SFPU;
@@ -602,8 +614,12 @@ public:
     for (auto &BB : MF) {
       unsigned Pending = Entry.lookup(&BB);
       unsigned DstPending = DstEntry.lookup(&BB);
-      for (auto It = BB.begin(); It != BB.end(); ++It) {
+      for (auto It = BB.instr_begin(); It != BB.instr_end(); ++It) {
         MachineInstr &MI = *It;
+        if (MI.isBundle())
+          continue;
+        // Incoming fences belong outside the immutable capture window.
+        auto Gap = MI.isBundled() ? getBundleStart(It) : It;
         if (auto MOP = MOPExecutions.find(&MI); MOP != MOPExecutions.end()) {
           auto Next = MOP->second.Hazards.apply({Pending, DstPending});
           if (Next.RequiresGap && !Repair)
@@ -612,7 +628,7 @@ public:
           // actual incoming dependencies; an outer fence cannot repair an
           // unsafe Replay-to-slot or hardware-loop edge inside the expander.
           while (Next.RequiresGap && (Pending || DstPending)) {
-            BuildMI(BB, It, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
+            BuildMI(BB, Gap, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
             Pending = 0;
             DstPending = DstPending ? DstPending - 1 : 0;
             Modified = true;
@@ -631,10 +647,12 @@ public:
         if (needsSFPUWait(MI, TRI, Pending, ST.hasVendorXTTTensixWH()) ||
             RecordBoundary) {
           if (RecordedBodies.contains(&MI))
-            return Fail("explicit SFPU replay template requires an authored hazard gap");
+            return Fail("explicit SFPU replay template requires an authored "
+                        "hazard gap");
           if (!Repair)
-            return Fail("unresolved Tensix SFPU MAD to IADD destination hazard");
-          BuildMI(BB, It, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
+            return Fail(
+                "unresolved Tensix SFPU MAD to IADD destination hazard");
+          BuildMI(BB, Gap, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
           Pending = 0;
           DstPending = DstPending ? DstPending - 1 : 0;
           Modified = true;
@@ -650,7 +668,7 @@ public:
           if (!Repair)
             return Fail("unresolved Tensix matrix Dst write to SFPLOAD hazard");
           while (DstPending > DstPrefix) {
-            BuildMI(BB, It, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
+            BuildMI(BB, Gap, MI.getDebugLoc(), TII.get(RISCV::TTSFPNOP));
             --DstPending;
           }
           Pending = 0;

@@ -23,15 +23,15 @@
 ; ASM-NEXT: .word 0x3c000002
 ; ASM-NEXT: ret
 
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfppushc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfppopc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpnop()
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.pushc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.popc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.nop()
 
 define void @sfpu_control_bytes() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpencc(i32 3, i32 10)
-  call void @llvm.riscv.tt.bound.sfppushc(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.tt.bh.sfpu.encc(i32 3, i32 10)
+  call void @llvm.tt.bh.sfpu.pushc(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.popc(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.nop()
   ret void
 }

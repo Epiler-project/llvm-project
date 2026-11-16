@@ -61,8 +61,8 @@
 ; NATIVE: {{bne|bnez|bltu|blt}} {{.*}}0x[[HIGH_HEAD]] <high_gpr_pressure+0x{{[0-9a-f]+}}>
 ; NATIVE: ret
 
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @low_gpr_pressure(ptr %src, ptr %dst, i32 %count) "tensix-executor"="trisc1" {
 entry:
@@ -74,8 +74,8 @@ loop:
   %v1 = load volatile i32, ptr %src, align 4
   %v2 = load volatile i32, ptr %src, align 4
   %v3 = load volatile i32, ptr %src, align 4
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 4, i32 9)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 4, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 4, i32 9)
+  call void @llvm.tt.bh.sfpu.store(i32 4, i32 0, i32 0, i32 4)
   store volatile i32 %v3, ptr %dst, align 4
   store volatile i32 %v2, ptr %dst, align 4
   store volatile i32 %v1, ptr %dst, align 4
@@ -133,8 +133,8 @@ loop:
   %v37 = load volatile i32, ptr %src, align 4
   %v38 = load volatile i32, ptr %src, align 4
   %v39 = load volatile i32, ptr %src, align 4
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 4, i32 9)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 4, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 4, i32 9)
+  call void @llvm.tt.bh.sfpu.store(i32 4, i32 0, i32 0, i32 4)
   store volatile i32 %v39, ptr %dst, align 4
   store volatile i32 %v38, ptr %dst, align 4
   store volatile i32 %v37, ptr %dst, align 4

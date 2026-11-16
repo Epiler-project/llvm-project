@@ -11,9 +11,9 @@
 
 #--- omitted.mir
 --- |
-  declare void @llvm.riscv.tt.bound.sfpnop()
+  declare void @llvm.tt.bh.sfpu.nop()
   define void @bound_mode() "tensix-executor"="trisc1" {
-    call void @llvm.riscv.tt.bound.sfpnop()
+    call void @llvm.tt.bh.sfpu.nop()
     ret void
   }
 ...
@@ -27,9 +27,9 @@ body: |
 ...
 #--- false.mir
 --- |
-  declare void @llvm.riscv.tt.bound.sfpnop()
+  declare void @llvm.tt.bh.sfpu.nop()
   define void @bound_mode() "tensix-executor"="trisc1" {
-    call void @llvm.riscv.tt.bound.sfpnop()
+    call void @llvm.tt.bh.sfpu.nop()
     ret void
   }
 ...

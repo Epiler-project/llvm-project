@@ -7,11 +7,11 @@
 ;--- poison.ll
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @bad(i10 %offset) "tensix-executor"="trisc1" {
   %address = zext i10 %offset to i32
   call void @llvm.riscv.tt.replay.template.begin(i32 709, i32 0, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %address, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %address, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 709)
   ret void
 }
@@ -19,10 +19,10 @@ define void @bad(i10 %offset) "tensix-executor"="trisc1" {
 ;--- range.ll
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @bad(i32 noundef %offset) "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 719, i32 1, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %offset, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %offset, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 719)
   ret void
 }

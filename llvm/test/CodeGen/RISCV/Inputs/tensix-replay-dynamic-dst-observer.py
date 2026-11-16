@@ -229,11 +229,28 @@ def machine_effects(text, mode):
         assert not payloads
     else:
         assert len(payloads) == 2
-        for line in payloads:
-            assert "volatile store (s32)" in line, line
-            assert line.count("early-clobber") == 2, line
-            assert not any(reg in line for reg in ("$tt_l", "$tt_dst", "$tt_cc", "$tt_config"))
-            assert re.search(r", (?:killed )?(?:%\d+(?::gpr)?|\$x\d+), 0, 4,", line), line
+        prior_defs = None
+        for line in text.splitlines():
+            if re.match(r"\s*BUNDLE\b", line):
+                assert prior_defs is None, line
+                prior_defs = set()
+                continue
+            if line.strip() == "}":
+                prior_defs = None
+                continue
+            if line in payloads:
+                assert "volatile store (s32)" in line, line
+                assert line.count("early-clobber") == 2, line
+                assert not any(reg in line for reg in ("$tt_l", "$tt_dst", "$tt_cc", "$tt_config"))
+                offset = re.search(
+                    r", (?:killed )?(internal )?(%\d+(?::gpr)?|\$x\d+), 0, 4,", line)
+                assert offset, line
+                if offset.group(1):
+                    assert prior_defs is not None and offset.group(2) in prior_defs, line
+                if prior_defs is not None:
+                    assert "implicit internal $tt_issue" in line, line
+            if prior_defs is not None and " = " in line:
+                prior_defs.update(re.findall(r"\$x\d+|%\d+(?::gpr)?", line.split(" = ", 1)[0]))
 
 
 if __name__ == "__main__":

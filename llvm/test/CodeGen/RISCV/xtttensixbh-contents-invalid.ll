@@ -73,9 +73,9 @@ define void @unknown_offset(i32 %offset) "tensix-executor"="trisc1" {
 
 ;--- mixed.ll
 declare <32 x i32> @llvm.riscv.tt.contents.read.constant(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
 define void @mixed_ingress() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpencc(i32 3, i32 0)
+  call void @llvm.tt.bh.sfpu.encc(i32 3, i32 0)
   %v = call <32 x i32> @llvm.riscv.tt.contents.read.constant(i32 9)
   ret void
 }

@@ -12,8 +12,8 @@
 ; each selected column vertically. This ABI writes neither LReg0 nor a CReg
 ; and invents no staging copy, predicate enable, configuration reset or value.
 ; It does not claim that the incoming LReg0/CC state has any particular value.
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmad(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mad(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 
 define void @masked_lane_config() "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: masked_lane_config
@@ -33,9 +33,9 @@ define void @masked_lane_config() "tensix-executor"="trisc1" {
 ; NATIVE-NEXT: ret
 ; Independent ISA words: opcode 0x91, Imm16 at bits23:8, VD=15 at bits7:4,
 ; Mod1=8 at bits3:0. Rotate each raw word left by two for direct issue.
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 21844, i32 8)
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 21845, i32 8)
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 0, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 21844, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 21845, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 0, i32 8)
   ret void
 }
 
@@ -57,7 +57,7 @@ define void @lane_config_reads_actual_l0() "tensix-executor"="trisc2" {
 ; NATIVE-NEXT: .word 0x3c000002
 ; NATIVE-NEXT: .word 0x455553e2
 ; NATIVE-NEXT: ret
-  call void @llvm.riscv.tt.bound.sfpmad(i32 0, i32 0, i32 1, i32 2, i32 3, i32 0)
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 21844, i32 8)
+  call void @llvm.tt.bh.sfpu.mad(i32 0, i32 0, i32 1, i32 2, i32 3, i32 0)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 21844, i32 8)
   ret void
 }

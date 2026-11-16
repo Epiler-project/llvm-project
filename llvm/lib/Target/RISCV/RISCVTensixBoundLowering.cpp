@@ -14,7 +14,6 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -71,8 +70,11 @@ SDValue llvm::lowerTensixBoundSFPUIntrinsic(SDValue Op, SelectionDAG &DAG,
     // an empty value would allow another lowering path to handle the failure.
     return Op.getOperand(0);
   };
-  if (!ST.hasVendorXTTTensixBH())
-    return Fail("bound SFPU intrinsic requires +xtttensixbh");
+  const bool Wormhole =
+      Info->Architecture == RISCV::TensixSFPUArchitecture::Wormhole;
+  if (Wormhole ? !ST.hasVendorXTTTensixWH() || ST.hasVendorXTTTensixBH()
+               : !ST.hasVendorXTTTensixBH() || ST.hasVendorXTTTensixWH())
+    return Fail("SFPU intrinsic architecture does not match target feature");
   Attribute Executor =
       DAG.getMachineFunction().getFunction().getFnAttribute("tensix-executor");
   if (!Executor.isStringAttribute() ||
@@ -86,7 +88,7 @@ SDValue llvm::lowerTensixBoundSFPUIntrinsic(SDValue Op, SelectionDAG &DAG,
   bool Dynamic = Offset && !isa<ConstantSDNode>(Op.getOperand(*Offset + 2));
   unsigned Opcode = Info->Pseudo;
   if (Dynamic)
-    Opcode = ID == Intrinsic::riscv_tt_bound_sfpload
+    Opcode = Info->Pseudo == RISCV::PseudoTTBoundSFPLOAD
                  ? RISCV::PseudoTTBoundSFPLOADDynamic
                  : RISCV::PseudoTTBoundSFPSTOREDynamic;
   SmallVector<SDValue, 13> Operands;
@@ -119,8 +121,18 @@ SDValue llvm::lowerTensixBoundSFPUIntrinsic(SDValue Op, SelectionDAG &DAG,
 MachineBasicBlock *
 llvm::emitTensixBoundSFPUInstruction(MachineInstr &MI, MachineBasicBlock *MBB,
                                      const RISCVSubtarget &ST) {
-  const auto *Info = RISCV::getTensixBoundInstructionForPseudo(MI.getOpcode());
-  if (!Info)
+  const auto Architecture = ST.hasVendorXTTTensixWH()
+                                ? RISCV::TensixSFPUArchitecture::Wormhole
+                                : RISCV::TensixSFPUArchitecture::Blackhole;
+  const auto *Info =
+      RISCV::getTensixBoundInstructionForPseudo(MI.getOpcode(), Architecture);
+  // A known physical pseudo unavailable on this architecture is an error,
+  // not a chance for another custom inserter to handle it.
+  if (!Info &&
+      !RISCV::getTensixBoundInstructionForPseudo(
+          MI.getOpcode(), RISCV::TensixSFPUArchitecture::Blackhole) &&
+      !RISCV::getTensixBoundInstructionForPseudo(
+          MI.getOpcode(), RISCV::TensixSFPUArchitecture::Wormhole))
     return nullptr;
   auto &MF = *MBB->getParent();
   auto Fail = [&](const Twine &Message) {
@@ -144,6 +156,8 @@ llvm::emitTensixBoundSFPUInstruction(MachineInstr &MI, MachineBasicBlock *MBB,
     MI.eraseFromParent();
     return MBB;
   };
+  if (!Info || ST.hasVendorXTTTensixBH() == ST.hasVendorXTTTensixWH())
+    return Fail("SFPU intrinsic architecture does not match target feature");
   if (!MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU())
     return Fail("bound SFPU ingress requires bound machine mode");
   if (Error E = verifyTensixMachineEffects(MI))
@@ -174,10 +188,10 @@ llvm::emitTensixBoundSFPUInstruction(MachineInstr &MI, MachineBasicBlock *MBB,
   if (!Native)
     return Fail(toString(Native.takeError()));
 
-  bool Load = Info->ID == Intrinsic::riscv_tt_bound_sfpload;
-  unsigned Opcode =
-      Dynamic ? unsigned(Load ? RISCV::PseudoTTSFPLOAD : RISCV::PseudoTTSFPSTORE)
-              : Native->Opcode;
+  bool Load = Info->Pseudo == RISCV::PseudoTTBoundSFPLOAD;
+  unsigned Opcode = Dynamic ? unsigned(Load ? RISCV::PseudoTTSFPLOAD
+                                            : RISCV::PseudoTTSFPSTORE)
+                            : Native->Opcode;
   const MCInstrDesc &NativeDesc = ST.getInstrInfo()->get(Native->Opcode);
   auto Builder =
       BuildMI(*MBB, MI, MI.getDebugLoc(), ST.getInstrInfo()->get(Opcode));

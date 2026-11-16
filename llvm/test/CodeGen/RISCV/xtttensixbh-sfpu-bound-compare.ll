@@ -2,8 +2,8 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -stop-after=finalize-isel %s -o - | FileCheck %s --check-prefix=MIR
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ASM
 
-declare void @llvm.riscv.tt.bound.sfpgt(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfple(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.gt(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.le(i32 immarg, i32 immarg, i32 immarg)
 
 ; Comparing two already-bound sources must not write VD, insert a preserving
 ; copy, allocate an SFPR virtual, or create scalar scratch. Alias is legal.
@@ -19,8 +19,8 @@ define void @compare() "tensix-executor"="trisc1" {
 ; ASM-NEXT: .word 0x58003dc6
 ; ASM-NEXT: .word 0x5c000cc6
 ; ASM-NEXT: ret
-  call void @llvm.riscv.tt.bound.sfpgt(i32 0, i32 1, i32 1)
-  call void @llvm.riscv.tt.bound.sfple(i32 7, i32 15, i32 1)
-  call void @llvm.riscv.tt.bound.sfpgt(i32 3, i32 3, i32 1)
+  call void @llvm.tt.bh.sfpu.gt(i32 0, i32 1, i32 1)
+  call void @llvm.tt.bh.sfpu.le(i32 7, i32 15, i32 1)
+  call void @llvm.tt.bh.sfpu.gt(i32 3, i32 3, i32 1)
   ret void
 }

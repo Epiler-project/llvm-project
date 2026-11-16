@@ -33,13 +33,13 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmad(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpiadd(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mad(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.iadd(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 
 define void @record_only_internal_gap() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 33, i32 0, i32 1, i32 29)
-  call void @llvm.riscv.tt.bound.sfpmad(i32 0, i32 0, i32 10, i32 9, i32 9, i32 0)
-  call void @llvm.riscv.tt.bound.sfpiadd(i32 0, i32 0, i32 9, i32 4)
+  call void @llvm.tt.bh.sfpu.mad(i32 0, i32 0, i32 10, i32 9, i32 9, i32 0)
+  call void @llvm.tt.bh.sfpu.iadd(i32 0, i32 0, i32 9, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 33)
   call void @llvm.riscv.tt.replay.template.execute(i32 33)
   ret void
@@ -47,8 +47,8 @@ define void @record_only_internal_gap() "tensix-executor"="trisc1" {
 
 define void @record_and_execute_internal_gap() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 34, i32 1, i32 1, i32 29)
-  call void @llvm.riscv.tt.bound.sfpmad(i32 0, i32 0, i32 10, i32 9, i32 9, i32 0)
-  call void @llvm.riscv.tt.bound.sfpiadd(i32 0, i32 0, i32 9, i32 4)
+  call void @llvm.tt.bh.sfpu.mad(i32 0, i32 0, i32 10, i32 9, i32 9, i32 0)
+  call void @llvm.tt.bh.sfpu.iadd(i32 0, i32 0, i32 9, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 34)
   call void @llvm.riscv.tt.replay.template.execute(i32 34)
   ret void
@@ -58,13 +58,13 @@ define void @record_and_execute_internal_gap() "tensix-executor"="trisc1" {
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmad(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpiadd(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mad(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.iadd(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 
 define void @gap_overflows_fixed_range() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 35, i32 0, i32 1, i32 30)
-  call void @llvm.riscv.tt.bound.sfpmad(i32 0, i32 0, i32 10, i32 9, i32 9, i32 0)
-  call void @llvm.riscv.tt.bound.sfpiadd(i32 0, i32 0, i32 9, i32 4)
+  call void @llvm.tt.bh.sfpu.mad(i32 0, i32 0, i32 10, i32 9, i32 9, i32 0)
+  call void @llvm.tt.bh.sfpu.iadd(i32 0, i32 0, i32 9, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 35)
   call void @llvm.riscv.tt.replay.template.execute(i32 35)
   ret void
@@ -74,14 +74,14 @@ define void @gap_overflows_fixed_range() "tensix-executor"="trisc1" {
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 define void @live_fixed_ranges_overlap() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 36, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 36)
   call void @llvm.riscv.tt.replay.template.begin(i32 37, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 37)
   call void @llvm.riscv.tt.replay.template.execute(i32 36)
   call void @llvm.riscv.tt.replay.template.execute(i32 37)

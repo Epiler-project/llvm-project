@@ -20,8 +20,8 @@ declare void @llvm.riscv.tt.setadc.port(i32 immarg, i32, i32, i32, i32)
 declare void @llvm.riscv.tt.setadc.mop(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define i32 @bound_with_ordinary(i8 noundef %field) "tensix-executor"="trisc2" {
 ; ISEL-LABEL: name: bound_with_ordinary
@@ -63,8 +63,8 @@ entry:
   call void @llvm.riscv.tt.mop.clear(i32 7)
   call void @llvm.riscv.tt.mop.clear(i32 8)
   call void @llvm.riscv.tt.mop(i32 0, i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   %result = load volatile i32, ptr %slot, align 4
   ret i32 %result
 }
@@ -97,12 +97,12 @@ define void @bound_with_explicit_replay() "tensix-executor"="trisc0" {
 ; NATIVE-NEXT: .word 0x3c000002
 ; NATIVE-NEXT: .word 0xc8100001
 ; NATIVE-NEXT: ret
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   call void @llvm.riscv.tt.replay(i32 1, i32 0, i32 1, i32 0)
   call void @llvm.riscv.tt.nop()
   call void @llvm.riscv.tt.replay.record.end()
   call void @llvm.riscv.tt.replay(i32 0, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   ret void
 }
 
@@ -142,10 +142,10 @@ define void @bound_with_sfpu_completion() "tensix-executor"="trisc1" {
 ; NATIVE-NOT: .word
 ; NATIVE-NOT: sw
 ; NATIVE-NOT: lw
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 9)
   call void @llvm.riscv.tt.stallwait(i32 2048, i32 511)
   call void @llvm.riscv.tt.nop()
-  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 3)
+  call void @llvm.tt.bh.sfpu.store(i32 2, i32 8, i32 0, i32 3)
   call void @llvm.riscv.tt.stallwait(i32 2048, i32 511)
   call void @llvm.riscv.tt.nop()
   ret void
@@ -158,7 +158,7 @@ define void @bound_with_sfpu_completion() "tensix-executor"="trisc1" {
 ; coverage in bound-explicit-replay-{record-only,invalid}.
 declare void @llvm.riscv.tt.replay(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.record.end()
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 define void @raw_bound_replay() "tensix-executor"="trisc2" {
 ; RAW-REPLAY-LABEL: raw_bound_replay:
 ; RAW-REPLAY-NOT: .word
@@ -167,7 +167,7 @@ define void @raw_bound_replay() "tensix-executor"="trisc2" {
 ; RAW-REPLAY-NEXT: ret
 ; RAW-REPLAY-NOT: .word
   call void @llvm.riscv.tt.replay(i32 1, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   call void @llvm.riscv.tt.replay.record.end()
   ret void
 }

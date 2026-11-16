@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #ifndef LLVM_LIB_TARGET_RISCV_RISCVTENSIXREPLAY_H
 #define LLVM_LIB_TARGET_RISCV_RISCVTENSIXREPLAY_H
+#include "RISCVTensixExplicitReplay.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -19,33 +20,6 @@ class MachineInstrBuilder;
 class RISCVInstrInfo;
 class PassRegistry;
 class RISCVSubtarget;
-inline constexpr unsigned TensixReplaySlotCount = 32;
-// Shared native latency transfer for verified, non-REPLAY/MOP body words.
-// Neither templates nor their MC emitter maintain another opcode table.
-struct TensixReplayHazardState {
-  unsigned SFPU = 0;
-  unsigned DstCycles = 0;
-  bool operator==(const TensixReplayHazardState &Other) const {
-    return SFPU == Other.SFPU && DstCycles == Other.DstCycles;
-  }
-};
-// Reconstructed words are detached MIs. Their owner must supply the actual
-// subtarget; neither a parent MBB nor an implicit BH model is available here.
-bool needsTensixReplayHazardGap(const MachineInstr &MI,
-                               const RISCVSubtarget &ST,
-                               TensixReplayHazardState State);
-TensixReplayHazardState advanceTensixReplayHazard(
-    const MachineInstr &MI, const RISCVSubtarget &ST,
-    TensixReplayHazardState State);
-struct TensixSFPUReplayEffects {
-  SmallVector<MCRegister, 16> Uses;
-  SmallVector<MCRegister, 8> Defs;
-  // Exact exit dependency/cooldown from the shared native hazard transfer.
-  // A trailing NOP clears the state; an explicit grouped rotate retains it.
-  unsigned PendingSFPU = 0;
-};
-using TensixSFPUReplayExecutionEffects =
-    DenseMap<const MachineInstr *, TensixSFPUReplayEffects>;
 /// A finite native pipeline transfer. Entry 0 is the empty state, entries
 /// 1..32 are singleton SFPU dependencies, and entries 33..35 are Dst delays.
 /// This represents a whole hardware loop without copying its instruction body.
@@ -73,53 +47,10 @@ bool isTensixSFPUReplayCandidate(const MachineInstr &MI);
 Expected<TensixSFPUReplayEffects>
 getTensixSFPUReplayEffects(ArrayRef<const MachineInstr *> Body);
 
-/// Compiler-private native word identity. Registers are physical MC register
-/// numbers, not value snapshots, and never become record-only numerical defs.
-struct TensixRecordedOperand {
-  enum class Kind { Register, Immediate, CapturedScalar };
-  Kind OperandKind;
-  int64_t Value;
-  bool operator==(const TensixRecordedOperand &Other) const {
-    return OperandKind == Other.OperandKind && Value == Other.Value;
-  }
-};
-struct TensixRecordedWord {
-  unsigned Opcode;
-  SmallVector<TensixRecordedOperand, 8> Operands;
-  // Query-local identity of the actual instruction which captures a dynamic
-  // field. Never dereferenced or retained across machine IR mutation. Equal
-  // physical GPR numbers at different recording sites do not mean equal bits.
-  const MachineInstr *Capture = nullptr;
-  // Symbolic encoding/effect-shape equality, not runtime word-bit equality.
-  // One capture site can run repeatedly with different scalar values. Its
-  // numerical register/hazard shape stays fixed; clients must not constant-fold
-  // captured bits, reuse a former dynamic generation, or reissue its GPR here.
-  bool operator==(const TensixRecordedWord &Other) const {
-    return Opcode == Other.Opcode && Operands == Other.Operands &&
-           Capture == Other.Capture;
-  }
-};
-/// Record-only payloads keep scalar capture/scratch/MMIO, not numerical effects.
-MachineInstrBuilder insertTensixRecordedPayload(
-    MachineInstr &Before, const TensixRecordedWord &Word,
-    const RISCVInstrInfo &TII, std::optional<unsigned> Identity);
-
-struct TensixExplicitReplayRecord {
-  const MachineInstr *Header;
-  const MachineInstr *End;
-  unsigned Stream;
-  unsigned Start;
-  bool ExecuteWhileLoading;
-  SmallVector<const MachineInstr *, 32> Body;
-  SmallVector<TensixRecordedWord, 32> Words;
-};
 /// Physical raw accesses, reconstructed by the same receiver which validates
 /// their contents and effects. A recorded range is not a function-long lease.
 struct TensixReplayStorageAnalysis {
-  struct Range {
-    unsigned Stream;
-    uint32_t Mask;
-  };
+  using Range = TensixReplayRange;
   struct MOPWrite {
     unsigned Slot;
     uint32_t Mask;
@@ -144,20 +75,6 @@ struct TensixExplicitReplayAnalysis {
 };
 Expected<TensixExplicitReplayAnalysis>
 analyzeTensixExplicitReplay(const MachineFunction &MF);
-Expected<TensixRecordedWord> getTensixRecordedWord(const MachineInstr &MI,
-                                                   const MachineFunction &MF);
-Error verifyTensixRecordedWord(const TensixRecordedWord &Word,
-                               const MachineFunction &MF);
-/// Return a verified, uninserted native instruction; the caller must release
-/// it with MF.deleteMachineInstr. No encoding or latency table is duplicated.
-Expected<MachineInstr *>
-createTensixRecordedInstruction(const TensixRecordedWord &Word,
-                                MachineFunction &MF);
-Expected<TensixSFPUReplayEffects>
-getTensixExplicitReplayEffects(ArrayRef<TensixRecordedWord> Words,
-                               const MachineFunction &MF);
-FunctionPass *createRISCVTensixExplicitReplayPass();
-void initializeRISCVTensixExplicitReplayPass(PassRegistry &);
 Error verifyTensixReplay(
     const MachineFunction &MF,
     TensixSFPUReplayExecutionEffects *ExecutionEffects = nullptr,

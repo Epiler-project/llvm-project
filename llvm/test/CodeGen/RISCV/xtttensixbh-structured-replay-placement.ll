@@ -13,8 +13,8 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @fixed_final_count() "tensix-executor"="trisc1" {
 ; FINAL-LABEL: name: fixed_final_count
@@ -37,12 +37,12 @@ define void @fixed_final_count() "tensix-executor"="trisc1" {
 ; ASM: .word 0xc8900021
 ; ASM: ret
   call void @llvm.riscv.tt.replay.template.begin(i32 200, i32 0, i32 1, i32 30)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 200)
   call void @llvm.riscv.tt.replay.template.execute(i32 200)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 2, i32 8, i32 0, i32 4)
   ret void
 }
 
@@ -63,12 +63,12 @@ define void @automatic_final_count() "tensix-executor"="trisc1" {
 ; ASM: .word 0xc8900021
 ; ASM: ret
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.replay.template.execute(i32 901)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 2, i32 8, i32 0, i32 4)
   ret void
 }
 
@@ -81,15 +81,15 @@ define void @automatic_avoids_live_fixed() "tensix-executor"="trisc1" {
 ; FINAL: PseudoTTExplicitSFPUReplay 0, 0, 1, [[AUTO]],
 ; FINAL: PseudoTTExplicitSFPUReplay 0, 0, 1, 0,
   call void @llvm.riscv.tt.replay.template.begin(i32 100, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 100)
   call void @llvm.riscv.tt.replay.template.begin(i32 101, i32 0, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 101)
   call void @llvm.riscv.tt.replay.template.execute(i32 101)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 2, i32 8, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.execute(i32 100)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   ret void
 }
 
@@ -102,14 +102,14 @@ define void @disjoint_fixed_lifetimes() "tensix-executor"="trisc1" {
 ; FINAL: PseudoTTExplicitSFPUReplay 1, 0, 1, 31,
 ; FINAL: PseudoTTExplicitSFPUReplay 0, 0, 1, 31,
   call void @llvm.riscv.tt.replay.template.begin(i32 110, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 110)
   call void @llvm.riscv.tt.replay.template.execute(i32 110)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.begin(i32 111, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 111)
   call void @llvm.riscv.tt.replay.template.execute(i32 111)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 2, i32 8, i32 0, i32 4)
   ret void
 }

@@ -8,7 +8,7 @@
 // Native instruction records remain the only register/effect/encoding owner.
 class TensixBoundPseudo<dag Inputs, dag Outputs = (outs)>
     : Pseudo<Outputs, Inputs, []> {
-  let Predicates = [HasVendorXTTTensixBH];
+  let Predicates = [HasVendorXTTTensix];
   let hasSideEffects = 1;
   let isNotDuplicable = 1;
   let isConvergent = 1;
@@ -63,7 +63,9 @@ def PseudoTTBoundSFPMOVAll : TensixBoundPseudo<
     (ins uimm3:$dst, uimm4:$src)>;
 def PseudoTTBoundSFPMOVPRNGAdvance : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old)>;
-def PseudoTTBoundSFPARECIP : TensixBoundUnary;
+def PseudoTTBoundSFPARECIP : TensixBoundUnary {
+  let Predicates = [HasVendorXTTTensixBH];
+}
 def PseudoTTBoundSFPEXEXP : TensixBoundUnary;
 def PseudoTTBoundSFPEXMAN : TensixBoundUnary;
 def PseudoTTBoundSFPABS : TensixBoundUnary;
@@ -135,8 +137,12 @@ def PseudoTTBoundSFPSETCC : TensixBoundPseudo<
     (ins uimm4:$src, uimm16:$immediate, uimm4:$mode)>;
 class TensixBoundCompare : TensixBoundPseudo<
     (ins uimm3:$lhs, uimm4:$rhs, uimm4:$mode)>;
-def PseudoTTBoundSFPGT : TensixBoundCompare;
-def PseudoTTBoundSFPLE : TensixBoundCompare;
+def PseudoTTBoundSFPGT : TensixBoundCompare {
+  let Predicates = [HasVendorXTTTensixBH];
+}
+def PseudoTTBoundSFPLE : TensixBoundCompare {
+  let Predicates = [HasVendorXTTTensixBH];
+}
 class TensixBoundCondition : TensixBoundPseudo<
     (ins uimm16:$immediate, uimm4:$mode)>;
 def PseudoTTBoundSFPENCC : TensixBoundCondition;

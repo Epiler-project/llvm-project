@@ -26,6 +26,7 @@
 # CHECK-LABEL: name: raw_state_without_execute
 # CHECK: TTSFPENCC 1, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
 # CHECK-NEXT: TTSFPCONFIGC11 0, 0, implicit $tt_l0, implicit $tt_c11, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_c11, implicit-def $tt_config, implicit-def $tt_issue
+# CHECK-NEXT: BUNDLE
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 4, 5,
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NOT: $tt_cc
@@ -36,6 +37,7 @@
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NOT: $tt_config
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: $tt_l2 = TTSFPMOV $tt_l2, $tt_c11,
 # CHECK-NEXT: PseudoRET
 --- |

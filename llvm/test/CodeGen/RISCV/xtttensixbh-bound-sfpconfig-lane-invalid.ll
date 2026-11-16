@@ -11,38 +11,38 @@
 ; MODE: SFPCONFIGLane mode must be one of {8}
 
 ;--- source.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
 define void @wrong_source() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 1, i32 21844, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 1, i32 21844, i32 8)
   ret void
 }
 ;--- odd-mask.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
 define void @odd_mask() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 2, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 2, i32 8)
   ret void
 }
 ;--- overflow.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
 define void @overflow() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 65536, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 65536, i32 8)
   ret void
 }
 ;--- negative.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
 define void @negative() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 -1, i32 8)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 -1, i32 8)
   ret void
 }
 ;--- mode.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
 define void @unsupported_mode() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 0, i32 0)
   ret void
 }
 ;--- imm-value-mode.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
 define void @unsupported_immediate_data() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 21844, i32 9)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 21844, i32 9)
   ret void
 }

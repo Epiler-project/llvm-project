@@ -18,36 +18,46 @@
 # CHECK: BNE $x10, $x0, %bb.2
 # CHECK: PseudoBR %bb.1
 # CHECK: bb.1:
-# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 1, 4,
+# CHECK: BUNDLE
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 4,
 # CHECK-SAME: :: (volatile load store (s32), align 8)
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: PseudoBR %bb.3
 # CHECK: bb.2:
-# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 1, 4,
+# CHECK: BUNDLE
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 4,
 # CHECK-SAME: :: (volatile load store (s32))
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: PseudoBR %bb.3
 # CHECK: bb.3:
 # CHECK: PseudoTTExplicitSFPUReplay 0, 0, 1, 4,
 # CHECK-SAME: :: (volatile load store (s32), align 16)
 # CHECK-NEXT: PseudoRET
 # CHECK-LABEL: name: partial_overwrite_selected_slice
-# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 2, 5,
+# CHECK: BUNDLE
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 2, 5,
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
+# CHECK-NEXT: BUNDLE
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 6,
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 6,
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 5,
 # CHECK-NEXT: PseudoRET
 # CHECK-LABEL: name: nop_only
-# CHECK: PseudoTTExplicitSFPUReplay 1, 0, 1, 31,
+# CHECK: BUNDLE
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 31,
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 31,
 # CHECK-NEXT: PseudoRET
 
@@ -136,7 +146,7 @@ expected = {
 }
 
 def effects(line):
-    uses = re.findall(r"\bimplicit(?: killed)? \$(\w+)", line)
+    uses = re.findall(r"\bimplicit(?: killed)?(?: internal)? \$(\w+)", line)
     defs = re.findall(r"\bimplicit-def(?: dead)? \$(\w+)", line)
     return sorted(uses), sorted(defs)
 
@@ -150,6 +160,7 @@ for name, (headers, word_count) in expected.items():
     assert len(words) == word_count, (name, words)
     for line in words:
         assert effects(line) == (["tt_issue"], ["tt_issue"]), line
+        assert re.findall(r"\bimplicit internal \$(\w+)", line) == ["tt_issue"], line
         assert " = " not in line, line
     assert "TTSFPMOVAll " not in body and "TTSFPNOP " not in body, body
     assert "TTREPLAY " not in body, body

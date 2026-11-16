@@ -1,7 +1,7 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=RETIRED
 ;
 ; This historical mixed vector/implicit-LReg ingress is retired. Bound physical
-; callers must use the explicit llvm.riscv.tt.bound.* ABI; inlining does not
+; callers must use the explicit llvm.tt.bh.sfpu.* ABI; inlining does not
 ; resurrect the vector carrier or establish SFPU state preservation.
 ;
 ; The import is the TRISC1 firmware data symbol used by native Math lowering.

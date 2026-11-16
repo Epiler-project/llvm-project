@@ -14,22 +14,22 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @dynamic_dst_record_and_execute(i10 noundef %input, i10 noundef %output, i32 noundef %count) "tensix-executor"="trisc1" {
 entry:
   %read_offset = zext i10 %input to i32
   %write_offset = zext i10 %output to i32
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 10)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 10)
   call void @llvm.riscv.tt.replay.template.begin(i32 701, i32 1, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %read_offset, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 %write_offset, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %read_offset, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 %write_offset, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 701)
   ; Observe current L0 before any later execute. Record-only preserves C10;
   ; record-and-execute already performed the load from the captured address.
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   %empty = icmp eq i32 %count, 0
   br i1 %empty, label %exit, label %loop
 loop:
@@ -39,6 +39,6 @@ loop:
   %done = icmp eq i32 %next, %count
   br i1 %done, label %exit, label %loop
 exit:
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 8, i32 0, i32 4)
   ret void
 }

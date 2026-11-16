@@ -20,13 +20,15 @@ std::unique_ptr<MCRegisterInfo> createTensixBoundMCRegisterInfo();
 // These private IDs and operand positions never cross the public query ABI.
 struct TensixBoundInstruction {
   Intrinsic::ID ID;
+  TensixSFPUArchitecture Architecture;
   unsigned Pseudo;
   unsigned ArgumentCount;
   std::optional<unsigned> DstOffset = std::nullopt;
 };
 const TensixBoundInstruction *getTensixBoundInstruction(Intrinsic::ID ID);
 const TensixBoundInstruction *
-getTensixBoundInstructionForPseudo(unsigned Opcode);
+getTensixBoundInstructionForPseudo(unsigned Opcode,
+                                   TensixSFPUArchitecture Architecture);
 
 struct TensixBoundNativeOperand {
   std::optional<unsigned> Argument;
@@ -41,6 +43,9 @@ struct TensixBoundNativeInstruction {
 Expected<TensixBoundNativeInstruction>
 getTensixBoundNativeInstruction(Intrinsic::ID ID,
                                 ArrayRef<TensixBoundValue> Arguments);
+// Select the exact native effects descriptor from encoded fields. Unknown or
+// invalid modifiers stay on the canonical descriptor's validation path.
+unsigned selectTensixSFPUDescriptor(unsigned Opcode, int64_t Modifier);
 // Native semantics are evaluated once, after each actual ABI has validated
 // its native fields. Value indices name explicit MC operands or genuine fixed
 // group registers. Each ABI reprojects those identities through its real map.

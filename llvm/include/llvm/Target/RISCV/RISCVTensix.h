@@ -156,6 +156,10 @@ struct TensixSFPUArchitecturalEffect {
 // remains explicit; ordinary numerical operands/results never acquire a
 // physical register identity through this query.
 enum class TensixSFPUArchitecture : uint8_t { Wormhole, Blackhole };
+// The physical intrinsic ID carries the architecture independently of any
+// function feature. Unknown or nonphysical IDs have no architecture.
+std::optional<TensixSFPUArchitecture>
+getTensixBoundSFPUArchitecture(Intrinsic::ID ID);
 enum class TensixContentsValueKind : uint8_t { Contents, Scalar };
 struct TensixContentsValue {
   TensixContentsValueKind Kind;
@@ -172,6 +176,7 @@ enum class TensixSFPUTransferKind : uint8_t {
   LaneWise,
   LanePermutation,
   RegisterPermutation,
+  MaskedIdentity,
 };
 struct TensixSFPUTransferInput {
   unsigned Argument;
@@ -215,6 +220,11 @@ struct TensixSFPUTransferFacts {
   // argument and lane in the pre-instruction snapshot. Predication selects
   // destinations, so inactive source lanes remain available to the mapping.
   SmallVector<TensixSFPULaneSource, 0> LaneSources;
+  // MaskedIdentity partitions generated bits into same-coordinate source
+  // copies and input-independent known bits. ConstantBits is an initializedness
+  // mask; the instruction's actual immediate owns the numerical value.
+  uint32_t CopiedBits = 0;
+  uint32_t ConstantBits = 0;
 };
 
 enum class TensixSFPUConditionEnableUpdate : uint8_t {

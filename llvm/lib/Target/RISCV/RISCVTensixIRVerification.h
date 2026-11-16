@@ -20,7 +20,7 @@ bool isTensixSFPUIntrinsic(Intrinsic::ID ID);
 /// Return true for the pre-bound LLVM ABI names retired by the physical
 /// ingress cutover.  This name-based check remains available while old
 /// textual IR can still declare these symbols as ordinary calls; it does not
-/// classify RVV values or the explicit `llvm.riscv.tt.bound.*` ABI.
+/// classify RVV values or the explicit `llvm.tt.{wh,bh}.sfpu.*` ABI.
 bool isRetiredTensixSFPUIntrinsicName(StringRef Name);
 
 struct TensixSFPUFunctionFacts {
@@ -29,7 +29,8 @@ struct TensixSFPUFunctionFacts {
 };
 
 // Run on each Tensix function before either selector, including at -O0.
-// Selection/ABI integration consumes these facts; no string metadata is trusted.
+// Selection/ABI integration consumes these facts; no string metadata is
+// trusted.
 Expected<TensixSFPUFunctionFacts>
 verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
                           AssumptionCache &AC, DominatorTree &DT,

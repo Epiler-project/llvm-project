@@ -156,11 +156,13 @@ def TTSFPMOVAll : TensixMove<2, (ins SFPRRead:$src),
   let WormholeSupported = 1;
   let Uses = [TT_CONFIG, TT_ISSUE];
 }
-// FROM_SPECIAL selector 9 returns the active lane's old PRNG word and then
-// advances it. The fixed selector is not a readable constant register. Mode 8
+// FROM_SPECIAL selector 9 advances the active lane's PRNG once and returns
+// its updated word. The fixed selector is not a readable constant register. Mode 8
 // obeys lane predication, so inactive destination lanes retain their old bits.
 def TTSFPMOVPRNGAdvance : TensixPhysicalInst<0x7c, (outs SFPR:$dst),
     (ins SFPR:$old), "ttsfpmov.prng.advance", "$dst"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<4> dst;
   let RawWord{11-8} = 9;
   let RawWord{7-4} = dst;

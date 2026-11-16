@@ -13,8 +13,8 @@ declare i32 @llvm.smax.i32(i32, i32)
 declare i32 @llvm.smin.i32(i32, i32)
 declare i32 @llvm.umax.i32(i32, i32)
 declare i32 @llvm.umin.i32(i32, i32)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define i32 @scalar_minmax(i32 noundef %a, i32 noundef %b) "tensix-executor"="trisc1" {
 ; ASM-LABEL: scalar_minmax:
@@ -31,7 +31,7 @@ define i32 @scalar_minmax(i32 noundef %a, i32 noundef %b) "tensix-executor"="tri
 ; ISEL: TTSFPSTORE $tt_l0, 0, 0, 4,
 ; ISEL-NOT: PseudoCALL
 ; ISEL: PseudoRET
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   %smax = call i32 @llvm.smax.i32(i32 %a, i32 %b)
   %smin = call i32 @llvm.smin.i32(i32 %a, i32 %b)
   %umax = call i32 @llvm.umax.i32(i32 %a, i32 %b)
@@ -39,16 +39,16 @@ define i32 @scalar_minmax(i32 noundef %a, i32 noundef %b) "tensix-executor"="tri
   %signed = xor i32 %smax, %smin
   %unsigned = sub i32 %umax, %umin
   %result = xor i32 %signed, %unsigned
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   ret i32 %result
 }
 
 ;--- wide.ll
 declare i64 @llvm.smax.i64(i64, i64)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 define i64 @wide(i64 %a, i64 %b) "tensix-executor"="trisc1" {
 ; REJECT: call has no verified SFPU preservation ABI
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   %result = call i64 @llvm.smax.i64(i64 %a, i64 %b)
   ret i64 %result
 }

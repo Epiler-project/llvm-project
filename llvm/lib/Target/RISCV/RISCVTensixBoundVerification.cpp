@@ -7,6 +7,7 @@
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixExplicitReplay.h"
 #include "RISCVTensixReplay.h"
 #include "RISCVTensixReplayTemplate.h"
 #include "llvm/ADT/STLExtras.h"
@@ -77,8 +78,9 @@ Error llvm::verifyTensixMachineEffects(const MachineInstr &MI,
     return Fail();
   for (const MachineOperand &MO : MI.implicit_operands()) {
     if (!MO.isReg() || !MO.getReg().isPhysical() || MO.getSubReg() ||
-        MO.isUndef() || MO.isInternalRead() || MO.isEarlyClobber() ||
-        MO.isRenamable())
+        MO.isUndef() ||
+        (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
+        MO.isEarlyClobber() || MO.isRenamable())
       return Fail();
     if (MO.isDef() ? !is_contained(Desc.implicit_defs(), MO.getReg().id())
                    : !is_contained(Desc.implicit_uses(), MO.getReg().id()))
@@ -125,7 +127,8 @@ Error llvm::verifyTensixMachineOperands(const MachineInstr &MI,
       return createStringError(
           "bound Tensix SFPU operand does not match its native register class");
     bool EarlyClobber = Desc.getOperandConstraint(I, MCOI::EARLY_CLOBBER) >= 0;
-    if (MO.getSubReg() || MO.isUndef() || MO.isInternalRead() ||
+    if (MO.getSubReg() || MO.isUndef() ||
+        (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
         MO.isDef() != (I < Desc.getNumDefs()) ||
         MO.isEarlyClobber() != EarlyClobber)
       return createStringError(
@@ -191,7 +194,8 @@ namespace {
 // SFPU operands to the same MC contract as static issue. No second encoding
 // or SFPU register/tie/mode table is maintained here.
 Error verifyDstPort(const MachineInstr &MI, const MachineRegisterInfo &MRI,
-                    const RISCVInstrInfo &TII, const RISCVRegisterInfo &TRI) {
+                    const RISCVInstrInfo &TII, const RISCVRegisterInfo &TRI,
+                    bool Wormhole) {
   bool Full = MI.getOpcode() == RISCV::PseudoTTSFPLOADFull;
   bool Load = Full || MI.getOpcode() == RISCV::PseudoTTSFPLOAD;
   unsigned WordIndex = Load ? 1 : 0;
@@ -200,7 +204,8 @@ Error verifyDstPort(const MachineInstr &MI, const MachineRegisterInfo &MRI,
   for (unsigned I : {WordIndex, AddressIndex, OffsetIndex}) {
     const MachineOperand &MO = MI.getOperand(I);
     if (!MO.isReg() || !MO.getReg() || MO.getSubReg() || MO.isUndef() ||
-        MO.isInternalRead() || MO.isDef() != (I != OffsetIndex) ||
+        (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
+        MO.isDef() != (I != OffsetIndex) ||
         MO.isEarlyClobber() != (I != OffsetIndex))
       return createStringError("bound Tensix SFPU requires explicit scalar "
                                "scratch and offset operands");
@@ -239,11 +244,14 @@ Error verifyDstPort(const MachineInstr &MI, const MachineRegisterInfo &MRI,
           "bound Tensix SFPU Dst format and addrmod must be immediate");
     Native.addOperand(MCOperand::createImm(MI.getOperand(I).getImm()));
   }
-  return RISCV::verifyTensixMCInstruction(Native, TII, TRI);
+  if (Error E = RISCV::verifyTensixMCInstruction(Native, TII, TRI))
+    return E;
+  return Wormhole ? RISCV::verifyTensixWormholeInstruction(Native, TII)
+                  : Error::success();
 }
 
 Error verifyNativeOperands(const MachineInstr &MI, const RISCVInstrInfo &TII,
-                           const RISCVRegisterInfo &TRI) {
+                           const RISCVRegisterInfo &TRI, bool Wormhole) {
   MCInst Native;
   Native.setOpcode(MI.getOpcode());
   const MCInstrDesc &Desc = MI.getDesc();
@@ -263,7 +271,10 @@ Error verifyNativeOperands(const MachineInstr &MI, const RISCVInstrInfo &TII,
                                "and logical immediate fields");
     }
   }
-  return RISCV::verifyTensixMCInstruction(Native, TII, TRI);
+  if (Error E = RISCV::verifyTensixMCInstruction(Native, TII, TRI))
+    return E;
+  return Wormhole ? RISCV::verifyTensixWormholeInstruction(Native, TII)
+                  : Error::success();
 }
 
 class RISCVTensixBoundVerification final : public MachineFunctionPass {
@@ -290,8 +301,10 @@ public:
       return false;
     };
     const auto &ST = MF.getSubtarget<RISCVSubtarget>();
-    if (!ST.hasVendorXTTTensixBH())
-      return Fail("bound Tensix SFPU requires +xtttensixbh");
+    if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH())
+      return Fail("bound Tensix SFPU requires +xtttensixbh or +xtttensixwh");
+    if (ST.hasVendorXTTTensixBH() && ST.hasVendorXTTTensixWH())
+      return Fail("SFPU intrinsic architecture does not match target feature");
     Attribute Executor = MF.getFunction().getFnAttribute("tensix-executor");
     if (!Executor.isStringAttribute() ||
         (Executor.getValueAsString() != "trisc0" &&
@@ -307,7 +320,13 @@ public:
       for (const MachineInstr &MI : MBB.instrs()) {
         if (MI.isDebugInstr())
           continue;
-        if (MI.isBundled())
+        if (MI.isBundle()) {
+          auto Bundle = getTensixReplayBundle(MI);
+          if (!Bundle)
+            return Fail(toString(Bundle.takeError()));
+          continue;
+        }
+        if (MI.isBundled() && !isTensixReplayBundleMember(MI))
           return Fail("bound Tensix SFPU bundle has no verified issue order");
         if (MI.isCall())
           return Fail("bound Tensix SFPU call has no preservation ABI");
@@ -325,7 +344,8 @@ public:
           if (MO.getReg().isVirtual())
             return Fail(
                 "bound Tensix SFPU cannot contain virtual SFPU registers");
-          if (MO.getSubReg() || MO.isUndef() || MO.isInternalRead() ||
+          if (MO.getSubReg() || MO.isUndef() ||
+              (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
               MO.isRenamable())
             return Fail(
                 "bound Tensix SFPU requires defined whole-register operands");
@@ -371,10 +391,12 @@ public:
           if (Error E = verifyTensixMachineEffects(MI))
             return Fail(toString(std::move(E)));
         if (isDstPort(MI)) {
-          if (Error E = verifyDstPort(MI, MRI, TII, TRI))
+          if (Error E =
+                  verifyDstPort(MI, MRI, TII, TRI, ST.hasVendorXTTTensixWH()))
             return Fail(toString(std::move(E)));
         } else if (RISCV::getTensixEncoding(MI.getOpcode())) {
-          if (Error E = verifyNativeOperands(MI, TII, TRI))
+          if (Error E =
+                  verifyNativeOperands(MI, TII, TRI, ST.hasVendorXTTTensixWH()))
             return Fail(toString(std::move(E)));
         }
         if (Error E = verifyTensixMachineOperands(MI, MRI, TRI))

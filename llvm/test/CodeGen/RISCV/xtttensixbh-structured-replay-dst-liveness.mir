@@ -21,10 +21,12 @@
 # CHECK-NEXT: PseudoRET
 # CHECK-LABEL: name: raw_dst_state_without_execute
 # CHECK: TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+# CHECK-NEXT: BUNDLE
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 5,
 # CHECK-NEXT: PseudoTTSFPURecordWord
 # CHECK-NOT: $tt_dst
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: $tt_l1 = TTSFPLOAD
 # CHECK-NEXT: PseudoRET
 --- |

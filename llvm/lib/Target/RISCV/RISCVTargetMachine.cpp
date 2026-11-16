@@ -11,13 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVTargetMachine.h"
-#include "RISCVRegisterContents.h"
-#include "RISCVTensixReplayTemplate.h"
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVMachineScheduler.h"
+#include "RISCVRegisterContents.h"
 #include "RISCVTargetObjectFile.h"
 #include "RISCVTargetTransformInfo.h"
+#include "RISCVTensixExplicitReplay.h"
+#include "RISCVTensixReplayTemplate.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/GlobalISel/CSEInfo.h"
@@ -35,8 +36,8 @@
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO.h"
@@ -177,6 +178,7 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   initializeRISCVTensixHazardsPass(*PR);
   initializeRISCVTensixReplaySelectionPass(*PR);
   initializeRISCVTensixExplicitReplayPass(*PR);
+  initializeRISCVTensixReplayBundleUnpackPass(*PR);
   initializeRISCVTensixReplayTemplatePreparePass(*PR);
   initializeRISCVTensixReplayTemplateFinalizePass(*PR);
   initializeRISCVO0PreLegalizerCombinerPass(*PR);
@@ -668,6 +670,7 @@ void RISCVPassConfig::addPreEmitPass() {
   // prevent the adjusted offset exceeding the branch range.
   addPass(createRISCVIndirectBranchTrackingPass());
   addPass(createRISCVTensixReplayTemplateFinalizePass());
+  addPass(createRISCVTensixExplicitReplayPass());
   addPass(createRISCVTensixHazardsPass(true));
   addPass(createRISCVTensixReplaySelectionPass());
   addPass(&BranchRelaxationPassID);
@@ -693,10 +696,9 @@ void RISCVPassConfig::addPreEmitPass2() {
   // progress in the LR/SC block.
   addPass(createRISCVExpandPseudoAtomicsLegacyPass());
 
-  // KCFI indirect call checks are lowered to a bundle.
-  addPass(createUnpackMachineBundlesLegacy([&](const MachineFunction &MF) {
-    return MF.getFunction().getParent()->getModuleFlag("kcfi");
-  }));
+  // Unpack KCFI call checks while preserving verified native recording
+  // windows, including functions which contain both kinds of bundle.
+  addPass(createRISCVTensixReplayBundleUnpackPass());
 
   if (EnableCFIInstrInserter)
     addPass(createCFIInstrInserterLegacy());
@@ -753,7 +755,6 @@ void RISCVPassConfig::addFastRegAlloc() {
   addPass(&ProcessImplicitDefsID);
   TargetPassConfig::addFastRegAlloc();
 }
-
 
 void RISCVPassConfig::addPostRegAlloc() {
   if (TM->getOptLevel() != CodeGenOptLevel::None &&

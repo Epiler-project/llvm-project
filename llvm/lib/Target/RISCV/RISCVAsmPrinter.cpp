@@ -24,6 +24,7 @@
 #include "RISCVRegisterInfo.h"
 #include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixContentsGroup.h"
+#include "RISCVTensixExplicitReplay.h"
 #include "RISCVTensixReplay.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/ADT/APInt.h"
@@ -413,6 +414,21 @@ void RISCVAsmPrinter::emitNTLHint(const MachineInstr *MI) {
 }
 
 void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+  if (MI->isBundle()) {
+    auto Window = getTensixReplayBundle(*MI);
+    if (!Window) {
+      OutContext.reportError(SMLoc(), toString(Window.takeError()));
+      return;
+    }
+    // Generic AsmPrinter visits the aggregate BUNDLE once. Its verified
+    // children retain their native order and existing emission semantics;
+    // record.end emits no word, and the aggregate itself is never emitted.
+    for (const MachineInstr *Member : Window->Members)
+      if (!Member->isDebugInstr())
+        emitInstruction(Member);
+    return;
+  }
+
   RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
   emitNTLHint(MI);

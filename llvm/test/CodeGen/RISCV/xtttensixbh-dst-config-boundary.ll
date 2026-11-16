@@ -22,7 +22,7 @@
 declare void @llvm.riscv.tt.setc16(i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.nop()
 declare void @llvm.riscv.tt.rmwcib0(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 ; Native direct issue rotates the raw ISA word left by two bits:
 ; SETC16(value=0,reg=0): rol32(0xb2000000,2) = 0xc8000002.
@@ -54,13 +54,13 @@ define void @authored_config_boundary() "tensix-executor"="trisc1" {
 ; NATIVE-NEXT: .word 0xf0000049
 ; NATIVE-NEXT: ret
 ; NATIVE-NOT: .word
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   call void @llvm.riscv.tt.setc16(i32 0, i32 0)
   call void @llvm.riscv.tt.nop()
   call void @llvm.riscv.tt.nop()
   call void @llvm.riscv.tt.nop()
   call void @llvm.riscv.tt.rmwcib0(i32 6, i32 0, i32 255)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 0)
   ret void
 }
 
@@ -82,10 +82,10 @@ define void @omitted_config_boundary() "tensix-executor"="trisc1" {
 ; NATIVE-NEXT: .word 0xf0000049
 ; NATIVE-NEXT: ret
 ; NATIVE-NOT: .word
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   call void @llvm.riscv.tt.setc16(i32 0, i32 0)
   call void @llvm.riscv.tt.rmwcib0(i32 6, i32 0, i32 255)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 0)
   ret void
 }
 
@@ -111,11 +111,11 @@ define void @insufficient_config_boundary() "tensix-executor"="trisc1" {
 ; NATIVE-NEXT: .word 0xf0000049
 ; NATIVE-NEXT: ret
 ; NATIVE-NOT: .word
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
   call void @llvm.riscv.tt.setc16(i32 0, i32 0)
   call void @llvm.riscv.tt.nop()
   call void @llvm.riscv.tt.nop()
   call void @llvm.riscv.tt.rmwcib0(i32 6, i32 0, i32 255)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 0)
   ret void
 }

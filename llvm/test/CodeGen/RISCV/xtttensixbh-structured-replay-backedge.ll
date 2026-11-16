@@ -31,12 +31,12 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 define void @unused_record_clobbers_next_iteration(i32 noundef %count) "tensix-executor"="trisc1" {
 entry:
   call void @llvm.riscv.tt.replay.template.begin(i32 401, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 401)
   %empty = icmp eq i32 %count, 0
   br i1 %empty, label %exit, label %loop
@@ -44,7 +44,7 @@ loop:
   %i = phi i32 [ 0, %entry ], [ %next, %loop ]
   call void @llvm.riscv.tt.replay.template.execute(i32 401)
   call void @llvm.riscv.tt.replay.template.begin(i32 402, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 402)
   %next = add i32 %i, 1
   %done = icmp eq i32 %next, %count
@@ -57,7 +57,7 @@ exit:
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 define void @record_on_each_iteration(i32 noundef %count) "tensix-executor"="trisc1" {
 entry:
@@ -66,11 +66,11 @@ entry:
 loop:
   %i = phi i32 [ 0, %entry ], [ %next, %loop ]
   call void @llvm.riscv.tt.replay.template.begin(i32 403, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 403)
   call void @llvm.riscv.tt.replay.template.execute(i32 403)
   call void @llvm.riscv.tt.replay.template.begin(i32 404, i32 0, i32 1, i32 31)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 404)
   %next = add i32 %i, 1
   %done = icmp eq i32 %next, %count

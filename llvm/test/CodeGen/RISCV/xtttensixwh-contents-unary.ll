@@ -83,7 +83,9 @@ define void @wh_lz_modes() "tensix-executor"="trisc1" {
 ; CHECK: ttsfpstore [[VALUE]], 0, 0, 3
 ; ISEL-LABEL: name: wh_lz_modes
 ; ISEL: [[LOAD:%[0-9]+]]:sfpr = TTSFPLOAD
-; ISEL: [[VALUE:%[0-9]+]]:sfpr = TTSFPLZ [[LOAD]], [[LOAD]], 0
+; ISEL: [[VALUE:%[0-9]+]]:sfpr = TTSFPLZPreserveCC [[LOAD]], [[LOAD]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
+; ISEL: [[LZ2:%[0-9]+]]:sfpr = TTSFPLZ [[VALUE]], [[VALUE]], 2, implicit-def{{( dead)?}} $tt_cc, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
+; ISEL: :sfpr = TTSFPLZPreserveCC [[LZ2]], [[LZ2]], 4, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 entry:
   call void @llvm.riscv.tt.contents.encc(i32 3, i32 10)
   call void @llvm.riscv.tt.contents.config.reset()
@@ -153,7 +155,7 @@ define void @wh_unary_mad_hazards() "tensix-executor"="trisc1" {
 ; ISEL: [[MAD2:%[0-9]+]]:sfpr = TTSFPMAD [[EXP]],
 ; ISEL: [[MAN:%[0-9]+]]:sfpr = TTSFPEXMAN [[MAD2]], [[MAD2]], 0
 ; ISEL: [[MAD3:%[0-9]+]]:sfpr = TTSFPMAD [[MAN]],
-; ISEL: :sfpr = TTSFPLZ [[MAD3]], [[MAD3]], 0
+; ISEL: :sfpr = TTSFPLZPreserveCC [[MAD3]], [[MAD3]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 entry:
   call void @llvm.riscv.tt.contents.encc(i32 3, i32 10)
   call void @llvm.riscv.tt.contents.config.reset()
@@ -185,7 +187,7 @@ define void @wh_unary_contents_loop(i32 %limit) "tensix-executor"="trisc1" {
 ; ISEL: [[PARTIAL:%[0-9]+]]:sfpr = TTSFPLOAD [[OLD]], 0, 3, 14
 ; ISEL: [[EXP:%[0-9]+]]:sfpr = TTSFPEXEXP [[PARTIAL]], [[PARTIAL]], 0
 ; ISEL: [[MAN:%[0-9]+]]:sfpr = TTSFPEXMAN [[EXP]], [[EXP]], 1
-; ISEL: :sfpr = TTSFPLZ [[MAN]], [[MAN]], 4
+; ISEL: :sfpr = TTSFPLZPreserveCC [[MAN]], [[MAN]], 4, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 entry:
   call void @llvm.riscv.tt.contents.encc(i32 3, i32 10)
   call void @llvm.riscv.tt.contents.config.reset()

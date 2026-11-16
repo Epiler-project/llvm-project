@@ -17,9 +17,9 @@
 ; RETIRED: unsupported Tensix intrinsic ABI:
 
 ;--- bound.ll
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @bound_fp16() "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: bound_fp16
@@ -44,9 +44,9 @@ define void @bound_fp16() "tensix-executor"="trisc1" {
 ; MC-NEXT: {{.*}}ttsfpload l3, 513, 2, 1
 ; MC-NEXT: {{.*}}ttsfpstore l3, 1023, 7, 1
 ; MC-NEXT: {{.*}}ret
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 3, i32 9)
-  call void @llvm.riscv.tt.bound.sfpload(i32 3, i32 3, i32 513, i32 2, i32 1)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 3, i32 1023, i32 7, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 3, i32 9)
+  call void @llvm.tt.bh.sfpu.load(i32 3, i32 3, i32 513, i32 2, i32 1)
+  call void @llvm.tt.bh.sfpu.store(i32 3, i32 1023, i32 7, i32 1)
   ret void
 }
 
@@ -75,9 +75,9 @@ define void @bound_fp16_dynamic(i10 noundef %index) "tensix-executor"="trisc2" {
 ; MC: sw
 ; MC: ret
   %offset = zext i10 %index to i32
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 6, i32 9)
-  call void @llvm.riscv.tt.bound.sfpload(i32 6, i32 6, i32 %offset, i32 7, i32 1)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 6, i32 %offset, i32 7, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 6, i32 9)
+  call void @llvm.tt.bh.sfpu.load(i32 6, i32 6, i32 %offset, i32 7, i32 1)
+  call void @llvm.tt.bh.sfpu.store(i32 6, i32 %offset, i32 7, i32 1)
   ret void
 }
 

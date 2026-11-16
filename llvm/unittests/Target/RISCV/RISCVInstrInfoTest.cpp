@@ -9,6 +9,8 @@
 #include "RISCVInstrInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTargetMachine.h"
+#include "RISCVTensixExplicitReplay.h"
+#include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Module.h"
@@ -71,6 +73,106 @@ class RISCVXQCIInstrInfoTest : public RISCVInstrInfoTest {
 protected:
   RISCVXQCIInstrInfoTest() : RISCVInstrInfoTest("+xqci") {}
 };
+
+// Malformed port types/counts cannot be authored through MIRParser: its
+// mandatory initial MachineVerifier rejects them before the target receiver.
+// Construct a valid live native window first, then mutate the actual member
+// to test independent receiver safety without normalization or verifier skips.
+TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsMalformedPortBeforeReadingIt) {
+  const RISCVInstrInfo *TII = ST->getInstrInfo();
+  for (bool RegisterPort : {false, true}) {
+    SCOPED_TRACE(RegisterPort);
+    auto *BB = MF->CreateMachineBasicBlock();
+    MF->push_back(BB);
+    MachineInstr *Header = BuildMI(*BB, BB->end(), DebugLoc(),
+                                   TII->get(RISCV::PseudoTTExplicitSFPUReplay))
+                               .addImm(1)
+                               .addImm(1)
+                               .addImm(1)
+                               .addImm(0)
+                               .getInstr();
+    MachineInstr *Body =
+        BuildMI(*BB, BB->end(), DebugLoc(), TII->get(RISCV::TTSFPNOP))
+            .getInstr();
+    MachineInstr *End = BuildMI(*BB, BB->end(), DebugLoc(),
+                                TII->get(RISCV::PseudoTTReplayRecordEnd))
+                            .getInstr();
+    finalizeBundle(*BB, Header->getIterator(), std::next(End->getIterator()));
+    auto Valid = getTensixReplayBundle(BB->front());
+    ASSERT_TRUE(bool(Valid)) << toString(Valid.takeError());
+
+    Body->setDesc(TII->get(RISCV::PseudoTTREPLAYPort));
+    while (Body->getNumOperands())
+      Body->removeOperand(Body->getNumOperands() - 1);
+    MachineInstrBuilder Port(*MF, Body);
+    Port.addDef(RISCV::X10).addDef(RISCV::X11).addDef(RISCV::X12);
+    if (RegisterPort)
+      Port.addReg(RISCV::X13).addImm(0).addImm(0).addImm(1).addImm(0);
+    auto Invalid = getTensixReplayBundle(BB->front());
+    ASSERT_FALSE(bool(Invalid));
+    EXPECT_EQ(toString(Invalid.takeError()),
+              "explicit replay bundle requires a complete static "
+              "instruction-port shape");
+  }
+}
+
+TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsShortHeaderBeforeReadingIt) {
+  const RISCVInstrInfo *TII = ST->getInstrInfo();
+  auto *BB = MF->CreateMachineBasicBlock();
+  MF->push_back(BB);
+  MachineInstr *Header = BuildMI(*BB, BB->end(), DebugLoc(),
+                                 TII->get(RISCV::PseudoTTExplicitSFPUReplay))
+                             .addImm(1)
+                             .addImm(1)
+                             .addImm(1)
+                             .addImm(0)
+                             .getInstr();
+  BuildMI(*BB, BB->end(), DebugLoc(), TII->get(RISCV::TTSFPNOP));
+  MachineInstr *End = BuildMI(*BB, BB->end(), DebugLoc(),
+                              TII->get(RISCV::PseudoTTReplayRecordEnd))
+                          .getInstr();
+  finalizeBundle(*BB, Header->getIterator(), std::next(End->getIterator()));
+  auto Valid = getTensixReplayBundle(BB->front());
+  ASSERT_TRUE(bool(Valid)) << toString(Valid.takeError());
+
+  while (Header->getNumOperands() > 3)
+    Header->removeOperand(Header->getNumOperands() - 1);
+  auto Invalid = getTensixReplayBundle(BB->front());
+  ASSERT_FALSE(bool(Invalid));
+  EXPECT_EQ(toString(Invalid.takeError()),
+            "Tensix replay control must remain static");
+}
+
+TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsShortNativeBodyBeforeReadingIt) {
+  const RISCVInstrInfo *TII = ST->getInstrInfo();
+  auto *BB = MF->CreateMachineBasicBlock();
+  MF->push_back(BB);
+  MachineInstr *Header = BuildMI(*BB, BB->end(), DebugLoc(),
+                                 TII->get(RISCV::PseudoTTExplicitSFPUReplay))
+                             .addImm(1)
+                             .addImm(1)
+                             .addImm(1)
+                             .addImm(0)
+                             .getInstr();
+  MachineInstr *Body =
+      BuildMI(*BB, BB->end(), DebugLoc(), TII->get(RISCV::TTSFPMOVAll),
+              RISCV::TT_L0)
+          .addReg(RISCV::TT_C9)
+          .getInstr();
+  MachineInstr *End = BuildMI(*BB, BB->end(), DebugLoc(),
+                              TII->get(RISCV::PseudoTTReplayRecordEnd))
+                          .getInstr();
+  finalizeBundle(*BB, Header->getIterator(), std::next(End->getIterator()));
+  auto Valid = getTensixReplayBundle(BB->front());
+  ASSERT_TRUE(bool(Valid)) << toString(Valid.takeError());
+
+  while (Body->getNumOperands())
+    Body->removeOperand(Body->getNumOperands() - 1);
+  auto Invalid = getTensixReplayBundle(BB->front());
+  ASSERT_FALSE(bool(Invalid));
+  EXPECT_EQ(toString(Invalid.takeError()),
+            "explicit replay bundle requires a complete native operand shape");
+}
 
 TEST_P(RISCVInstrInfoTest, IsAddImmediate) {
   const RISCVInstrInfo *TII = ST->getInstrInfo();

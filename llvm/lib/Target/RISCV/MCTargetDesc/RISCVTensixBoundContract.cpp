@@ -8,7 +8,7 @@
 #include "RISCVMCTargetDesc.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGenTypes/MachineValueType.h"
-#include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsTT.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -35,65 +35,199 @@ struct NativeRegisterContents {
 
 // The formal ABI-to-ingress mapping owns no encoding or machine constraints.
 constexpr TensixBoundInstruction Instructions[] = {
-    {Intrinsic::riscv_tt_bound_sfploadi, RISCV::PseudoTTBoundSFPLOADI, 4},
-    {Intrinsic::riscv_tt_bound_sfpload, RISCV::PseudoTTBoundSFPLOAD, 5, 2},
-    {Intrinsic::riscv_tt_bound_sfpstore, RISCV::PseudoTTBoundSFPSTORE, 4, 1},
-    {Intrinsic::riscv_tt_bound_sfpadd, RISCV::PseudoTTBoundSFPADD, 5},
-    {Intrinsic::riscv_tt_bound_sfpmul, RISCV::PseudoTTBoundSFPMUL, 5},
-    {Intrinsic::riscv_tt_bound_sfpmad, RISCV::PseudoTTBoundSFPMAD, 6},
-    {Intrinsic::riscv_tt_bound_sfpiadd, RISCV::PseudoTTBoundSFPIADD, 4},
-    {Intrinsic::riscv_tt_bound_sfpmov, RISCV::PseudoTTBoundSFPMOV, 4},
-    {Intrinsic::riscv_tt_bound_sfpmov_all, RISCV::PseudoTTBoundSFPMOVAll, 2},
-    {Intrinsic::riscv_tt_bound_sfpmov_prng_advance,
+    {Intrinsic::tt_wh_sfpu_loadi, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLOADI, 4},
+    {Intrinsic::tt_wh_sfpu_load, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLOAD, 5, 2},
+    {Intrinsic::tt_wh_sfpu_store, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSTORE, 4, 1},
+    {Intrinsic::tt_wh_sfpu_add, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPADD, 5},
+    {Intrinsic::tt_wh_sfpu_mul, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMUL, 5},
+    {Intrinsic::tt_wh_sfpu_mad, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMAD, 6},
+    {Intrinsic::tt_wh_sfpu_iadd, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPIADD, 4},
+    {Intrinsic::tt_wh_sfpu_mov, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMOV, 4},
+    {Intrinsic::tt_wh_sfpu_mov_all, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMOVAll, 2},
+    {Intrinsic::tt_wh_sfpu_mov_prng_advance, TensixSFPUArchitecture::Wormhole,
      RISCV::PseudoTTBoundSFPMOVPRNGAdvance, 2},
-    {Intrinsic::riscv_tt_bound_sfparecip, RISCV::PseudoTTBoundSFPARECIP, 4},
-    {Intrinsic::riscv_tt_bound_sfpexexp, RISCV::PseudoTTBoundSFPEXEXP, 4},
-    {Intrinsic::riscv_tt_bound_sfpexman, RISCV::PseudoTTBoundSFPEXMAN, 4},
-    {Intrinsic::riscv_tt_bound_sfpabs, RISCV::PseudoTTBoundSFPABS, 4},
-    {Intrinsic::riscv_tt_bound_sfplz, RISCV::PseudoTTBoundSFPLZ, 4},
-    {Intrinsic::riscv_tt_bound_sfpcast, RISCV::PseudoTTBoundSFPCAST, 4},
-    {Intrinsic::riscv_tt_bound_sfpsetexp_i, RISCV::PseudoTTBoundSFPSETEXPI, 5},
-    {Intrinsic::riscv_tt_bound_sfpsetman_i, RISCV::PseudoTTBoundSFPSETMANI, 5},
-    {Intrinsic::riscv_tt_bound_sfpsetsgn_i, RISCV::PseudoTTBoundSFPSETSGNI, 5},
-    {Intrinsic::riscv_tt_bound_sfpsetexp_v, RISCV::PseudoTTBoundSFPSETEXPV, 5},
-    {Intrinsic::riscv_tt_bound_sfpsetman_v, RISCV::PseudoTTBoundSFPSETMANV, 5},
-    {Intrinsic::riscv_tt_bound_sfpsetsgn_v, RISCV::PseudoTTBoundSFPSETSGNV, 5},
-    {Intrinsic::riscv_tt_bound_sfpiadd_i, RISCV::PseudoTTBoundSFPIADDI, 4},
-    {Intrinsic::riscv_tt_bound_sfpshft_i, RISCV::PseudoTTBoundSFPSHFTI, 4},
-    {Intrinsic::riscv_tt_bound_sfpshft_v, RISCV::PseudoTTBoundSFPSHFTV, 4},
-    {Intrinsic::riscv_tt_bound_sfpand, RISCV::PseudoTTBoundSFPAND, 3},
-    {Intrinsic::riscv_tt_bound_sfpor, RISCV::PseudoTTBoundSFPOR, 3},
-    {Intrinsic::riscv_tt_bound_sfpxor, RISCV::PseudoTTBoundSFPXOR, 3},
-    {Intrinsic::riscv_tt_bound_sfpnot, RISCV::PseudoTTBoundSFPNOT, 2},
-    {Intrinsic::riscv_tt_bound_sfpshft2, RISCV::PseudoTTBoundSFPSHFT2, 5},
-    {Intrinsic::riscv_tt_bound_sfpshft2_copy4,
+    {Intrinsic::tt_wh_sfpu_exexp, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPEXEXP, 4},
+    {Intrinsic::tt_wh_sfpu_exman, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPEXMAN, 4},
+    {Intrinsic::tt_wh_sfpu_abs, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPABS, 4},
+    {Intrinsic::tt_wh_sfpu_lz, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLZ, 4},
+    {Intrinsic::tt_wh_sfpu_cast, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCAST, 4},
+    {Intrinsic::tt_wh_sfpu_setexp_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETEXPI, 5},
+    {Intrinsic::tt_wh_sfpu_setexp_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETEXPV, 5},
+    {Intrinsic::tt_wh_sfpu_setman_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETMANI, 5},
+    {Intrinsic::tt_wh_sfpu_setman_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETMANV, 5},
+    {Intrinsic::tt_wh_sfpu_setsgn_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETSGNI, 5},
+    {Intrinsic::tt_wh_sfpu_setsgn_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETSGNV, 5},
+    {Intrinsic::tt_wh_sfpu_iadd_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPIADDI, 4},
+    {Intrinsic::tt_wh_sfpu_shft_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFTI, 4},
+    {Intrinsic::tt_wh_sfpu_and, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPAND, 3},
+    {Intrinsic::tt_wh_sfpu_or, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPOR, 3},
+    {Intrinsic::tt_wh_sfpu_xor, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPXOR, 3},
+    {Intrinsic::tt_wh_sfpu_not, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPNOT, 2},
+    {Intrinsic::tt_wh_sfpu_shft_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFTV, 4},
+    {Intrinsic::tt_wh_sfpu_shft2, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFT2, 5},
+    {Intrinsic::tt_wh_sfpu_shft2_copy4, TensixSFPUArchitecture::Wormhole,
      RISCV::PseudoTTBoundSFPSHFT2Copy4, 9},
-    {Intrinsic::riscv_tt_bound_sfpshft2_rotate4,
+    {Intrinsic::tt_wh_sfpu_shft2_rotate4, TensixSFPUArchitecture::Wormhole,
      RISCV::PseudoTTBoundSFPSHFT2Rotate4, 9},
-    {Intrinsic::riscv_tt_bound_sfpstochrnd_i, RISCV::PseudoTTBoundSFPSTOCHRNDI,
-     6},
-    {Intrinsic::riscv_tt_bound_sfpstochrnd_v, RISCV::PseudoTTBoundSFPSTOCHRNDV,
-     6},
-    {Intrinsic::riscv_tt_bound_sfplutfp32_6r, RISCV::PseudoTTBoundSFPLUTFP32Six,
-     10},
-    {Intrinsic::riscv_tt_bound_sfplutfp32_3r,
+    {Intrinsic::tt_wh_sfpu_stochrnd_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDI, 6},
+    {Intrinsic::tt_wh_sfpu_stochrnd_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDV, 6},
+    {Intrinsic::tt_wh_sfpu_lutfp32_6r, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Six, 10},
+    {Intrinsic::tt_wh_sfpu_lutfp32_3r, TensixSFPUArchitecture::Wormhole,
      RISCV::PseudoTTBoundSFPLUTFP32Three, 17},
-    {Intrinsic::riscv_tt_bound_sfplut, RISCV::PseudoTTBoundSFPLUT, 7},
-    {Intrinsic::riscv_tt_bound_sfpswap, RISCV::PseudoTTBoundSFPSWAP, 5},
-    {Intrinsic::riscv_tt_bound_sfptransp, RISCV::PseudoTTBoundSFPTRANSP, 12},
-    {Intrinsic::riscv_tt_bound_sfpsetcc, RISCV::PseudoTTBoundSFPSETCC, 3},
-    {Intrinsic::riscv_tt_bound_sfpgt, RISCV::PseudoTTBoundSFPGT, 3},
-    {Intrinsic::riscv_tt_bound_sfple, RISCV::PseudoTTBoundSFPLE, 3},
-    {Intrinsic::riscv_tt_bound_sfpencc, RISCV::PseudoTTBoundSFPENCC, 2},
-    {Intrinsic::riscv_tt_bound_sfppushc, RISCV::PseudoTTBoundSFPPUSHC, 2},
-    {Intrinsic::riscv_tt_bound_sfppopc, RISCV::PseudoTTBoundSFPPOPC, 2},
-    {Intrinsic::riscv_tt_bound_sfpconfig_creg,
+    {Intrinsic::tt_wh_sfpu_lut, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLUT, 7},
+    {Intrinsic::tt_wh_sfpu_swap, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSWAP, 5},
+    {Intrinsic::tt_wh_sfpu_transp, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPTRANSP, 12},
+    {Intrinsic::tt_wh_sfpu_setcc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETCC, 3},
+    {Intrinsic::tt_wh_sfpu_encc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPENCC, 2},
+    {Intrinsic::tt_wh_sfpu_pushc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPPUSHC, 2},
+    {Intrinsic::tt_wh_sfpu_popc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPPOPC, 2},
+    {Intrinsic::tt_wh_sfpu_config_creg, TensixSFPUArchitecture::Wormhole,
      RISCV::PseudoTTBoundSFPCONFIGCReg, 4},
-    {Intrinsic::riscv_tt_bound_sfpconfig_lane,
+    {Intrinsic::tt_wh_sfpu_config_lane, TensixSFPUArchitecture::Wormhole,
      RISCV::PseudoTTBoundSFPCONFIGLane, 3},
-    {Intrinsic::riscv_tt_bound_sfpnop, RISCV::PseudoTTBoundSFPNOP, 0},
-    {Intrinsic::riscv_tt_bound_sfpcompc, RISCV::PseudoTTBoundSFPCOMPC, 0},
-    {Intrinsic::riscv_tt_bound_sfpconfig_reset,
+    {Intrinsic::tt_wh_sfpu_nop, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPNOP, 0},
+    {Intrinsic::tt_wh_sfpu_compc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCOMPC, 0},
+    {Intrinsic::tt_wh_sfpu_config_reset, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCONFIGReset, 0},
+    {Intrinsic::tt_bh_sfpu_loadi, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLOADI, 4},
+    {Intrinsic::tt_bh_sfpu_load, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLOAD, 5, 2},
+    {Intrinsic::tt_bh_sfpu_store, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSTORE, 4, 1},
+    {Intrinsic::tt_bh_sfpu_add, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPADD, 5},
+    {Intrinsic::tt_bh_sfpu_mul, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMUL, 5},
+    {Intrinsic::tt_bh_sfpu_mad, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMAD, 6},
+    {Intrinsic::tt_bh_sfpu_iadd, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPIADD, 4},
+    {Intrinsic::tt_bh_sfpu_mov, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMOV, 4},
+    {Intrinsic::tt_bh_sfpu_mov_all, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMOVAll, 2},
+    {Intrinsic::tt_bh_sfpu_mov_prng_advance, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMOVPRNGAdvance, 2},
+    {Intrinsic::tt_bh_sfpu_arecip, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPARECIP, 4},
+    {Intrinsic::tt_bh_sfpu_exexp, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPEXEXP, 4},
+    {Intrinsic::tt_bh_sfpu_exman, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPEXMAN, 4},
+    {Intrinsic::tt_bh_sfpu_abs, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPABS, 4},
+    {Intrinsic::tt_bh_sfpu_lz, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLZ, 4},
+    {Intrinsic::tt_bh_sfpu_cast, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCAST, 4},
+    {Intrinsic::tt_bh_sfpu_setexp_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETEXPI, 5},
+    {Intrinsic::tt_bh_sfpu_setexp_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETEXPV, 5},
+    {Intrinsic::tt_bh_sfpu_setman_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETMANI, 5},
+    {Intrinsic::tt_bh_sfpu_setman_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETMANV, 5},
+    {Intrinsic::tt_bh_sfpu_setsgn_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETSGNI, 5},
+    {Intrinsic::tt_bh_sfpu_setsgn_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETSGNV, 5},
+    {Intrinsic::tt_bh_sfpu_iadd_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPIADDI, 4},
+    {Intrinsic::tt_bh_sfpu_shft_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFTI, 4},
+    {Intrinsic::tt_bh_sfpu_and, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPAND, 3},
+    {Intrinsic::tt_bh_sfpu_or, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPOR, 3},
+    {Intrinsic::tt_bh_sfpu_xor, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPXOR, 3},
+    {Intrinsic::tt_bh_sfpu_not, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPNOT, 2},
+    {Intrinsic::tt_bh_sfpu_shft_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFTV, 4},
+    {Intrinsic::tt_bh_sfpu_shft2, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFT2, 5},
+    {Intrinsic::tt_bh_sfpu_shft2_copy4, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFT2Copy4, 9},
+    {Intrinsic::tt_bh_sfpu_shft2_rotate4, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFT2Rotate4, 9},
+    {Intrinsic::tt_bh_sfpu_stochrnd_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDI, 6},
+    {Intrinsic::tt_bh_sfpu_stochrnd_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDV, 6},
+    {Intrinsic::tt_bh_sfpu_lutfp32_6r, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Six, 10},
+    {Intrinsic::tt_bh_sfpu_lutfp32_3r, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Three, 17},
+    {Intrinsic::tt_bh_sfpu_lut, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLUT, 7},
+    {Intrinsic::tt_bh_sfpu_swap, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSWAP, 5},
+    {Intrinsic::tt_bh_sfpu_transp, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPTRANSP, 12},
+    {Intrinsic::tt_bh_sfpu_setcc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETCC, 3},
+    {Intrinsic::tt_bh_sfpu_gt, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPGT, 3},
+    {Intrinsic::tt_bh_sfpu_le, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLE, 3},
+    {Intrinsic::tt_bh_sfpu_encc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPENCC, 2},
+    {Intrinsic::tt_bh_sfpu_pushc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPPUSHC, 2},
+    {Intrinsic::tt_bh_sfpu_popc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPPOPC, 2},
+    {Intrinsic::tt_bh_sfpu_config_creg, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCONFIGCReg, 4},
+    {Intrinsic::tt_bh_sfpu_config_lane, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCONFIGLane, 3},
+    {Intrinsic::tt_bh_sfpu_nop, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPNOP, 0},
+    {Intrinsic::tt_bh_sfpu_compc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCOMPC, 0},
+    {Intrinsic::tt_bh_sfpu_config_reset, TensixSFPUArchitecture::Blackhole,
      RISCV::PseudoTTBoundSFPCONFIGReset, 0},
 };
 
@@ -248,7 +382,10 @@ Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
     Old();
     break;
   case RISCV::PseudoTTBoundSFPLZ:
-    Select(RISCV::TTSFPLZ, {0, 1, 2, 3});
+    Select(selectTensixSFPUDescriptor(
+               RISCV::TTSFPLZ,
+               Args[3].Kind == ValueKind::Constant ? Args[3].Constant : -1),
+           {0, 1, 2, 3});
     Old();
     break;
   case RISCV::PseudoTTBoundSFPCAST:
@@ -592,14 +729,20 @@ RISCV::getTensixBoundInstruction(Intrinsic::ID ID) {
       find_if(Instructions, [ID](const auto &Info) { return Info.ID == ID; });
   return It == std::end(Instructions) ? nullptr : It;
 }
+std::optional<TensixSFPUArchitecture>
+RISCV::getTensixBoundSFPUArchitecture(Intrinsic::ID ID) {
+  const auto *Info = getTensixBoundInstruction(ID);
+  return Info ? std::optional(Info->Architecture) : std::nullopt;
+}
 const TensixBoundInstruction *
-RISCV::getTensixBoundInstructionForPseudo(unsigned Opcode) {
+RISCV::getTensixBoundInstructionForPseudo(unsigned Opcode,
+                                          TensixSFPUArchitecture Architecture) {
   if (Opcode == RISCV::PseudoTTBoundSFPLOADDynamic)
     Opcode = RISCV::PseudoTTBoundSFPLOAD;
   if (Opcode == RISCV::PseudoTTBoundSFPSTOREDynamic)
     Opcode = RISCV::PseudoTTBoundSFPSTORE;
-  auto It = find_if(Instructions, [Opcode](const auto &Info) {
-    return Info.Pseudo == Opcode;
+  auto It = find_if(Instructions, [Opcode, Architecture](const auto &Info) {
+    return Info.Pseudo == Opcode && Info.Architecture == Architecture;
   });
   return It == std::end(Instructions) ? nullptr : It;
 }
@@ -641,7 +784,13 @@ RISCV::getTensixSFPUInstructionSemantics(
          *NativeFields[2] != 2 && *NativeFields[2] != 4))
       return invalid("full SFPLOADI requires a complete-word mode");
     Transfer = {TensixSFPUTransferKind::ImmediateFull,
-                0, 0xffffffffu, 0xffffffffu, true, false, true, true};
+                0,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                false,
+                true,
+                true};
   } else if (Opcode == RISCV::TTSFPLOADI) {
     if (NativeFields.size() != 4 || !NativeFields[3])
       return invalid("SFPLOADI transfer requires a constant mode");
@@ -698,6 +847,50 @@ RISCV::getTensixSFPUInstructionSemantics(
       Transfer.Kind = TensixSFPUTransferKind::LaneWise;
       Transfer.Inputs.push_back({2, 0xffffffffu});
     }
+  } else if (Opcode == RISCV::TTSFPSETSGN && NativeFields.size() == 5 &&
+             NativeFields[4] && *NativeFields[4] == 1) {
+    // Immediate sign replacement copies each magnitude bit independently.
+    // The literal sign is known even when some magnitude bits are unknown.
+    // Vector mode shares this opcode but reads a sign donor instead.
+    Transfer = {TensixSFPUTransferKind::MaskedIdentity,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true};
+    Transfer.CopiedBits = 0x7fffffffu;
+    Transfer.ConstantBits = 0x80000000u;
+  } else if (Opcode == RISCV::TTSFPLZPreserveCC) {
+    if (!NativeFields[3] || (*NativeFields[3] != 0 && *NativeFields[3] != 4))
+      return invalid("flag-preserving SFPLZ requires mode 0 or 4");
+    // Magnitude mode clears raw bit31; it is not signed integer ABS. Only
+    // the numerical source is demanded in active lanes. Old supplies the
+    // inactive destination, and both modes retain the reaching CC flags.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, *NativeFields[3] == 4 ? 0x7fffffffu : 0xffffffffu}}};
+  } else if (Opcode == RISCV::TTSFPABS) {
+    // Both modes consume every source bit in each active lane. Float ABS
+    // preserves negative NaNs; integer INT_MIN retains 0x80000000. Neither
+    // mode proves a constant sign bit or an identity copy. Old is only the
+    // inactive-lane passthrough, independently of source initializedness.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}}};
   } else if (Opcode == RISCV::TTSFPSHFT2 && NativeFields.size() > 3 &&
              NativeFields[3] && *NativeFields[3] == 3) {
     // SUBVEC_SHFLROR1 reads the pre-instruction VC snapshot and rotates
@@ -714,10 +907,12 @@ RISCV::getTensixSFPUInstructionSemantics(
                 true};
     for (unsigned Lane = 0; Lane != 32; ++Lane)
       Transfer.SourceLanes.push_back((Lane & 7) ? Lane - 1 : Lane + 7);
-  } else if (Opcode == RISCV::TTSFPADD || Opcode == RISCV::TTSFPMUL) {
-    // Direct MAD-unit forms read both arithmetic inputs in active lanes.
-    // The old destination is only the inactive-lane passthrough; C10 (one)
-    // or C9 (zero) remains an independent native fixed-register read effect.
+  } else if (Opcode == RISCV::TTSFPADD || Opcode == RISCV::TTSFPMUL ||
+             Opcode == RISCV::TTSFPMAD) {
+    // Direct MAD-unit forms read their arithmetic inputs in active lanes.
+    // The old destination is only the inactive-lane passthrough. ADD/MUL
+    // retain their native implicit C10/C9 read effects; MAD has an explicit
+    // third input instead of either implicit constant.
     // The descriptors receive only direct mode bits 0..1, never indirect
     // source/destination selection. This proves initialized bits, not a
     // different floating-point algorithm or rounding contract.
@@ -730,6 +925,8 @@ RISCV::getTensixSFPUInstructionSemantics(
                 true,
                 true,
                 {{2, 0xffffffffu}, {3, 0xffffffffu}}};
+    if (Opcode == RISCV::TTSFPMAD)
+      Transfer.Inputs.push_back({4, 0xffffffffu});
   } else if (Opcode == RISCV::TTSFPARECIP) {
     if (!NativeFields[3])
       return invalid("SFPARECIP transfer requires a constant mode");
@@ -812,6 +1009,7 @@ RISCV::getTensixSFPUInstructionSemantics(
     } else if (Opcode != RISCV::TTSFPLOADIFull) {
       Transfer.OldArgument = 1;
       if (Transfer.Kind == TensixSFPUTransferKind::Identity ||
+          Transfer.Kind == TensixSFPUTransferKind::MaskedIdentity ||
           Transfer.Kind == TensixSFPUTransferKind::LanePermutation)
         Transfer.SourceArgument = 2;
     }
@@ -834,9 +1032,8 @@ RISCV::getTensixSFPUInstructionSemantics(
   } else if (Opcode == RISCV::TTSFPCONFIGReset) {
     // Configuration low bits are cleared under the first eight columns' CC
     // predicates, independently of the current Configuration ROW_MASK field.
-    Result.LaneControl =
-        TensixSFPULaneConfigReset{8, true, true, true, true, true, true, true,
-                                 true};
+    Result.LaneControl = TensixSFPULaneConfigReset{8,    true, true, true, true,
+                                                   true, true, true, true};
   } else if (Opcode == RISCV::TTSFPPUSHC) {
     Result.LaneControl =
         TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Push};
@@ -864,6 +1061,10 @@ RISCV::getTensixSFPUInstructionSemantics(
   // transfer support. Adding a transfer must not silently prove that a new
   // instruction or mode has no configuration requirements.
   switch (Opcode) {
+  case RISCV::TTSFPSETSGN:
+    if (NativeFields.size() != 5 || !NativeFields[4] || *NativeFields[4] != 1)
+      break;
+    [[fallthrough]];
   case RISCV::TTSFPMOVAll:
   case RISCV::TTSFPMOV:
   case RISCV::TTSFPMOVNeg:
@@ -875,6 +1076,9 @@ RISCV::getTensixSFPUInstructionSemantics(
   case RISCV::TTSFPXOR:
   case RISCV::TTSFPADD:
   case RISCV::TTSFPMUL:
+  case RISCV::TTSFPMAD:
+  case RISCV::TTSFPABS:
+  case RISCV::TTSFPLZPreserveCC:
   case RISCV::TTSFPARECIP:
   case RISCV::TTSFPNOT: {
     // TEN-2932 affects the actual write, not its source or tied-old input.
@@ -891,6 +1095,7 @@ RISCV::getTensixSFPUInstructionSemantics(
     // complete configuration contract in this bounded subset.
     switch (*NativeFields[3]) {
     case 0:
+    case 4:
     case 8:
     case 10:
       Result.Configuration.emplace();
@@ -953,7 +1158,7 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
   // An unbound CONFIG destination is a symbolic parameter over all actual
   // descriptors. Check their complete projected structure before returning a
   // candidate set; no representative CReg becomes a provisional assignment.
-  if (ID == Intrinsic::riscv_tt_bound_sfpconfig_creg &&
+  if (Info->Pseudo == RISCV::PseudoTTBoundSFPCONFIGCReg &&
       Args[1].Kind == ValueKind::UnboundRegister) {
     std::optional<TensixBoundSFPUContract> Common;
     SmallVector<uint32_t, 16> Candidates;
@@ -1257,7 +1462,9 @@ RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
                                ? std::nullopt
                                : std::optional<int64_t>(Value));
   }
-  if (Error E = verifyTensixMCInstructionFields(Fields, instructions()))
+  if (Error E = Info->Architecture == TensixSFPUArchitecture::Wormhole
+                    ? verifyTensixWormholeInstruction(Fields, instructions())
+                    : verifyTensixMCInstructionFields(Fields, instructions()))
     return std::move(E);
   auto Semantics =
       getTensixSFPUInstructionSemantics(Native.Opcode, NativeFields);
@@ -1339,6 +1546,12 @@ Error RISCV::verifyTensixBoundSFPUOperands(
   if (!Contract)
     return Contract.takeError();
   return Error::success();
+}
+
+unsigned RISCV::selectTensixSFPUDescriptor(unsigned Opcode, int64_t Modifier) {
+  if (Opcode == RISCV::TTSFPLZ && (Modifier == 0 || Modifier == 4))
+    return RISCV::TTSFPLZPreserveCC;
+  return Opcode;
 }
 
 Expected<TensixBoundNativeInstruction>

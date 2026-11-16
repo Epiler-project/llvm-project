@@ -25,81 +25,81 @@
 ; CARRIER: SFPU carrier constants require explicit target initialization
 
 ;--- reserved.ll
-declare void @llvm.riscv.tt.bound.sfpsetcc(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.setcc(i32 immarg, i32 immarg, i32 immarg)
 define void @reserved() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpsetcc(i32 0, i32 1, i32 2)
+  call void @llvm.tt.bh.sfpu.setcc(i32 0, i32 1, i32 2)
   ret void
 }
 ;--- config.ll
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @config() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpconfig.creg(i32 0, i32 11, i32 2, i32 8)
+  call void @llvm.tt.bh.sfpu.config.creg(i32 0, i32 11, i32 2, i32 8)
   ret void
 }
 ;--- transpose.ll
-declare void @llvm.riscv.tt.bound.sfptransp(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.transp(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @transpose() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfptransp(i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 0, i32 0, i32 1, i32 2, i32 3)
+  call void @llvm.tt.bh.sfpu.transp(i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 0, i32 0, i32 1, i32 2, i32 3)
   ret void
 }
 ;--- vector-field.ll
-declare void @llvm.riscv.tt.bound.sfpsetexp.v(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.setexp.v(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @vector_field() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpsetexp.v(i32 2, i32 2, i32 0, i32 3, i32 2)
+  call void @llvm.tt.bh.sfpu.setexp.v(i32 2, i32 2, i32 0, i32 3, i32 2)
   ret void
 }
 ;--- vector-mode.ll
-declare void @llvm.riscv.tt.bound.sfpshft.v(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.shft.v(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @vector_mode() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpshft.v(i32 2, i32 2, i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.shft.v(i32 2, i32 2, i32 0, i32 1)
   ret void
 }
 ;--- immediate.ll
-declare void @llvm.riscv.tt.bound.sfploadi(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.loadi(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @immediate() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfploadi(i32 0, i32 0, i32 65536, i32 2)
+  call void @llvm.tt.bh.sfpu.loadi(i32 0, i32 0, i32 65536, i32 2)
   ret void
 }
 ;--- stochrnd.ll
-declare void @llvm.riscv.tt.bound.sfpstochrnd.i(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.stochrnd.i(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @stochrnd() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpstochrnd.i(i32 0, i32 0, i32 1, i32 32, i32 4, i32 0)
+  call void @llvm.tt.bh.sfpu.stochrnd.i(i32 0, i32 0, i32 1, i32 32, i32 4, i32 0)
   ret void
 }
 ;--- offset-range.ll
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @offset_range(i32 noundef %address) "tensix-executor"="trisc1" {
   %offset = and i32 %address, 2047
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %offset, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %offset, i32 0, i32 4)
   ret void
 }
 ;--- feature.ll
-declare void @llvm.riscv.tt.bound.sfpnop()
+declare void @llvm.tt.bh.sfpu.nop()
 define void @feature() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.tt.bh.sfpu.nop()
   ret void
 }
 ;--- attribute.ll
-declare void @llvm.riscv.tt.bound.sfpnop()
+declare void @llvm.tt.bh.sfpu.nop()
 define void @attribute() {
-  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.tt.bh.sfpu.nop()
   ret void
 }
 ;--- constant.ll
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 define void @constant(i32 noundef %number) "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 %number, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 %number, i32 9)
   ret void
 }
 ;--- carrier.ll
-declare void @llvm.riscv.tt.bound.sfpnop()
+declare void @llvm.tt.bh.sfpu.nop()
 define void @carrier(i1 %again, ptr %sink) "tensix-executor"="trisc1" {
 entry:
   br label %loop
 loop:
   %unbound = phi <32 x i32> [zeroinitializer, %entry], [%unbound, %loop]
   store volatile <32 x i32> %unbound, ptr %sink
-  call void @llvm.riscv.tt.bound.sfpnop()
+  call void @llvm.tt.bh.sfpu.nop()
   br i1 %again, label %loop, label %exit
 exit:
   ret void

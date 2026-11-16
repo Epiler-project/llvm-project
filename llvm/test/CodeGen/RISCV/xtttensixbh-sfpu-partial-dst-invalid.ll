@@ -8,33 +8,33 @@
 ; MODE: format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ; OFFSET: bound Dst offset must be defined and non-poison
 ;--- tie14.ll
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @tie14() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 1, i32 0, i32 7, i32 14)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 1, i32 0, i32 7, i32 14)
   ret void
 }
 ;--- tie15.ll
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @tie15() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 1, i32 0, i32 7, i32 15)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 1, i32 0, i32 7, i32 15)
   ret void
 }
 ;--- stack10.ll
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @stack10() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 0, i32 7, i32 10)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 0, i32 7, i32 10)
   ret void
 }
 ;--- integer13.ll
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @integer13() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 0, i32 7, i32 13)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 0, i32 7, i32 13)
   ret void
 }
 ;--- offset.ll
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
 define void @bad_offset(i10 %index) "tensix-executor"="trisc1" {
   %offset = zext i10 %index to i32
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %offset, i32 7, i32 14)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %offset, i32 7, i32 14)
   ret void
 }

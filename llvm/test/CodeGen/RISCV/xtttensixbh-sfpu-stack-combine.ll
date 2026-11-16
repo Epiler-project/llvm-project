@@ -1,8 +1,8 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs -stop-after=finalize-isel %s -o - | FileCheck %s --check-prefix=ISEL
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=ASM
 
-declare void @llvm.riscv.tt.bound.sfppushc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfppopc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.pushc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.popc(i32 immarg, i32 immarg)
 
 ; Modes three and four peek at the saved frame without consuming it. Both
 ; original frames still require a plain pop, and only CC/issue are modified.
@@ -22,11 +22,11 @@ define void @combine_modes() "tensix-executor"="trisc1" {
 ; ASM-NEXT: .word 0x20000002
 ; ASM-NEXT: .word 0x20000002
 ; ASM-NEXT: ret
-  call void @llvm.riscv.tt.bound.sfppushc(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfppushc(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 3)
-  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfppopc(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.pushc(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.pushc(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.popc(i32 0, i32 3)
+  call void @llvm.tt.bh.sfpu.popc(i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.popc(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.popc(i32 0, i32 0)
   ret void
 }

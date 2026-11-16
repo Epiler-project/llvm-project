@@ -4,11 +4,11 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=NO-SPILL
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs %s -o - | FileCheck %s --check-prefix=NO-SPILL
 
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmul(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mul(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 ; Final words follow the ISA opcode/field encoding (rotate-left two bits),
 ; independently of the generated opcode table. NEXT checks exclude repair ops.
@@ -34,11 +34,11 @@ define void @bound_load_mul_store() "tensix-executor"="trisc1" {
 ; NO-SPILL-NEXT: .word 0xc88c0021
 ; NO-SPILL-NEXT: ret
 ; NO-SPILL-NOT: lw
-  call void @llvm.riscv.tt.bound.sfpencc(i32 3, i32 10)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 0, i32 0, i32 3)
-  call void @llvm.riscv.tt.bound.sfpload(i32 1, i32 1, i32 4, i32 0, i32 3)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 9)
-  call void @llvm.riscv.tt.bound.sfpmul(i32 2, i32 2, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 2, i32 8, i32 0, i32 3)
+  call void @llvm.tt.bh.sfpu.encc(i32 3, i32 10)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 0, i32 0, i32 3)
+  call void @llvm.tt.bh.sfpu.load(i32 1, i32 1, i32 4, i32 0, i32 3)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 9)
+  call void @llvm.tt.bh.sfpu.mul(i32 2, i32 2, i32 0, i32 1, i32 0)
+  call void @llvm.tt.bh.sfpu.store(i32 2, i32 8, i32 0, i32 3)
   ret void
 }

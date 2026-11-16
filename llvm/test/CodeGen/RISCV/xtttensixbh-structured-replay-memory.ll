@@ -15,7 +15,7 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 define void @record_only_memory(ptr %p) "tensix-executor"="trisc1" {
 ; SELECT-LABEL: name: record_only_memory
@@ -44,7 +44,7 @@ define void @record_only_memory(ptr %p) "tensix-executor"="trisc1" {
 ; FINAL: SW {{.*}} :: (volatile store (s32) into %ir.p)
   store volatile i32 17, ptr %p, align 4
   call void @llvm.riscv.tt.replay.template.begin(i32 503, i32 0, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 503)
   store volatile i32 23, ptr %p, align 4
   call void @llvm.riscv.tt.replay.template.execute(i32 503)
@@ -79,7 +79,7 @@ define void @record_and_execute_memory(ptr %p) "tensix-executor"="trisc1" {
 ; FINAL: SW {{.*}} :: (volatile store (s32) into %ir.p)
   store volatile i32 37, ptr %p, align 4
   call void @llvm.riscv.tt.replay.template.begin(i32 509, i32 1, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 509)
   store volatile i32 41, ptr %p, align 4
   call void @llvm.riscv.tt.replay.template.execute(i32 509)

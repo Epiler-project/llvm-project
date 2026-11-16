@@ -109,6 +109,14 @@ def TTSFPLZ : TensixUnary<0x81, "ttsfplz", 0x5555> {
   let WormholeSupported = 1;
   let Defs = [TT_CC, TT_ISSUE];
 }
+// Modes without CC_NE0 or CC_COMP consume the predicate but preserve flags.
+// Keep the canonical mnemonic/decoder above; this codegen alias differs only
+// in its exact implicit dependencies and admitted modifiers.
+def TTSFPLZPreserveCC : TensixUnary<0x81, "ttsfplz", 0x0011> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let isCodeGenOnly = 1;
+}
 def TTSFPCAST : TensixUnary<0x90, "ttsfpcast", 0x000f> {
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
@@ -234,12 +242,54 @@ def TTSFPSHFT2Rotate4 : TensixPhysicalInst<0x94, (outs),
   let Defs = [TT_L0, TT_L1, TT_L2, TT_L3, TT_ISSUE];
 }
 
+// WH encodes a stochastic/nearest boolean in bit21 and zeros the unused VB
+// field of immediate forms. BH uses bits22:21 and retains VB=VC to avoid a
+// spurious scheduling dependency. Logical round values agree: 0 nearest,
+// 1 stochastic; only BH has 2 zero. Field legality stays descriptor-owned.
+class TensixStochRoundEncoding<bit Immediate, bit Wormhole>
+    : InstructionEncoding {
+  let Size = 4;
+  let DecoderNamespace = "Tensix";
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0x8e000000;
+  bits<4> dst;
+  bits<4> src;
+  bits<5> descale;
+  bits<4> mode;
+  bits<2> round;
+  let RawWord{22} = !if(Wormhole, 0, round{1});
+  let RawWord{21} = round{0};
+  let RawWord{20-16} = !if(Immediate, descale, 0);
+  let RawWord{15-12} = !if(Immediate, !if(Wormhole, 0, src), descale{3-0});
+  let RawWord{11-8} = src;
+  let RawWord{7-4} = dst;
+  let RawWord{3-0} = mode;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+def TTSFPSTOCHRNDIBlackholeEncoding : TensixStochRoundEncoding<1, 0>;
+def TTSFPSTOCHRNDIWormholeEncoding : TensixStochRoundEncoding<1, 1>;
+def TTSFPSTOCHRNDVBlackholeEncoding : TensixStochRoundEncoding<0, 0> {
+  let mode{3-1} = 0b010;
+}
+def TTSFPSTOCHRNDVWormholeEncoding : TensixStochRoundEncoding<0, 1> {
+  let mode{3-1} = 0b010;
+}
+
 class TensixStochRound<string Name, bit Immediate>
     : TensixPhysicalInst<0x8e, (outs SFPR:$dst),
         !if(Immediate,
           (ins SFPR:$old, SFPRRead:$src, uimm8:$descale, uimm4:$mode, uimm2:$round),
           (ins SFPR:$old, SFPRRead:$src, SFPRRead:$descale, uimm4:$mode, uimm2:$round)),
         Name, "$dst, $src, $descale, $mode, $round"> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, -1, -1, -1, 1];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [!cast<InstructionEncoding>(NAME # "BlackholeEncoding"),
+       !cast<InstructionEncoding>(NAME # "WormholeEncoding")]>;
   bits<4> dst;
   bits<4> src;
   bits<5> descale;
@@ -254,7 +304,7 @@ class TensixStochRound<string Name, bit Immediate>
   let Constraints = "$dst = $old";
   let ModeOperandIndex = 4;
   let AllowedModes = !if(Immediate, 0x30cf, 0x0030);
-  // Blackhole advances PRNG before selecting even nearest/zero rounding.
+  // Both architectures advance PRNG even when rounding is deterministic.
   let Uses = [TT_CC, TT_CONFIG, TT_ISSUE, TT_PRNG];
   let Defs = [TT_ISSUE, TT_PRNG];
 }

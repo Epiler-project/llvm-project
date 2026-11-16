@@ -7,9 +7,11 @@
 # reads its current value, so an earlier dead source definition must survive.
 # Recording executes its native body here; it is not record-only payload.
 # CHECK-LABEL: name: replay_reads_new_source
-# CHECK: PseudoTTExplicitSFPUReplay 1, 1, 1, 5,
+# CHECK: BUNDLE
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 1, 1, 5,
 # CHECK-NEXT: $tt_l0 = TTSFPMOVAll $tt_l1,
 # CHECK-NEXT: PseudoTTReplayRecordEnd
+# CHECK-NEXT: }
 # CHECK-NEXT: {{^    }}$tt_l1 = TTSFPMOVAll $tt_c9,
 # CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 1, 5,
 # CHECK-SAME: implicit $tt_l1

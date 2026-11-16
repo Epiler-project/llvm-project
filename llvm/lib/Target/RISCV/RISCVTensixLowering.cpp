@@ -124,7 +124,8 @@ contentsInstruction(Intrinsic::ID ID,
     Select(RISCV::TTSFPABS, {0, 1, 2});
     break;
   case Intrinsic::riscv_tt_contents_lz:
-    Select(RISCV::TTSFPLZ, {0, 1, 2});
+    Select(RISCV::selectTensixSFPUDescriptor(RISCV::TTSFPLZ, Mode(2)),
+           {0, 1, 2});
     break;
   case Intrinsic::riscv_tt_contents_cast:
     Select(RISCV::TTSFPCAST, {0, 1, 2});

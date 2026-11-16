@@ -31,7 +31,7 @@ declare void @llvm.riscv.tt.mop.port(i32 immarg, i32, i32, i32)
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 
 define void @mixed_structured_dynamic_mop(i32 %count) "tensix-executor"="trisc1" {
 entry:
@@ -43,7 +43,7 @@ entry:
   call void @llvm.riscv.tt.nop.mop(i32 7)
   call void @llvm.riscv.tt.nop.mop(i32 8)
   call void @llvm.riscv.tt.replay.template.begin(i32 801, i32 0, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 801)
   %nonzero = icmp ne i32 %count, 0
   br i1 %nonzero, label %loop, label %exit
@@ -73,7 +73,7 @@ define void @mixed_structured_dynamic_mop_record_and_execute(i32 %zmask, i32 %lo
   call void @llvm.riscv.tt.nop.mop(i32 7)
   call void @llvm.riscv.tt.nop.mop(i32 8)
   call void @llvm.riscv.tt.replay.template.begin(i32 802, i32 1, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 802)
   call void @llvm.riscv.tt.replay.template.execute(i32 802)
   call void @llvm.riscv.tt.mop.port(i32 0, i32 %z, i32 %l, i32 1)
@@ -84,13 +84,13 @@ define void @mixed_structured_dynamic_mop_record_and_execute(i32 %zmask, i32 %lo
 
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.nop.mop(i32 immarg)
 
 define void @mop_inside_structured_replay() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 803, i32 0, i32 1, i32 5)
   call void @llvm.riscv.tt.nop.mop(i32 2)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 803)
   ret void
 }

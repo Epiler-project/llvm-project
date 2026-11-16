@@ -13,8 +13,8 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpload(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @rerecord_mode0(i10 noundef %base, i32 noundef %count) "tensix-executor"="trisc1" {
 entry:
@@ -27,8 +27,8 @@ record:
   %logical = add i32 %origin, %row
   %address = and i32 %logical, 1023
   call void @llvm.riscv.tt.replay.template.begin(i32 727, i32 0, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %address, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 256, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %address, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 256, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 727)
   br label %execute
 execute:
@@ -54,8 +54,8 @@ record:
   %logical = add i32 %origin, %row
   %address = and i32 %logical, 1023
   call void @llvm.riscv.tt.replay.template.begin(i32 727, i32 0, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %address, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 256, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %address, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 256, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 727)
   br label %execute
 execute:
@@ -87,8 +87,8 @@ record:
   %logical = add i32 %origin, %row
   %address = and i32 %logical, 1023
   call void @llvm.riscv.tt.replay.template.begin(i32 727, i32 1, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %address, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 256, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %address, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 256, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 727)
   br label %execute
 execute:
@@ -114,8 +114,8 @@ record:
   %logical = add i32 %origin, %row
   %address = and i32 %logical, 1023
   call void @llvm.riscv.tt.replay.template.begin(i32 727, i32 1, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpload(i32 0, i32 0, i32 %address, i32 0, i32 4)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 256, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %address, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 256, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 727)
   br label %execute
 execute:

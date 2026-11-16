@@ -32,9 +32,11 @@
 # one required executing NOP belongs after the end marker, before IADD.
 # RECORD-ONLY-LABEL: name: record_only_keeps_pending
 # RECORD-ONLY: $tt_l0 = TTSFPMAD
+# RECORD-ONLY-NEXT: BUNDLE {{.*}}{
 # RECORD-ONLY-NEXT: PseudoTTExplicitSFPUReplay 1, 0, 1, 5,
 # RECORD-ONLY-NEXT: PseudoTTSFPURecordWord
 # RECORD-ONLY-NEXT: PseudoTTReplayRecordEnd
+# RECORD-ONLY-NEXT: }
 # RECORD-ONLY-NEXT: TTSFPNOP
 # RECORD-ONLY-NEXT: $tt_l0 = TTSFPIADD
 # RECORD-ONLY-NEXT: PseudoRET
@@ -44,9 +46,11 @@
 # RECORD-EXECUTE-LABEL: name: record_and_execute_entry_gap
 # RECORD-EXECUTE: $tt_l0 = TTSFPMAD
 # RECORD-EXECUTE-NEXT: TTSFPNOP
+# RECORD-EXECUTE-NEXT: BUNDLE {{.*}}{
 # RECORD-EXECUTE-NEXT: PseudoTTExplicitSFPUReplay 1, 1, 1, 7,
 # RECORD-EXECUTE-NEXT: $tt_l0 = TTSFPIADD
 # RECORD-EXECUTE-NEXT: PseudoTTReplayRecordEnd
+# RECORD-EXECUTE-NEXT: }
 # RECORD-EXECUTE-NEXT: PseudoRET
 
 #--- partial-safe.mir

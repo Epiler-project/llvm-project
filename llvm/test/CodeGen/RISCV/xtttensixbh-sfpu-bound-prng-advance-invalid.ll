@@ -15,36 +15,36 @@
 ; selector and cannot request a preservation copy for mismatched old/dst.
 
 ;--- tie.ll
-declare void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.prng.advance(i32 immarg, i32 immarg)
 define void @mismatched_old() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 1)
   ret void
 }
 
 ;--- destination.ll
-declare void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.prng.advance(i32 immarg, i32 immarg)
 define void @constant_destination() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 9, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 9, i32 9)
   ret void
 }
 
 ;--- old.ll
-declare void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.prng.advance(i32 immarg, i32 immarg)
 define void @constant_old_is_not_prng() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 9)
   ret void
 }
 
 ;--- executor.ll
-declare void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.prng.advance(i32 immarg, i32 immarg)
 define void @wrong_executor() "tensix-executor"="brisc" {
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 0)
   ret void
 }
 
 ;--- ordinary-move.ll
-declare void @llvm.riscv.tt.bound.sfpmov(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @ordinary_move_cannot_read_prng() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov(i32 0, i32 0, i32 9, i32 8)
+  call void @llvm.tt.bh.sfpu.mov(i32 0, i32 0, i32 9, i32 8)
   ret void
 }

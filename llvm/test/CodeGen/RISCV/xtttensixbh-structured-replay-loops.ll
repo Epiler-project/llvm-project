@@ -47,50 +47,50 @@
 declare void @llvm.riscv.tt.replay.template.begin(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 declare void @llvm.riscv.tt.replay.template.end(i32 immarg)
 declare void @llvm.riscv.tt.replay.template.execute(i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @structured_loop_record_only(i32 %count) "tensix-executor"="trisc1" {
 entry:
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 10)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 10)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 9)
   call void @llvm.riscv.tt.replay.template.begin(i32 23, i32 0, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 23)
   %nonzero = icmp ne i32 %count, 0
   br i1 %nonzero, label %loop, label %exit
 loop:
   %i = phi i32 [0, %entry], [%next, %loop]
   call void @llvm.riscv.tt.replay.template.execute(i32 23)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 10)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 10)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 8, i32 0, i32 4)
   %next = add i32 %i, 1
   %more = icmp ult i32 %next, %count
   br i1 %more, label %loop, label %exit
 exit:
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   ret void
 }
 
 define void @structured_loop_record_and_execute(i32 %count) "tensix-executor"="trisc1" {
 entry:
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 10)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 9)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 10)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 9)
   call void @llvm.riscv.tt.replay.template.begin(i32 71, i32 1, i32 1, i32 5)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 71)
   %nonzero = icmp ne i32 %count, 0
   br i1 %nonzero, label %loop, label %exit
 loop:
   %i = phi i32 [0, %entry], [%next, %loop]
   call void @llvm.riscv.tt.replay.template.execute(i32 71)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 1, i32 10)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 8, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 1, i32 10)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 8, i32 0, i32 4)
   %next = add i32 %i, 1
   %more = icmp ult i32 %next, %count
   br i1 %more, label %loop, label %exit
 exit:
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   ret void
 }
 

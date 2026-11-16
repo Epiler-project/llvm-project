@@ -4,6 +4,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsTT.h"
 #include "llvm/Target/RISCV/RISCVTensix.h"
 #include "gtest/gtest.h"
 
@@ -95,6 +96,6 @@ TEST_P(RISCVTensixComparisonTest, AllowsReadAliasAndRejectsWritesOrStackModes) {
 }
 
 INSTANTIATE_TEST_SUITE_P(BlackholeConditionOnly, RISCVTensixComparisonTest,
-                         testing::Values(Intrinsic::riscv_tt_bound_sfpgt,
-                                         Intrinsic::riscv_tt_bound_sfple));
+                         testing::Values(Intrinsic::tt_bh_sfpu_gt,
+                                         Intrinsic::tt_bh_sfpu_le));
 } // namespace

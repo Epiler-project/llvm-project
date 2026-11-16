@@ -72,16 +72,16 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @record_only_binding() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 10)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 10)
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 1)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 1)
@@ -92,7 +92,7 @@ define void @record_only_binding() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.mop.clear(i32 6)
   call void @llvm.riscv.tt.replay.template.mop(i32 901, i32 7)
   call void @llvm.riscv.tt.mop.clear(i32 8)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }
 
@@ -107,19 +107,19 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @structured_state_once() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpencc(i32 1, i32 10)
-  call void @llvm.riscv.tt.bound.sfpconfig.creg(i32 0, i32 11, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 21844, i32 8)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.encc(i32 1, i32 10)
+  call void @llvm.tt.bh.sfpu.config.creg(i32 0, i32 11, i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 21844, i32 8)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 1)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 1)
@@ -131,7 +131,7 @@ define void @structured_state_once() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.mop(i32 901, i32 7)
   call void @llvm.riscv.tt.mop.clear(i32 8)
   call void @llvm.riscv.tt.mop(i32 0, i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }
 
@@ -146,19 +146,19 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @raw_state_once() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay(i32 1, i32 0, i32 5, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpencc(i32 1, i32 10)
-  call void @llvm.riscv.tt.bound.sfpconfig.creg(i32 0, i32 11, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpconfig.lane(i32 0, i32 21844, i32 8)
-  call void @llvm.riscv.tt.bound.sfpstore(i32 0, i32 0, i32 0, i32 4)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.encc(i32 1, i32 10)
+  call void @llvm.tt.bh.sfpu.config.creg(i32 0, i32 11, i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.config.lane(i32 0, i32 21844, i32 8)
+  call void @llvm.tt.bh.sfpu.store(i32 0, i32 0, i32 0, i32 4)
   call void @llvm.riscv.tt.replay.record.end()
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 1)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 1)
@@ -170,7 +170,7 @@ define void @raw_state_once() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.mop(i32 7, i32 0, i32 0, i32 5, i32 0)
   call void @llvm.riscv.tt.mop.clear(i32 8)
   call void @llvm.riscv.tt.mop(i32 0, i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }
 
@@ -185,16 +185,16 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @zero_outer_preserves_lreg() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 10)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 10)
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 0)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 1)
@@ -206,7 +206,7 @@ define void @zero_outer_preserves_lreg() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.mop(i32 901, i32 7)
   call void @llvm.riscv.tt.mop.clear(i32 8)
   call void @llvm.riscv.tt.mop(i32 0, i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }
 
@@ -221,15 +221,15 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @slot_clear_removes_effects() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 1)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 1)
@@ -242,7 +242,7 @@ define void @slot_clear_removes_effects() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.mop.clear(i32 8)
   call void @llvm.riscv.tt.mop.clear(i32 7)
   call void @llvm.riscv.tt.mop(i32 0, i32 0, i32 1)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }
 
@@ -257,16 +257,16 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @template0_skips_body() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 10)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 10)
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 1)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 0)
@@ -278,7 +278,7 @@ define void @template0_skips_body() "tensix-executor"="trisc1" {
   call void @llvm.riscv.tt.mop.clear(i32 7)
   call void @llvm.riscv.tt.mop.clear(i32 8)
   call void @llvm.riscv.tt.mop(i32 1, i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }
 
@@ -293,16 +293,16 @@ declare void @llvm.riscv.tt.replay.mop(i32 immarg, i32 immarg, i32 immarg, i32 i
 declare void @llvm.riscv.tt.mop.control.write(i32 immarg, i32)
 declare void @llvm.riscv.tt.mop.clear(i32 immarg)
 declare void @llvm.riscv.tt.mop(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpmov.all(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpencc(i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpconfig.lane(i32 immarg, i32 immarg, i32 immarg)
-declare void @llvm.riscv.tt.bound.sfpstore(i32 immarg, i32, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.encc(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.creg(i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.config.lane(i32 immarg, i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.store(i32 immarg, i32, i32 immarg, i32 immarg)
 
 define void @persistent_slot_loop(i32 %count) "tensix-executor"="trisc1" {
 entry:
   call void @llvm.riscv.tt.replay.template.begin(i32 901, i32 0, i32 1, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 0, i32 1)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 1)
   call void @llvm.riscv.tt.replay.template.end(i32 901)
   call void @llvm.riscv.tt.mop.control.write(i32 0, i32 1)
   call void @llvm.riscv.tt.mop.control.write(i32 1, i32 1)
@@ -322,6 +322,6 @@ loop:
   %more = icmp ult i32 %next, %count
   br i1 %more, label %loop, label %exit
 exit:
-  call void @llvm.riscv.tt.bound.sfpmov.all(i32 2, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.all(i32 2, i32 0)
   ret void
 }

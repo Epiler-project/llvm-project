@@ -5,7 +5,7 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -O2 -verify-machineinstrs -filetype=obj %s -o /dev/null
 ;
 ; SFPMOV FROM_SPECIAL (exact mode 8), special selector 9, returns each active
-; lane's old PRNG word and advances that lane once. This is a stateful action,
+; lane's updated PRNG word after advancing that lane once. This is a stateful action,
 ; even when no later operation consumes the sampled LReg. The special selector
 ; is an encoding constant, not CReg9 or a numerical SFPR source operand.
 ;
@@ -14,7 +14,7 @@
 ; LLVM must not require a general user-program PRNG initializedness analysis
 ; to emit a legal native instruction. They are not execution/numerical checks.
 
-declare void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 immarg, i32 immarg)
+declare void @llvm.tt.bh.sfpu.mov.prng.advance(i32 immarg, i32 immarg)
 
 ; raw SFPMOV(L0,special9,mode8) = 0x7c000908; rol32(raw,2) = 0xf0002421.
 ; raw SFPMOV(L7,special9,mode8) = 0x7c000978; rol32(raw,2) = 0xf00025e1.
@@ -30,8 +30,8 @@ define void @sample_prng_exact_operands() "tensix-executor"="trisc1" {
 ; NATIVE-NEXT: .word 0xf00025e1
 ; NATIVE-NEXT: ret
 ; NATIVE-NOT: .word
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 7, i32 7)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 7, i32 7)
   ret void
 }
 
@@ -49,8 +49,8 @@ define void @unused_prng_samples_still_advance() "tensix-executor"="trisc0" {
 ; NATIVE-NEXT: .word 0xf0002421
 ; NATIVE-NEXT: ret
 ; NATIVE-NOT: .word
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 0)
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 0)
   ret void
 }
 
@@ -77,7 +77,7 @@ entry:
   br label %loop
 loop:
   %count = phi i32 [ 3, %entry ], [ %next, %loop ]
-  call void @llvm.riscv.tt.bound.sfpmov.prng.advance(i32 0, i32 0)
+  call void @llvm.tt.bh.sfpu.mov.prng.advance(i32 0, i32 0)
   %next = add i32 %count, -1
   %again = icmp ne i32 %next, 0
   br i1 %again, label %loop, label %exit
