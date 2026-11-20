@@ -17,6 +17,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/RISCV/RISCVTensixMOP.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "gtest/gtest.h"
@@ -44,6 +45,39 @@ using ContentsInfo = RISCV::TensixContentsIntrinsicInfo;
 using SFPUArchitecture = RISCV::TensixSFPUArchitecture;
 using SFPUAccess = RISCV::TensixSFPUAccess;
 using SFPUState = RISCV::TensixSFPUState;
+
+TEST(RISCVTensix, MOPTemplate1ReceivesPhysicalCountWidth) {
+  using Control = TensixMOPControlValue;
+  using Count = TensixMOPRepeatCount;
+  TensixMOPSlots Slots;
+  for (auto &Slot : Slots)
+    Slot.push_back({TensixMOPSlotDeclaration::Kind::Nop, 0});
+
+  TensixMOPTemplate1 Input{Control::constant(1), Control::constant(128)};
+  auto Wormhole = decodeTensixMOPTemplate1(Input, Slots,
+                                         SFPUArchitecture::Wormhole);
+  ASSERT_TRUE(bool(Wormhole)) << toString(Wormhole.takeError());
+  EXPECT_EQ(Wormhole->maySelect(), 0u);
+  auto Blackhole = decodeTensixMOPTemplate1(Input, Slots,
+                                          SFPUArchitecture::Blackhole);
+  ASSERT_TRUE(bool(Blackhole)) << toString(Blackhole.takeError());
+  EXPECT_NE(Blackhole->maySelect(), 0u);
+
+  Input = {Control::dynamic(), Control::dynamic()};
+  Wormhole = decodeTensixMOPTemplate1(Input, Slots, SFPUArchitecture::Wormhole);
+  ASSERT_TRUE(bool(Wormhole)) << toString(Wormhole.takeError());
+  unsigned Sources = 0;
+  for (const auto &Node : Wormhole->Nodes) {
+    if (Node.Form != TensixMOPSequenceNode::Kind::CountedRepeat ||
+        Node.Count.Control == Count::Source::Constant)
+      continue;
+    EXPECT_EQ(Node.Count.Maximum, 126u);
+    EXPECT_EQ(Node.Count.Offset, -1);
+    Sources |= 1u << static_cast<unsigned>(Node.Count.Control);
+  }
+  EXPECT_EQ(Sources, (1u << static_cast<unsigned>(Count::Source::Outer)) |
+                         (1u << static_cast<unsigned>(Count::Source::Inner)));
+}
 
 ContentsValue contents() { return {ContentsKind::Contents, std::nullopt}; }
 ContentsValue scalar(uint32_t Value) { return {ContentsKind::Scalar, Value}; }
@@ -412,6 +446,197 @@ TEST(RISCVTensix, ContentsQueryDoesNotSeedDstLoadInitialization) {
     EXPECT_TRUE(Info->Transfers.empty());
     ASSERT_TRUE(Info->Configuration);
     EXPECT_TRUE(Info->Configuration->Requirements.empty());
+  }
+}
+
+TEST(RISCVTensix, ContentsDstLoadTransferKeepsActualOldAndScalarOffset) {
+  for (unsigned Format : {2u, 3u}) {
+    SCOPED_TRACE(Format);
+    for (ContentsValue Offset : {scalar(37), scalar(1023), dynamicScalar()}) {
+      auto Info = RISCV::getTensixContentsIntrinsicInfo(
+          Intrinsic::riscv_tt_contents_load,
+          {contents(), Offset, scalar(7), scalar(Format)},
+          SFPUArchitecture::Blackhole);
+      ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+      ASSERT_TRUE(Info->DstTransfer);
+      const auto &Facts = *Info->DstTransfer;
+      const auto *Load =
+          std::get_if<RISCV::TensixSFPUDstLoadTransfer>(&Facts.Packet);
+      ASSERT_NE(Load, nullptr);
+      ASSERT_LT(Load->DestinationValue, Info->TransferValues.size());
+      const auto *Result = std::get_if<RISCV::TensixContentsResultRef>(
+          &Info->TransferValues[Load->DestinationValue]);
+      ASSERT_NE(Result, nullptr);
+      EXPECT_EQ(Result->Result, 0u);
+      ASSERT_TRUE(Load->OldValue);
+      ASSERT_LT(*Load->OldValue, Info->TransferValues.size());
+      const auto *Old = std::get_if<RISCV::TensixContentsArgumentRef>(
+          &Info->TransferValues[*Load->OldValue]);
+      ASSERT_NE(Old, nullptr);
+      EXPECT_EQ(Old->Argument, 0u);
+      EXPECT_EQ(Info->TransferValues.size(), 2u);
+      EXPECT_EQ(Info->NumResults, 1u);
+      EXPECT_EQ(Facts.OffsetArgument, 1u);
+      EXPECT_EQ(Facts.AddressMode, 7u);
+      EXPECT_EQ(Facts.Format, Format == 2
+                                  ? RISCV::TensixSFPUDstFormat::BFloat16
+                                  : RISCV::TensixSFPUDstFormat::Float32);
+      EXPECT_TRUE(Facts.RequiresLaneEnable);
+      EXPECT_TRUE(Facts.RequiresConditionState);
+      EXPECT_TRUE(Facts.RequiresRowMaskState);
+      EXPECT_TRUE(Info->Transfers.empty());
+    }
+  }
+}
+
+TEST(RISCVTensix, ContentsDstStoreTransferHasNoResult) {
+  for (unsigned Format : {2u, 3u}) {
+    SCOPED_TRACE(Format);
+    for (ContentsValue Offset : {scalar(37), scalar(1023), dynamicScalar()}) {
+      auto Info = RISCV::getTensixContentsIntrinsicInfo(
+          Intrinsic::riscv_tt_contents_store,
+          {contents(), Offset, scalar(7), scalar(Format)},
+          SFPUArchitecture::Blackhole);
+      ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+      ASSERT_TRUE(Info->DstTransfer);
+      const auto &Facts = *Info->DstTransfer;
+      const auto *Store =
+          std::get_if<RISCV::TensixSFPUDstStoreTransfer>(&Facts.Packet);
+      ASSERT_NE(Store, nullptr);
+      ASSERT_LT(Store->SourceValue, Info->TransferValues.size());
+      const auto *Source = std::get_if<RISCV::TensixContentsArgumentRef>(
+          &Info->TransferValues[Store->SourceValue]);
+      ASSERT_NE(Source, nullptr);
+      EXPECT_EQ(Source->Argument, 0u);
+      EXPECT_EQ(Info->TransferValues.size(), 1u);
+      EXPECT_EQ(Info->NumResults, 0u);
+      EXPECT_EQ(Facts.OffsetArgument, 1u);
+      EXPECT_EQ(Facts.AddressMode, 7u);
+      EXPECT_EQ(Facts.Format, Format == 2
+                                  ? RISCV::TensixSFPUDstFormat::BFloat16
+                                  : RISCV::TensixSFPUDstFormat::Float32);
+      EXPECT_TRUE(Facts.RequiresLaneEnable);
+      EXPECT_TRUE(Facts.RequiresConditionState);
+      EXPECT_TRUE(Facts.RequiresRowMaskState);
+      EXPECT_TRUE(Info->Transfers.empty());
+    }
+  }
+}
+
+TEST(RISCVTensix, ContentsDstFullLoadTransferHasNoOldOperand) {
+  for (unsigned Format : {2u, 3u}) {
+    SCOPED_TRACE(Format);
+    for (ContentsValue Offset : {scalar(37), scalar(1023), dynamicScalar()}) {
+      auto Info = RISCV::getTensixContentsIntrinsicInfo(
+          Intrinsic::riscv_tt_contents_load_full,
+          {Offset, scalar(7), scalar(Format)}, SFPUArchitecture::Blackhole);
+      ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+      ASSERT_TRUE(Info->DstTransfer);
+      const auto &Facts = *Info->DstTransfer;
+      const auto *Load =
+          std::get_if<RISCV::TensixSFPUDstLoadTransfer>(&Facts.Packet);
+      ASSERT_NE(Load, nullptr);
+      EXPECT_FALSE(Load->OldValue);
+      ASSERT_LT(Load->DestinationValue, Info->TransferValues.size());
+      const auto *Result = std::get_if<RISCV::TensixContentsResultRef>(
+          &Info->TransferValues[Load->DestinationValue]);
+      ASSERT_NE(Result, nullptr);
+      EXPECT_EQ(Result->Result, 0u);
+      EXPECT_EQ(Info->TransferValues.size(), 1u);
+      EXPECT_EQ(Info->NumResults, 1u);
+      EXPECT_EQ(Facts.OffsetArgument, 0u);
+      EXPECT_EQ(Facts.AddressMode, 7u);
+      EXPECT_EQ(Facts.Format, Format == 2
+                                  ? RISCV::TensixSFPUDstFormat::BFloat16
+                                  : RISCV::TensixSFPUDstFormat::Float32);
+      EXPECT_TRUE(Facts.RequiresLaneEnable);
+      EXPECT_TRUE(Facts.RequiresConditionState);
+      EXPECT_TRUE(Facts.RequiresRowMaskState);
+      EXPECT_TRUE(Info->Transfers.empty());
+    }
+  }
+}
+
+TEST(RISCVTensix, ContentsDstTransferDistinguishesAddressModesAndFormats) {
+  for (Intrinsic::ID ID : {Intrinsic::riscv_tt_contents_load,
+                           Intrinsic::riscv_tt_contents_load_full,
+                           Intrinsic::riscv_tt_contents_store}) {
+    auto Query = [&](SFPUArchitecture Architecture, unsigned Mode,
+                     unsigned Format) {
+      SmallVector<ContentsValue> Arguments;
+      if (ID != Intrinsic::riscv_tt_contents_load_full)
+        Arguments.push_back(contents());
+      Arguments.append({dynamicScalar(), scalar(Mode), scalar(Format)});
+      return RISCV::getTensixContentsIntrinsicInfo(ID, Arguments, Architecture);
+    };
+    SCOPED_TRACE(Intrinsic::getName(ID));
+    for (auto Architecture : {SFPUArchitecture::Wormhole,
+                              SFPUArchitecture::Blackhole}) {
+      const unsigned LastMode =
+          Architecture == SFPUArchitecture::Wormhole ? 3 : 6;
+      for (unsigned Format : {2u, 3u}) {
+        for (unsigned Mode = 0; Mode <= LastMode; ++Mode) {
+          SCOPED_TRACE(static_cast<unsigned>(Architecture));
+          SCOPED_TRACE(Format);
+          SCOPED_TRACE(Mode);
+          auto Info = Query(Architecture, Mode, Format);
+          ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+          EXPECT_TRUE(Info->Transfers.empty());
+          if (Mode != 0 || Format != 3) {
+            EXPECT_FALSE(Info->DstTransfer);
+            EXPECT_TRUE(Info->TransferValues.empty());
+            continue;
+          }
+          ASSERT_TRUE(Info->DstTransfer);
+          const auto &Facts = *Info->DstTransfer;
+          EXPECT_EQ(Facts.AddressMode, 0u);
+          EXPECT_EQ(Facts.Format, RISCV::TensixSFPUDstFormat::Float32);
+          EXPECT_EQ(Facts.OffsetArgument,
+                    ID == Intrinsic::riscv_tt_contents_load_full ? 0u : 1u);
+          EXPECT_TRUE(Facts.RequiresLaneEnable);
+          EXPECT_TRUE(Facts.RequiresConditionState);
+          EXPECT_TRUE(Facts.RequiresRowMaskState);
+          if (ID == Intrinsic::riscv_tt_contents_store) {
+            const auto *Store =
+                std::get_if<RISCV::TensixSFPUDstStoreTransfer>(&Facts.Packet);
+            ASSERT_NE(Store, nullptr);
+            ASSERT_LT(Store->SourceValue, Info->TransferValues.size());
+            const auto *Source = std::get_if<RISCV::TensixContentsArgumentRef>(
+                &Info->TransferValues[Store->SourceValue]);
+            ASSERT_NE(Source, nullptr);
+            EXPECT_EQ(Source->Argument, 0u);
+            EXPECT_EQ(Info->NumResults, 0u);
+          } else {
+            const auto *Load =
+                std::get_if<RISCV::TensixSFPUDstLoadTransfer>(&Facts.Packet);
+            ASSERT_NE(Load, nullptr);
+            ASSERT_LT(Load->DestinationValue, Info->TransferValues.size());
+            const auto *Result = std::get_if<RISCV::TensixContentsResultRef>(
+                &Info->TransferValues[Load->DestinationValue]);
+            ASSERT_NE(Result, nullptr);
+            EXPECT_EQ(Result->Result, 0u);
+            if (ID == Intrinsic::riscv_tt_contents_load) {
+              ASSERT_TRUE(Load->OldValue);
+              ASSERT_LT(*Load->OldValue, Info->TransferValues.size());
+              const auto *Old = std::get_if<RISCV::TensixContentsArgumentRef>(
+                  &Info->TransferValues[*Load->OldValue]);
+              ASSERT_NE(Old, nullptr);
+              EXPECT_EQ(Old->Argument, 0u);
+            } else {
+              EXPECT_FALSE(Load->OldValue);
+            }
+            EXPECT_EQ(Info->NumResults, 1u);
+          }
+        }
+      }
+    }
+    for (unsigned Format : {0u, 1u, 5u, 6u, 8u, 14u, 15u}) {
+      if (ID == Intrinsic::riscv_tt_contents_load_full && Format >= 14)
+        continue;
+      auto Info = Query(SFPUArchitecture::Blackhole, 7, Format);
+      ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+      EXPECT_FALSE(Info->DstTransfer);
+    }
   }
 }
 
@@ -1054,6 +1279,8 @@ const BoundFormCase BoundForms[] = {
      4,
      0x000f,
      0x0001},
+    {Intrinsic::tt_bh_sfpu_mul23, Intrinsic::not_intrinsic,
+     {0, 0, 2, 3, 0}, -1, 4, 0x0003, 0},
     {Intrinsic::tt_bh_sfpu_mad,
      Intrinsic::tt_wh_sfpu_mad,
      {0, 0, 9, 10, 8, 0},
@@ -1447,6 +1674,363 @@ TEST(RISCVTensix, PhysicalDstAddressModesRemainArchitectureSpecific) {
       EXPECT_FALSE(bool(Contract));
       if (!Contract)
         consumeError(Contract.takeError());
+    }
+  }
+}
+
+TEST(RISCVTensix, BoundDstLoadTransferUsesActualABIArguments) {
+  using namespace RISCV;
+  for (TensixBoundValue Offset :
+       {TensixBoundValue{TensixBoundValueKind::Constant, 37},
+        TensixBoundValue{TensixBoundValueKind::Constant, 1023},
+        TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
+    auto Arguments = boundConstants({5, 5, 0, 7, 2});
+    Arguments[2] = Offset;
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_load, Arguments);
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    ASSERT_TRUE(Contract->getDstTransferFacts());
+    const auto &Facts = *Contract->getDstTransferFacts();
+    const auto *Load = std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
+    ASSERT_NE(Load, nullptr);
+    EXPECT_EQ(Load->DestinationValue, 0u);
+    ASSERT_TRUE(Load->OldValue);
+    EXPECT_EQ(*Load->OldValue, 1u);
+    EXPECT_EQ(Facts.OffsetArgument, 2u);
+    EXPECT_EQ(Facts.AddressMode, 7u);
+    EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::BFloat16);
+    EXPECT_TRUE(Facts.RequiresLaneEnable);
+    EXPECT_TRUE(Facts.RequiresConditionState);
+    EXPECT_TRUE(Facts.RequiresRowMaskState);
+    EXPECT_TRUE(Contract->getTransferFacts().empty());
+    EXPECT_EQ(Contract->getArgumentCount(), 5u);
+  }
+}
+
+TEST(RISCVTensix, BoundDstStoreTransferHasNoNumericalResult) {
+  using namespace RISCV;
+  for (TensixBoundValue Offset :
+       {TensixBoundValue{TensixBoundValueKind::Constant, 37},
+        TensixBoundValue{TensixBoundValueKind::Constant, 1023},
+        TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
+    auto Arguments = boundConstants({3, 0, 7, 2});
+    Arguments[1] = Offset;
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_store, Arguments);
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    ASSERT_TRUE(Contract->getDstTransferFacts());
+    const auto &Facts = *Contract->getDstTransferFacts();
+    const auto *Store = std::get_if<TensixSFPUDstStoreTransfer>(&Facts.Packet);
+    ASSERT_NE(Store, nullptr);
+    EXPECT_EQ(Store->SourceValue, 0u);
+    EXPECT_EQ(Facts.OffsetArgument, 1u);
+    EXPECT_EQ(Facts.AddressMode, 7u);
+    EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::BFloat16);
+    EXPECT_TRUE(Facts.RequiresLaneEnable);
+    EXPECT_TRUE(Facts.RequiresConditionState);
+    EXPECT_TRUE(Facts.RequiresRowMaskState);
+    EXPECT_TRUE(Contract->getTransferFacts().empty());
+    EXPECT_EQ(Contract->getArgumentCount(), 4u);
+  }
+}
+
+// Native format 3 is ToFP32, not BF16 or Raw32. Its side transfer must
+// preserve the actual old/source and scalar-offset ABI identities.
+TEST(RISCVTensix, BoundFloat32DstLoadTransferRetainsActualABIArguments) {
+  using namespace RISCV;
+  for (TensixBoundValue Offset :
+       {TensixBoundValue{TensixBoundValueKind::Constant, 37},
+        TensixBoundValue{TensixBoundValueKind::Constant, 1023},
+        TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
+    SCOPED_TRACE(Offset.Kind == TensixBoundValueKind::DynamicScalar);
+    auto Arguments = boundConstants({5, 5, 0, 7, 3});
+    Arguments[2] = Offset;
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_load, Arguments);
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    ASSERT_TRUE(Contract->getDstTransferFacts())
+        << "Blackhole slot7 format3 has no received FP32 Dst load transfer";
+    const auto &Facts = *Contract->getDstTransferFacts();
+    const auto *Load = std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
+    ASSERT_NE(Load, nullptr);
+    EXPECT_EQ(Load->DestinationValue, 0u);
+    ASSERT_TRUE(Load->OldValue);
+    EXPECT_EQ(*Load->OldValue, 1u);
+    EXPECT_EQ(Facts.OffsetArgument, 2u);
+    ASSERT_LT(Facts.OffsetArgument, Contract->getArgumentCount());
+    EXPECT_EQ(Contract->getArgumentRoles()[Facts.OffsetArgument],
+              TensixBoundArgumentRole::DstOffset);
+    EXPECT_EQ(Facts.AddressMode, 7u);
+    EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::Float32);
+    EXPECT_TRUE(Facts.RequiresLaneEnable);
+    EXPECT_TRUE(Facts.RequiresConditionState);
+    EXPECT_TRUE(Facts.RequiresRowMaskState);
+    EXPECT_TRUE(Contract->getTransferFacts().empty());
+    EXPECT_EQ(Contract->getArgumentCount(), 5u);
+    EXPECT_EQ(Contract->getIntrinsicID(), Intrinsic::tt_bh_sfpu_load);
+  }
+}
+
+TEST(RISCVTensix, BoundFloat32DstStoreTransferHasNoNumericalResult) {
+  using namespace RISCV;
+  for (TensixBoundValue Offset :
+       {TensixBoundValue{TensixBoundValueKind::Constant, 37},
+        TensixBoundValue{TensixBoundValueKind::Constant, 1023},
+        TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
+    SCOPED_TRACE(Offset.Kind == TensixBoundValueKind::DynamicScalar);
+    auto Arguments = boundConstants({3, 0, 7, 3});
+    Arguments[1] = Offset;
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_store, Arguments);
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    ASSERT_TRUE(Contract->getDstTransferFacts())
+        << "Blackhole slot7 format3 has no received FP32 Dst store transfer";
+    const auto &Facts = *Contract->getDstTransferFacts();
+    const auto *Store = std::get_if<TensixSFPUDstStoreTransfer>(&Facts.Packet);
+    ASSERT_NE(Store, nullptr);
+    EXPECT_EQ(Store->SourceValue, 0u);
+    EXPECT_EQ(Facts.OffsetArgument, 1u);
+    ASSERT_LT(Facts.OffsetArgument, Contract->getArgumentCount());
+    EXPECT_EQ(Contract->getArgumentRoles()[Facts.OffsetArgument],
+              TensixBoundArgumentRole::DstOffset);
+    EXPECT_EQ(Facts.AddressMode, 7u);
+    EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::Float32);
+    EXPECT_TRUE(Facts.RequiresLaneEnable);
+    EXPECT_TRUE(Facts.RequiresConditionState);
+    EXPECT_TRUE(Facts.RequiresRowMaskState);
+    EXPECT_TRUE(Contract->getTransferFacts().empty());
+    EXPECT_EQ(Contract->getArgumentCount(), 4u);
+    EXPECT_EQ(Contract->getIntrinsicID(), Intrinsic::tt_bh_sfpu_store);
+  }
+}
+
+TEST(RISCVTensix, BoundFloat32DstTransferAdmitsAddressModeZeroOnBothTargets) {
+  using namespace RISCV;
+  struct Case {
+    Intrinsic::ID ID;
+    unsigned Mode;
+  };
+  constexpr Case Cases[] = {
+      {Intrinsic::tt_bh_sfpu_load, 0},  {Intrinsic::tt_bh_sfpu_load, 3},
+      {Intrinsic::tt_bh_sfpu_load, 6},  {Intrinsic::tt_bh_sfpu_store, 0},
+      {Intrinsic::tt_bh_sfpu_store, 3}, {Intrinsic::tt_bh_sfpu_store, 6},
+      {Intrinsic::tt_wh_sfpu_load, 0},  {Intrinsic::tt_wh_sfpu_load, 3},
+      {Intrinsic::tt_wh_sfpu_store, 0}, {Intrinsic::tt_wh_sfpu_store, 3},
+  };
+  for (const Case &Item : Cases) {
+    SCOPED_TRACE(Intrinsic::getName(Item.ID));
+    SCOPED_TRACE(Item.Mode);
+    const bool Load = Item.ID == Intrinsic::tt_bh_sfpu_load ||
+                      Item.ID == Intrinsic::tt_wh_sfpu_load;
+    auto Arguments = Load ? boundConstants({0, 0, 0, Item.Mode, 3})
+                          : boundConstants({0, 0, Item.Mode, 3});
+    Arguments[Load ? 2 : 1] = {TensixBoundValueKind::DynamicScalar};
+    auto Contract = getTensixBoundSFPUContract(Item.ID, Arguments);
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    EXPECT_TRUE(Contract->getTransferFacts().empty());
+    const auto &Transfer = Contract->getDstTransferFacts();
+    if (Item.Mode != 0) {
+      EXPECT_FALSE(Transfer);
+      continue;
+    }
+    ASSERT_TRUE(Transfer);
+    EXPECT_EQ(Transfer->AddressMode, 0u);
+    EXPECT_EQ(Transfer->Format, TensixSFPUDstFormat::Float32);
+    EXPECT_EQ(Transfer->OffsetArgument, Load ? 2u : 1u);
+    EXPECT_EQ(Contract->getArgumentRoles()[Transfer->OffsetArgument],
+              TensixBoundArgumentRole::DstOffset);
+    EXPECT_TRUE(Transfer->RequiresLaneEnable);
+    EXPECT_TRUE(Transfer->RequiresConditionState);
+    EXPECT_TRUE(Transfer->RequiresRowMaskState);
+    if (Load) {
+      const auto *Packet =
+          std::get_if<TensixSFPUDstLoadTransfer>(&Transfer->Packet);
+      ASSERT_NE(Packet, nullptr);
+      EXPECT_EQ(Packet->DestinationValue, 0u);
+      EXPECT_EQ(Packet->OldValue, 1u);
+    } else {
+      const auto *Packet =
+          std::get_if<TensixSFPUDstStoreTransfer>(&Transfer->Packet);
+      ASSERT_NE(Packet, nullptr);
+      EXPECT_EQ(Packet->SourceValue, 0u);
+    }
+  }
+}
+
+// Native format4 copies the complete datum without format3's denormal flush.
+// Query the actual encoded format and retain its distinct typed semantics.
+TEST(RISCVTensix, BoundRaw32DstTransferRetainsActualABIArguments) {
+  using namespace RISCV;
+  for (Intrinsic::ID ID :
+       {Intrinsic::tt_bh_sfpu_load, Intrinsic::tt_bh_sfpu_store}) {
+    const bool Load = ID == Intrinsic::tt_bh_sfpu_load;
+    SCOPED_TRACE(Intrinsic::getName(ID));
+    for (TensixBoundValue Offset :
+         {TensixBoundValue{TensixBoundValueKind::Constant, 37},
+          TensixBoundValue{TensixBoundValueKind::Constant, 1023},
+          TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
+      auto Arguments =
+          Load ? boundConstants({5, 5, 0, 7, 4}) : boundConstants({5, 0, 7, 4});
+      const unsigned OffsetIndex = Load ? 2 : 1;
+      Arguments[OffsetIndex] = Offset;
+      auto Contract = getTensixBoundSFPUContract(ID, Arguments);
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      ASSERT_TRUE(Contract->getDstTransferFacts())
+          << "Blackhole slot7 format4 has no received Raw32 side transfer";
+      const auto &Facts = *Contract->getDstTransferFacts();
+      EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::Raw32);
+      EXPECT_EQ(Facts.OffsetArgument, OffsetIndex);
+      EXPECT_EQ(Contract->getArgumentRoles()[Facts.OffsetArgument],
+                TensixBoundArgumentRole::DstOffset);
+      EXPECT_EQ(Facts.AddressMode, 7u);
+      EXPECT_TRUE(Facts.RequiresLaneEnable);
+      EXPECT_TRUE(Facts.RequiresConditionState);
+      EXPECT_TRUE(Facts.RequiresRowMaskState);
+      EXPECT_TRUE(Contract->getTransferFacts().empty());
+      EXPECT_EQ(Contract->getArgumentCount(), Load ? 5u : 4u);
+      if (Load) {
+        const auto *Transfer =
+            std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
+        ASSERT_NE(Transfer, nullptr);
+        EXPECT_EQ(Transfer->DestinationValue, 0u);
+        ASSERT_TRUE(Transfer->OldValue);
+        EXPECT_EQ(*Transfer->OldValue, 1u);
+      } else {
+        const auto *Transfer =
+            std::get_if<TensixSFPUDstStoreTransfer>(&Facts.Packet);
+        ASSERT_NE(Transfer, nullptr);
+        EXPECT_EQ(Transfer->SourceValue, 0u);
+      }
+    }
+  }
+}
+
+TEST(RISCVTensix, ContentsRaw32DstTransferRetainsExactPacketShape) {
+  using namespace RISCV;
+  for (Intrinsic::ID ID : {Intrinsic::riscv_tt_contents_load,
+                           Intrinsic::riscv_tt_contents_load_full,
+                           Intrinsic::riscv_tt_contents_store}) {
+    const bool Store = ID == Intrinsic::riscv_tt_contents_store;
+    const bool Full = ID == Intrinsic::riscv_tt_contents_load_full;
+    SCOPED_TRACE(Intrinsic::getName(ID));
+    for (ContentsValue Offset : {scalar(37), scalar(1023), dynamicScalar()}) {
+      SmallVector<ContentsValue> Arguments;
+      if (!Full)
+        Arguments.push_back(contents());
+      Arguments.append({Offset, scalar(7), scalar(4)});
+      auto Info = getTensixContentsIntrinsicInfo(ID, Arguments,
+                                                 SFPUArchitecture::Blackhole);
+      ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+      ASSERT_TRUE(Info->DstTransfer)
+          << "Blackhole slot7 format4 lost its contents side transfer";
+      const auto &Facts = *Info->DstTransfer;
+      EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::Raw32);
+      EXPECT_EQ(Facts.OffsetArgument, Full ? 0u : 1u);
+      EXPECT_EQ(Facts.AddressMode, 7u);
+      EXPECT_EQ(Info->NumResults, Store ? 0u : 1u);
+      EXPECT_EQ(Info->TransferValues.size(), !Full && !Store ? 2u : 1u);
+      EXPECT_TRUE(Facts.RequiresLaneEnable);
+      EXPECT_TRUE(Facts.RequiresConditionState);
+      EXPECT_TRUE(Facts.RequiresRowMaskState);
+      EXPECT_TRUE(Info->Transfers.empty());
+      if (Store) {
+        const auto *Transfer =
+            std::get_if<TensixSFPUDstStoreTransfer>(&Facts.Packet);
+        ASSERT_NE(Transfer, nullptr);
+        ASSERT_LT(Transfer->SourceValue, Info->TransferValues.size());
+        const auto *Source = std::get_if<TensixContentsArgumentRef>(
+            &Info->TransferValues[Transfer->SourceValue]);
+        ASSERT_NE(Source, nullptr);
+        EXPECT_EQ(Source->Argument, 0u);
+      } else {
+        const auto *Transfer =
+            std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
+        ASSERT_NE(Transfer, nullptr);
+        ASSERT_LT(Transfer->DestinationValue, Info->TransferValues.size());
+        const auto *Result = std::get_if<TensixContentsResultRef>(
+            &Info->TransferValues[Transfer->DestinationValue]);
+        ASSERT_NE(Result, nullptr);
+        EXPECT_EQ(Result->Result, 0u);
+        EXPECT_EQ(bool(Transfer->OldValue), !Full);
+        if (!Full) {
+          ASSERT_TRUE(Transfer->OldValue);
+          ASSERT_LT(*Transfer->OldValue, Info->TransferValues.size());
+          const auto *Old = std::get_if<TensixContentsArgumentRef>(
+              &Info->TransferValues[*Transfer->OldValue]);
+          ASSERT_NE(Old, nullptr);
+          EXPECT_EQ(Old->Argument, 0u);
+        }
+      }
+    }
+  }
+}
+
+TEST(RISCVTensix, Raw32DstTransferDoesNotWidenArchitectureOrAddressMode) {
+  using namespace RISCV;
+  for (bool Wormhole : {false, true}) {
+    SCOPED_TRACE(Wormhole);
+    for (unsigned Mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
+      if (Wormhole && Mode > 3)
+        continue;
+      SCOPED_TRACE(Mode);
+      for (bool Load : {false, true}) {
+        auto ID = Load ? (Wormhole ? Intrinsic::tt_wh_sfpu_load
+                                   : Intrinsic::tt_bh_sfpu_load)
+                       : (Wormhole ? Intrinsic::tt_wh_sfpu_store
+                                   : Intrinsic::tt_bh_sfpu_store);
+        auto Arguments = Load ? boundConstants({0, 0, 0, Mode, 4})
+                              : boundConstants({0, 0, Mode, 4});
+        Arguments[Load ? 2 : 1] = {TensixBoundValueKind::DynamicScalar};
+        auto Contract = getTensixBoundSFPUContract(ID, Arguments);
+        ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+        EXPECT_FALSE(Contract->getDstTransferFacts());
+      }
+      for (Intrinsic::ID ID : {Intrinsic::riscv_tt_contents_load,
+                               Intrinsic::riscv_tt_contents_load_full,
+                               Intrinsic::riscv_tt_contents_store}) {
+        SmallVector<ContentsValue> Arguments;
+        if (ID != Intrinsic::riscv_tt_contents_load_full)
+          Arguments.push_back(contents());
+        Arguments.append({dynamicScalar(), scalar(Mode), scalar(4)});
+        auto Info = getTensixContentsIntrinsicInfo(
+            ID, Arguments,
+            Wormhole ? SFPUArchitecture::Wormhole
+                     : SFPUArchitecture::Blackhole);
+        ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+        EXPECT_FALSE(Info->DstTransfer);
+      }
+    }
+  }
+}
+
+TEST(RISCVTensix, BoundDstTransferRemainsAbsentForUnreceivedForms) {
+  for (Intrinsic::ID ID :
+       {Intrinsic::tt_bh_sfpu_load, Intrinsic::tt_bh_sfpu_store,
+        Intrinsic::tt_wh_sfpu_load, Intrinsic::tt_wh_sfpu_store}) {
+    bool Load =
+        ID == Intrinsic::tt_bh_sfpu_load || ID == Intrinsic::tt_wh_sfpu_load;
+    bool Wormhole =
+        ID == Intrinsic::tt_wh_sfpu_load || ID == Intrinsic::tt_wh_sfpu_store;
+    auto Query = [&](unsigned Mode, unsigned Format) {
+      auto Arguments = Load ? boundConstants({0, 0, 0, Mode, Format})
+                            : boundConstants({0, 0, Mode, Format});
+      Arguments[Load ? 2 : 1] = {RISCV::TensixBoundValueKind::DynamicScalar};
+      return RISCV::getTensixBoundSFPUContract(ID, Arguments);
+    };
+    for (unsigned Mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
+      if (Wormhole && Mode > 3)
+        continue;
+      auto Contract = Query(Mode, 2);
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      EXPECT_FALSE(Contract->getDstTransferFacts());
+      EXPECT_TRUE(Contract->getTransferFacts().empty());
+    }
+    for (unsigned Format : {0u, 1u, 3u, 4u, 5u, 6u, 8u, 14u, 15u}) {
+      if (!Wormhole && (Format == 3 || Format == 4))
+        continue; // Received BH slot7 forms have FP32 and Raw32 positives.
+      auto Contract = Query(Wormhole ? 3 : 7, Format);
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      EXPECT_FALSE(Contract->getDstTransferFacts());
     }
   }
 }
@@ -1908,6 +2492,248 @@ TEST(RISCVTensix, BoundConfigurationResetRetainsColumnPredicateAndOwner) {
   }));
 }
 
+TEST(RISCVTensix, BoundLaneConfigAssignmentRetainsActualSourceAndColumns) {
+  using namespace RISCV;
+  struct Selection {
+    uint32_t Mask;
+    uint32_t Columns;
+  };
+  for (auto ID : {Intrinsic::tt_bh_sfpu_config_lane,
+                  Intrinsic::tt_wh_sfpu_config_lane})
+    for (auto Case : {Selection{0, 0}, Selection{1, 1},
+                      Selection{0x5554, 0xfe}, Selection{0xaaaa, 0},
+                      Selection{0xffff, 0xff}}) {
+      SCOPED_TRACE(unsigned(ID));
+      SCOPED_TRACE(Case.Mask);
+      auto Contract = getTensixBoundSFPUContract(
+          ID, boundConstants({0, Case.Mask, 8}));
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      const auto *Assign =
+          std::get_if<TensixSFPULaneConfigAssign>(&Contract->getLaneControl());
+      ASSERT_NE(Assign, nullptr);
+      EXPECT_EQ(Assign->SourceValue, 0u);
+      EXPECT_EQ(Assign->Columns, 8u);
+      EXPECT_EQ(Assign->SelectedColumns, Case.Columns);
+      EXPECT_EQ(Assign->ValueBits, 18u);
+      auto Registers = Contract->getRegisterArguments();
+      ASSERT_EQ(Registers.size(), 1u);
+      EXPECT_EQ(Registers[0].Argument, Assign->SourceValue);
+      EXPECT_EQ(Registers[0].Role, TensixBoundArgumentRole::FixedGroupRead);
+      EXPECT_EQ(Registers[0].FixedRegister, 0u);
+      EXPECT_EQ(Registers[0].Footprint,
+                TensixSFPURegisterFootprint::StateDependent);
+      EXPECT_TRUE(Contract->getTransferFacts().empty());
+      EXPECT_FALSE(Contract->getDstTransferFacts());
+      ASSERT_TRUE(Contract->getConfigurationFacts());
+      EXPECT_TRUE(Contract->getConfigurationFacts()->Requirements.empty());
+    }
+}
+
+TEST(RISCVTensix, BoundLaneConfigAssignmentDoesNotWritePacketsOrCondition) {
+  using namespace RISCV;
+  for (auto ID : {Intrinsic::tt_bh_sfpu_config_lane,
+                  Intrinsic::tt_wh_sfpu_config_lane}) {
+    auto Contract =
+        getTensixBoundSFPUContract(ID, boundConstants({0, 0x5554, 8}));
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    ASSERT_TRUE(std::holds_alternative<TensixSFPULaneConfigAssign>(
+        Contract->getLaneControl()));
+    unsigned Source = 0, Condition = 0, Configuration = 0, Issue = 0;
+    for (const auto &Effect : Contract->getArchitecturalEffects()) {
+      if (const auto *Argument =
+              std::get_if<TensixBoundArgumentRef>(&Effect.Resource)) {
+        ++Source;
+        EXPECT_EQ(Argument->Argument, 0u);
+        EXPECT_EQ(Effect.Access, TensixSFPUAccess::Read);
+        continue;
+      }
+      const auto *State = std::get_if<TensixSFPUState>(&Effect.Resource);
+      ASSERT_NE(State, nullptr);
+      switch (*State) {
+      case TensixSFPUState::CC:
+        ++Condition;
+        EXPECT_EQ(Effect.Access, TensixSFPUAccess::Read);
+        break;
+      case TensixSFPUState::Configuration:
+        ++Configuration;
+        EXPECT_EQ(Effect.Access, TensixSFPUAccess::ReadWrite);
+        break;
+      case TensixSFPUState::Issue:
+        ++Issue;
+        EXPECT_EQ(Effect.Access, TensixSFPUAccess::ReadWrite);
+        break;
+      default:
+        ADD_FAILURE() << "LaneConfig acquired an unrelated resource";
+      }
+    }
+    EXPECT_EQ(Source, 1u);
+    EXPECT_EQ(Condition, 1u);
+    EXPECT_EQ(Configuration, 1u);
+    EXPECT_EQ(Issue, 1u);
+  }
+}
+
+TEST(RISCVTensix, BoundLaneConfigRejectsForeignStageModeAndDynamicSelector) {
+  using namespace RISCV;
+  for (auto ID : {Intrinsic::tt_bh_sfpu_config_lane,
+                  Intrinsic::tt_wh_sfpu_config_lane}) {
+    for (int64_t Stage : {1, 2, 7, 8}) {
+      SCOPED_TRACE(Stage);
+      auto Contract =
+          getTensixBoundSFPUContract(ID, boundConstants({Stage, 0x5554, 8}));
+      ASSERT_FALSE(bool(Contract));
+      consumeError(Contract.takeError());
+    }
+    for (int64_t Mode : {0, 1, 9, 10, 12, 14}) {
+      SCOPED_TRACE(Mode);
+      auto Contract =
+          getTensixBoundSFPUContract(ID, boundConstants({0, 0x5554, Mode}));
+      ASSERT_FALSE(bool(Contract));
+      consumeError(Contract.takeError());
+    }
+    for (unsigned Field : {0u, 1u, 2u}) {
+      SCOPED_TRACE(Field);
+      auto Arguments = boundConstants({0, 0x5554, 8});
+      Arguments[Field] = {TensixBoundValueKind::DynamicScalar};
+      auto Contract = getTensixBoundSFPUContract(ID, Arguments);
+      ASSERT_FALSE(bool(Contract));
+      consumeError(Contract.takeError());
+    }
+  }
+}
+
+TEST(RISCVTensix, ContentsLaneConfigRetainsActualSourceValueWithoutPayloadFacts) {
+  using namespace RISCV;
+  for (auto Architecture : {TensixSFPUArchitecture::Blackhole,
+                            TensixSFPUArchitecture::Wormhole}) {
+    for (auto [Mask, Columns] :
+         {std::pair{0u, 0u}, std::pair{1u, 1u}, std::pair{0x5554u, 0xfeu},
+          std::pair{0xaaaau, 0u}, std::pair{0xffffu, 0xffu}}) {
+      SCOPED_TRACE(Mask);
+      auto Info = getTensixContentsIntrinsicInfo(
+          Intrinsic::riscv_tt_contents_config_lane,
+          {contents(), scalar(Mask), scalar(8)}, Architecture);
+      ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+      const auto *Assign =
+          std::get_if<TensixSFPULaneConfigAssign>(&Info->LaneControl);
+      ASSERT_NE(Assign, nullptr);
+      EXPECT_EQ(Assign->Columns, 8u);
+      EXPECT_EQ(Assign->SelectedColumns, Columns);
+      EXPECT_EQ(Assign->ValueBits, 18u);
+      ASSERT_LT(Assign->SourceValue, Info->TransferValues.size());
+      const auto *Source = std::get_if<TensixContentsArgumentRef>(
+          &Info->TransferValues[Assign->SourceValue]);
+      ASSERT_NE(Source, nullptr);
+      EXPECT_EQ(Source->Argument, 0u);
+      EXPECT_FALSE(fixedAccess(*Info, 0));
+      EXPECT_EQ(stateAccess(*Info, SFPUState::Configuration),
+                SFPUAccess::ReadWrite);
+      EXPECT_EQ(stateAccess(*Info, SFPUState::CC), SFPUAccess::Read);
+      EXPECT_TRUE(Info->Transfers.empty());
+      EXPECT_FALSE(Info->DstTransfer);
+      EXPECT_EQ(Info->NumResults, 0u);
+    }
+  }
+}
+
+TEST(RISCVTensix, LaneConfigValueDecodeRequiresActualKnownBits) {
+  using namespace RISCV;
+  auto Unknown = decodeTensixSFPULaneConfig(0, 0xf000);
+  EXPECT_FALSE(Unknown.EnableFP16AInf.has_value());
+  EXPECT_FALSE(Unknown.DisableBackdoorLoad.has_value());
+  EXPECT_FALSE(Unknown.EnableDestIndex.has_value());
+  EXPECT_FALSE(Unknown.CaptureDefaultDestIndex.has_value());
+  EXPECT_FALSE(Unknown.BlockDestWriteFromSFPU.has_value());
+  EXPECT_FALSE(Unknown.BlockSFPUReadFromDest.has_value());
+  EXPECT_FALSE(Unknown.DestReadColumnExchange.has_value());
+  EXPECT_FALSE(Unknown.DestWriteColumnExchange.has_value());
+  EXPECT_FALSE(Unknown.ExchangeSourceBAndC.has_value());
+  EXPECT_FALSE(Unknown.BlockDestMoveEven.has_value());
+  EXPECT_FALSE(Unknown.BlockDestMoveOdd.has_value());
+  for (auto Row : Unknown.RowMask)
+    EXPECT_FALSE(Row.has_value());
+  EXPECT_EQ(Unknown.ReservedKnownBits, 0u);
+  EXPECT_EQ(Unknown.ReservedValueBits, 0u);
+
+  auto Marker = decodeTensixSFPULaneConfig(0x3ffff, 0xf000);
+  EXPECT_EQ(Marker.EnableFP16AInf, false);
+  EXPECT_EQ(Marker.DisableBackdoorLoad, false);
+  EXPECT_EQ(Marker.EnableDestIndex, false);
+  EXPECT_EQ(Marker.CaptureDefaultDestIndex, false);
+  EXPECT_EQ(Marker.BlockDestWriteFromSFPU, false);
+  EXPECT_EQ(Marker.BlockSFPUReadFromDest, false);
+  EXPECT_EQ(Marker.DestReadColumnExchange, false);
+  EXPECT_EQ(Marker.DestWriteColumnExchange, false);
+  EXPECT_EQ(Marker.ExchangeSourceBAndC, false);
+  EXPECT_EQ(Marker.BlockDestMoveEven, false);
+  EXPECT_EQ(Marker.BlockDestMoveOdd, false);
+  for (auto Row : Marker.RowMask)
+    EXPECT_EQ(Row, true);
+  EXPECT_EQ(Marker.ReservedKnownBits, 0x30800u);
+  EXPECT_EQ(Marker.ReservedValueBits, 0u);
+}
+
+TEST(RISCVTensix, LaneConfigValueDecodeKeepsIndependentPartialFields) {
+  using namespace RISCV;
+  using Field = std::optional<bool> TensixSFPULaneConfigFields::*;
+  const Field Fields[] = {
+      &TensixSFPULaneConfigFields::EnableFP16AInf,
+      &TensixSFPULaneConfigFields::DisableBackdoorLoad,
+      &TensixSFPULaneConfigFields::EnableDestIndex,
+      &TensixSFPULaneConfigFields::CaptureDefaultDestIndex,
+      &TensixSFPULaneConfigFields::BlockDestWriteFromSFPU,
+      &TensixSFPULaneConfigFields::BlockSFPUReadFromDest,
+      &TensixSFPULaneConfigFields::DestReadColumnExchange,
+      &TensixSFPULaneConfigFields::DestWriteColumnExchange,
+      &TensixSFPULaneConfigFields::ExchangeSourceBAndC,
+      &TensixSFPULaneConfigFields::BlockDestMoveEven,
+      &TensixSFPULaneConfigFields::BlockDestMoveOdd};
+  for (unsigned Bit = 0; Bit != 11; ++Bit) {
+    SCOPED_TRACE(Bit);
+    auto Set = decodeTensixSFPULaneConfig(1u << Bit, 0xffffffff);
+    auto Clear = decodeTensixSFPULaneConfig(1u << Bit, ~(1u << Bit));
+    for (auto [Index, Member] : enumerate(Fields)) {
+      EXPECT_EQ((Set.*Member).has_value(), Index == Bit);
+      EXPECT_EQ((Clear.*Member).has_value(), Index == Bit);
+      if (Index == Bit) {
+        EXPECT_EQ(Set.*Member, true);
+        EXPECT_EQ(Clear.*Member, false);
+      }
+    }
+    for (auto Row : Set.RowMask)
+      EXPECT_FALSE(Row.has_value());
+  }
+  for (unsigned Row = 0; Row != 4; ++Row) {
+    SCOPED_TRACE(Row);
+    auto Bits = decodeTensixSFPULaneConfig(1u << (12 + Row), 0xffffffff);
+    for (unsigned Other = 0; Other != 4; ++Other) {
+      EXPECT_EQ(Bits.RowMask[Other].has_value(), Other == Row);
+      if (Other == Row)
+        EXPECT_EQ(Bits.RowMask[Other], true);
+    }
+    EXPECT_FALSE(Bits.EnableDestIndex.has_value());
+  }
+}
+
+TEST(RISCVTensix, LaneConfigValueDecodePreservesReservedAndDropsHighPayload) {
+  using namespace RISCV;
+  auto Full = decodeTensixSFPULaneConfig(0xffffffff, 0xffffffff);
+  auto Low = decodeTensixSFPULaneConfig(0x3ffff, 0x3ffff);
+  EXPECT_EQ(Full.ReservedKnownBits, 0x30800u);
+  EXPECT_EQ(Full.ReservedValueBits, 0x30800u);
+  EXPECT_EQ(Full.RowMask, Low.RowMask);
+  EXPECT_EQ(Full.EnableDestIndex, Low.EnableDestIndex);
+  auto Partial = decodeTensixSFPULaneConfig(0x10000, 0x3ffff);
+  EXPECT_EQ(Partial.ReservedKnownBits, 0x10000u);
+  EXPECT_EQ(Partial.ReservedValueBits, 0x10000u);
+  EXPECT_FALSE(Partial.EnableDestIndex.has_value());
+  auto High = decodeTensixSFPULaneConfig(0xfffc0000, 0xffffffff);
+  EXPECT_EQ(High.ReservedKnownBits, 0u);
+  EXPECT_EQ(High.ReservedValueBits, 0u);
+  for (auto Row : High.RowMask)
+    EXPECT_FALSE(Row.has_value());
+}
+
 TEST(RISCVTensix, BoundStateDependentFootprintIsNotWholeRegister) {
   using namespace RISCV;
   auto Constant = [](int64_t Value) {
@@ -2333,8 +3159,19 @@ TEST(RISCVTensix, BoundSetSignImmediateDeclaresExactMaskedIdentity) {
                                              : Intrinsic::tt_bh_sfpu_setsgn_v,
         boundConstants({1, 1, 2, 1, 0}));
     ASSERT_TRUE(bool(Vector)) << toString(Vector.takeError());
-    EXPECT_TRUE(Vector->getTransferFacts().empty());
-    EXPECT_FALSE(Vector->getConfigurationFacts());
+    ASSERT_EQ(Vector->getTransferFacts().size(), 1u);
+    const auto &Transfer = Vector->getTransferFacts().front();
+    EXPECT_EQ(Transfer.Kind, TensixSFPUTransferKind::LaneWise);
+    EXPECT_EQ(Transfer.ConstantBits, 0u);
+    EXPECT_FALSE(Transfer.ImmediateValue);
+    ASSERT_EQ(Transfer.Inputs.size(), 2u);
+    EXPECT_EQ(Transfer.Inputs[0].DemandedBits, 0x80000000u);
+    EXPECT_EQ(Transfer.Inputs[1].DemandedBits, 0x7fffffffu);
+    ASSERT_TRUE(Vector->getConfigurationFacts());
+    auto BrokenTie = getTensixBoundSFPUContract(
+        Vector->getIntrinsicID(), boundConstants({1, 1, 2, 3, 0}));
+    ASSERT_FALSE(bool(BrokenTie));
+    consumeError(BrokenTie.takeError());
   }
 }
 
@@ -2428,6 +3265,99 @@ TEST(RISCVTensix, BoundLeadingZerosRetainsModePreciseMachineCCDependencies) {
         EXPECT_FALSE(Contract->getConfigurationFacts());
       }
     }
+}
+
+TEST(RISCVTensix, BoundVectorDescaleUsesActualShiftAndInactiveOld) {
+  using namespace RISCV;
+  for (auto [ID, Rounding] :
+       {std::pair{Intrinsic::tt_wh_sfpu_stochrnd_v, 0},
+        std::pair{Intrinsic::tt_wh_sfpu_stochrnd_v, 1},
+        std::pair{Intrinsic::tt_bh_sfpu_stochrnd_v, 0},
+        std::pair{Intrinsic::tt_bh_sfpu_stochrnd_v, 1},
+        std::pair{Intrinsic::tt_bh_sfpu_stochrnd_v, 2}}) {
+    for (int Mode : {4, 5}) {
+      SCOPED_TRACE(static_cast<unsigned>(ID));
+      SCOPED_TRACE(Rounding);
+      SCOPED_TRACE(Mode);
+      auto Contract = getTensixBoundSFPUContract(
+          ID, boundConstants({4, 4, 1, 2, Mode, Rounding}));
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+      const auto &Facts = Contract->getTransferFacts().front();
+      EXPECT_EQ(Facts.DestinationArgument, 0u);
+      EXPECT_EQ(Facts.OldArgument, 1u);
+      EXPECT_TRUE(Facts.PreservesInactiveLanes);
+      EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
+      ASSERT_EQ(Facts.Inputs.size(), 2u);
+      EXPECT_EQ(Facts.Inputs[0].Argument, 2u);
+      EXPECT_EQ(Facts.Inputs[0].DemandedBits,
+                Mode == 5 || Rounding == 1 ? 0xffffffffu : 0x7fffffffu);
+      EXPECT_EQ(Facts.Inputs[1].Argument, 3u);
+      EXPECT_EQ(Facts.Inputs[1].DemandedBits, 0x1fu);
+      const auto &Configuration = Contract->getConfigurationFacts();
+      ASSERT_TRUE(bool(Configuration));
+      ASSERT_EQ(Configuration->Requirements.size(), 1u);
+      EXPECT_EQ(Configuration->Requirements.front().Field,
+                TensixSFPUConfigurationField::EnableDestIndex);
+    }
+  }
+}
+
+TEST(RISCVTensix, BoundFloatToIntegerRoundingPreservesInactiveOld) {
+  using namespace RISCV;
+  for (auto ID : {Intrinsic::tt_wh_sfpu_stochrnd_i,
+                  Intrinsic::tt_bh_sfpu_stochrnd_i}) {
+    for (int Mode : {2, 3, 6, 7}) {
+      for (int Round : {0, 1}) {
+        SCOPED_TRACE(static_cast<unsigned>(ID));
+        SCOPED_TRACE(Mode);
+        SCOPED_TRACE(Round);
+        auto Contract = getTensixBoundSFPUContract(
+            ID, boundConstants({1, 1, 0, 0, Mode, Round}));
+        ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+        ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+        const auto &Facts = Contract->getTransferFacts().front();
+        EXPECT_EQ(Facts.Kind, TensixSFPUTransferKind::LaneWise);
+        EXPECT_EQ(Facts.DestinationArgument, 0u);
+        EXPECT_EQ(Facts.OldArgument, 1u);
+        EXPECT_TRUE(Facts.RequiresLaneEnable);
+        EXPECT_TRUE(Facts.PreservesInactiveLanes);
+        EXPECT_EQ(Facts.GeneratedBits, 0xffffffffu);
+        ASSERT_EQ(Facts.Inputs.size(), 1u);
+        EXPECT_EQ(Facts.Inputs.front().Argument, 2u);
+        EXPECT_EQ(Facts.Inputs.front().DemandedBits,
+                  Mode == 2 || Mode == 6 ? 0x7fffffffu : 0xffffffffu);
+        EXPECT_TRUE(any_of(Contract->getArchitecturalEffects(), [](const auto &E) {
+          auto *State = std::get_if<TensixSFPUState>(&E.Resource);
+          return State && *State == TensixSFPUState::PRNG &&
+                 E.Access == TensixSFPUAccess::ReadWrite;
+        }));
+      }
+    }
+  }
+}
+
+TEST(RISCVTensix, BoundImmediateDescaleUsesLiteralAndInactiveOld) {
+  using namespace RISCV;
+  for (auto ID : {Intrinsic::tt_wh_sfpu_stochrnd_i,
+                  Intrinsic::tt_bh_sfpu_stochrnd_i}) {
+    for (int Mode : {4, 5}) {
+      for (int Round : {0, 1}) {
+        auto Contract = getTensixBoundSFPUContract(
+            ID, boundConstants({4, 4, 1, 31, Mode, Round}));
+        ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+        ASSERT_EQ(Contract->getTransferFacts().size(), 1u);
+        const auto &Facts = Contract->getTransferFacts().front();
+        EXPECT_EQ(Facts.DestinationArgument, 0u);
+        EXPECT_EQ(Facts.OldArgument, 1u);
+        EXPECT_TRUE(Facts.PreservesInactiveLanes);
+        ASSERT_EQ(Facts.Inputs.size(), 1u);
+        EXPECT_EQ(Facts.Inputs.front().Argument, 2u);
+        EXPECT_EQ(Facts.Inputs.front().DemandedBits,
+                  Mode == 5 || Round == 1 ? 0xffffffffu : 0x7fffffffu);
+      }
+    }
+  }
 }
 
 TEST(RISCVTensix, BoundLeadingZerosDeclaresExactDemandAndInactiveOnlyOld) {
@@ -2593,3 +3523,28 @@ TEST(RISCVTensix, LeadingZerosRejectsReservedModesAtBothIngresses) {
 }
 
 } // namespace
+
+TEST(RISCVTensix,
+     BoundRotateMode3DestIndexRequirementNamesOnlyActualDestination) {
+  using namespace RISCV;
+  for (auto ID : {Intrinsic::tt_wh_sfpu_shft2, Intrinsic::tt_bh_sfpu_shft2})
+    for (int64_t Dst : {1, 4}) {
+      const int64_t Src = Dst == 1 ? 4 : 1;
+      auto Contract = getTensixBoundSFPUContract(
+          ID, boundConstants({Dst, Dst, Src, 0, 3}));
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      const auto &Configuration = Contract->getConfigurationFacts();
+      ASSERT_TRUE(bool(Configuration));
+      ASSERT_EQ(Configuration->Requirements.size(), 1u);
+      const auto &Requirement = Configuration->Requirements.front();
+      EXPECT_EQ(Requirement.Argument, 0u);
+      EXPECT_EQ(Requirement.Field,
+                TensixSFPUConfigurationField::EnableDestIndex);
+      EXPECT_EQ(Requirement.Registers, (SmallVector<uint32_t, 4>{4, 5, 6, 7}));
+    }
+  auto Shift = getTensixBoundSFPUContract(
+      Intrinsic::tt_bh_sfpu_shft2, boundConstants({4, 4, 1, 0, 4}));
+  ASSERT_TRUE(bool(Shift)) << toString(Shift.takeError());
+  EXPECT_TRUE(Shift->getTransferFacts().empty());
+  EXPECT_FALSE(Shift->getConfigurationFacts());
+}

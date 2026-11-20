@@ -61,8 +61,8 @@ let Predicates = [HasVendorXTTTensix], hasSideEffects = 1,
     Uses = [TT_CC, TT_CONFIG, TT_DST, TT_ISSUE],
     Defs = [TT_CONFIG, TT_DST, TT_ISSUE] in {
   def PseudoTTSFPMacroAddressReset : Pseudo<(outs), (ins), []> {
-    // BH has twelve native setup instructions; WH retains seven.
-    let Size = 48;
+    // BH has fourteen native setup instructions and WH eleven.
+    let Size = 56;
     let mayLoad = 1;
     let mayStore = 1;
   }
@@ -73,7 +73,15 @@ let Predicates = [HasVendorXTTTensix], hasSideEffects = 1,
     let mayLoad = 0;
     let mayStore = 0;
   }
-  def PseudoTTSFPContentsLoadMacroADDI : Pseudo<(outs SFPRLow:$dst),
+  def PseudoTTBoundSFPLOADMACROADDI
+      : Pseudo<(outs), (ins uimm2:$dst, uimm9:$offset, uimm2:$index), []> {
+    let usesCustomInserter = 1;
+    let Defs = [TT_DST, TT_ISSUE];
+    let Size = 20;
+    let mayLoad = 1;
+    let mayStore = 1;
+  }
+  def PseudoTTSFPLoadMacroADDI : Pseudo<(outs SFPRLow:$dst),
       (ins SFPRLow:$old, uimm9:$offset, uimm2:$index), []> {
     let Constraints = "$dst = $old";
     let Defs = [TT_DST, TT_ISSUE];

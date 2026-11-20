@@ -20,8 +20,8 @@ ttapool3s2 16383, 1, 127, 3
 # CHECK: ttatcas 63, 63, 3, 15, 31, 1{{ *}}# encoding: [0xfd,0xff,0xff,0x93]
 ttatcas 63, 63, 3, 15, 31, 1
 
-# CHECK: ttatgetm 16777215{{ *}}# encoding: [0xfe,0xff,0xff,0x83]
-ttatgetm 16777215
+# CHECK: ttatgetm 4{{ *}}# encoding: [0x12,0x00,0x00,0x80]
+ttatgetm 4
 
 # CHECK: ttatincget 63, 63, 3, 511, 1{{ *}}# encoding: [0xfd,0xff,0xff,0x87]
 ttatincget 63, 63, 3, 511, 1
@@ -29,8 +29,8 @@ ttatincget 63, 63, 3, 511, 1
 # CHECK: ttatincgetptr 63, 63, 3, 15, 15, 1, 1{{ *}}# encoding: [0xfd,0xff,0xff,0x8b]
 ttatincgetptr 63, 63, 3, 15, 15, 1, 1
 
-# CHECK: ttatrelm 16777215{{ *}}# encoding: [0xfe,0xff,0xff,0x87]
-ttatrelm 16777215
+# CHECK: ttatrelm 4{{ *}}# encoding: [0x12,0x00,0x00,0x84]
+ttatrelm 4
 
 # CHECK: ttatswap 63, 255, 511, 1{{ *}}# encoding: [0xfd,0xff,0xff,0x8f]
 ttatswap 63, 255, 511, 1

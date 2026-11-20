@@ -21,6 +21,7 @@
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixLowering.h"
+#include "RISCVTensixNativeLowering.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -13901,7 +13902,7 @@ SDValue RISCVTargetLowering::LowerINTRINSIC_VOID(SDValue Op,
     return Contents;
   if (SDValue Bound = lowerTensixBoundSFPUIntrinsic(Op, DAG, Subtarget))
     return Bound;
-  if (SDValue Tensix = lowerTensixOrdinaryIntrinsic(Op, DAG, Subtarget))
+  if (SDValue Tensix = lowerTensixNativeIntrinsic(Op, DAG, Subtarget))
     return Tensix;
   unsigned IntNo = Op.getConstantOperandVal(1);
   switch (IntNo) {

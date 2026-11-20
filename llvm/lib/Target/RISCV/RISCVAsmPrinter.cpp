@@ -415,7 +415,7 @@ void RISCVAsmPrinter::emitNTLHint(const MachineInstr *MI) {
 
 void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
   if (MI->isBundle()) {
-    auto Window = getTensixReplayBundle(*MI);
+    auto Window = getTensixIssueBundle(*MI);
     if (!Window) {
       OutContext.reportError(SMLoc(), toString(Window.takeError()));
       return;

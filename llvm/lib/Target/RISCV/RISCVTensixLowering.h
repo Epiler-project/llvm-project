@@ -11,8 +11,6 @@ class SelectionDAG;
 class RISCVSubtarget;
 Error verifyTensixContentsIntrinsicFields(const IntrinsicInst &II,
                                           bool Wormhole = false);
-SDValue lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
-                                    const RISCVSubtarget &ST);
 SDValue lowerTensixContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
                                     const RISCVSubtarget &ST);
 } // namespace llvm

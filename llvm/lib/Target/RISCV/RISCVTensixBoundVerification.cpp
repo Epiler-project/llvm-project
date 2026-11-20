@@ -8,6 +8,7 @@
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixExplicitReplay.h"
+#include "RISCVTensixMacro.h"
 #include "RISCVTensixReplay.h"
 #include "RISCVTensixReplayTemplate.h"
 #include "llvm/ADT/STLExtras.h"
@@ -51,7 +52,8 @@ bool isNativeIssue(const MachineInstr &MI) {
          MI.getOpcode() == RISCV::PseudoTTMOPClear ||
          MI.getOpcode() == RISCV::PseudoTTMOPControlWrite ||
          MI.getOpcode() == RISCV::PseudoTTMOPControlWriteImm ||
-         MI.getOpcode() == RISCV::PseudoTTReplayRecordEnd;
+         MI.getOpcode() == RISCV::PseudoTTReplayRecordEnd ||
+         isTensixMacroInstruction(MI.getOpcode());
 }
 
 } // namespace
@@ -79,7 +81,7 @@ Error llvm::verifyTensixMachineEffects(const MachineInstr &MI,
   for (const MachineOperand &MO : MI.implicit_operands()) {
     if (!MO.isReg() || !MO.getReg().isPhysical() || MO.getSubReg() ||
         MO.isUndef() ||
-        (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
+        (MO.isInternalRead() && !isTensixIssueBundleMember(MI)) ||
         MO.isEarlyClobber() || MO.isRenamable())
       return Fail();
     if (MO.isDef() ? !is_contained(Desc.implicit_defs(), MO.getReg().id())
@@ -128,7 +130,7 @@ Error llvm::verifyTensixMachineOperands(const MachineInstr &MI,
           "bound Tensix SFPU operand does not match its native register class");
     bool EarlyClobber = Desc.getOperandConstraint(I, MCOI::EARLY_CLOBBER) >= 0;
     if (MO.getSubReg() || MO.isUndef() ||
-        (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
+        (MO.isInternalRead() && !isTensixIssueBundleMember(MI)) ||
         MO.isDef() != (I < Desc.getNumDefs()) ||
         MO.isEarlyClobber() != EarlyClobber)
       return createStringError(
@@ -204,7 +206,7 @@ Error verifyDstPort(const MachineInstr &MI, const MachineRegisterInfo &MRI,
   for (unsigned I : {WordIndex, AddressIndex, OffsetIndex}) {
     const MachineOperand &MO = MI.getOperand(I);
     if (!MO.isReg() || !MO.getReg() || MO.getSubReg() || MO.isUndef() ||
-        (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
+        (MO.isInternalRead() && !isTensixIssueBundleMember(MI)) ||
         MO.isDef() != (I != OffsetIndex) ||
         MO.isEarlyClobber() != (I != OffsetIndex))
       return createStringError("bound Tensix SFPU requires explicit scalar "
@@ -321,12 +323,12 @@ public:
         if (MI.isDebugInstr())
           continue;
         if (MI.isBundle()) {
-          auto Bundle = getTensixReplayBundle(MI);
+          auto Bundle = getTensixIssueBundle(MI);
           if (!Bundle)
             return Fail(toString(Bundle.takeError()));
           continue;
         }
-        if (MI.isBundled() && !isTensixReplayBundleMember(MI))
+        if (MI.isBundled() && !isTensixIssueBundleMember(MI))
           return Fail("bound Tensix SFPU bundle has no verified issue order");
         if (MI.isCall())
           return Fail("bound Tensix SFPU call has no preservation ABI");
@@ -345,7 +347,7 @@ public:
             return Fail(
                 "bound Tensix SFPU cannot contain virtual SFPU registers");
           if (MO.getSubReg() || MO.isUndef() ||
-              (MO.isInternalRead() && !isTensixReplayBundleMember(MI)) ||
+              (MO.isInternalRead() && !isTensixIssueBundleMember(MI)) ||
               MO.isRenamable())
             return Fail(
                 "bound Tensix SFPU requires defined whole-register operands");

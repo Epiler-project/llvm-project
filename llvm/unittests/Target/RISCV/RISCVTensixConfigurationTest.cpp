@@ -46,6 +46,25 @@ TEST(RISCVTensixConfiguration, TransposeHasProvedErratumExemptionAndLaneReads) {
 class RISCVTensixDestinationConfigurationTest
     : public testing::TestWithParam<ConfigurationCase> {};
 
+TEST(RISCVTensixConfiguration, SwapRequiresBothMinMaxControlsForBothWrites) {
+  for (auto ID : {Intrinsic::tt_wh_sfpu_swap, Intrinsic::tt_bh_sfpu_swap}) {
+    auto Contract = getTensixBoundSFPUContract(
+        ID, {constant(2), constant(6), constant(2), constant(6), constant(1)});
+    ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+    const auto &Facts = Contract->getConfigurationFacts();
+    ASSERT_TRUE(Facts);
+    ASSERT_EQ(Facts->Requirements.size(), 4u);
+    for (unsigned Index = 0; Index != 4; ++Index) {
+      const auto &Requirement = Facts->Requirements[Index];
+      EXPECT_EQ(Requirement.Argument, Index / 2);
+      // Two independent fields must be disabled for ordinary min+max.
+      EXPECT_EQ(static_cast<unsigned>(Requirement.Field), Index % 2);
+      EXPECT_EQ(Requirement.Registers,
+                (SmallVector<uint32_t, 8>{0, 1, 2, 3, 4, 5, 6, 7}));
+    }
+  }
+}
+
 TEST_P(RISCVTensixDestinationConfigurationTest,
        RequirementNamesOnlyActualWriteArgumentAndAffectedRegisters) {
   // Requirements describe the native write class, including when its current
@@ -103,19 +122,21 @@ INSTANTIATE_TEST_SUITE_P(
                           {constant(0), constant(0), constant(6), constant(0)}},
         ConfigurationCase{Intrinsic::tt_bh_sfpu_arecip,
                           {constant(0), constant(0), constant(6), constant(1)}},
-        ConfigurationCase{Intrinsic::tt_bh_sfpu_arecip,
-                          {constant(0), constant(0), constant(6), constant(2)}}));
+        ConfigurationCase{
+            Intrinsic::tt_bh_sfpu_arecip,
+            {constant(0), constant(0), constant(6), constant(2)}}));
 
-TEST(RISCVTensixConfiguration, ReciprocalUnboundWriteRetainsErratumRequirement) {
+TEST(RISCVTensixConfiguration,
+     ReciprocalUnboundWriteRetainsErratumRequirement) {
   // Blackhole SFPCONFIG shares the Wormhole definition. TEN-2932 exempts
   // SFPLOAD/LOADI/SWAP/TRANSP, not SFPARECIP. The requirement must survive
   // until the one existing binder chooses the actual destination.
   const TensixBoundValue Unbound{TensixBoundValueKind::UnboundRegister};
   for (int64_t Mode : {0, 1, 2}) {
     SCOPED_TRACE(Mode);
-    auto Contract = getTensixBoundSFPUContract(
-        Intrinsic::tt_bh_sfpu_arecip,
-        {Unbound, Unbound, Unbound, constant(Mode)});
+    auto Contract =
+        getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_arecip,
+                                   {Unbound, Unbound, Unbound, constant(Mode)});
     ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
     const auto &Facts = Contract->getConfigurationFacts();
     ASSERT_TRUE(Facts);
@@ -134,18 +155,24 @@ class RISCVTensixLoadImmediateConfigurationTest
 TEST_P(RISCVTensixLoadImmediateConfigurationTest,
        ErratumExemptionHasProvedEmptyRequirements) {
   // TEN-2932 excludes SFPLOADI, including half-word updates to L4-L7.
-  auto Contract = getTensixBoundSFPUContract(
-      Intrinsic::tt_bh_sfpu_loadi,
-      {constant(7), constant(7), constant(0x1234), constant(GetParam())});
-  ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-  const auto &Facts = Contract->getConfigurationFacts();
-  ASSERT_TRUE(Facts);
-  EXPECT_TRUE(Facts->Requirements.empty());
+  for (auto ID : {Intrinsic::tt_bh_sfpu_loadi, Intrinsic::tt_wh_sfpu_loadi}) {
+    SCOPED_TRACE(ID);
+    for (auto Immediate : {0, 0x1234, 0xffff}) {
+      SCOPED_TRACE(Immediate);
+      auto Contract = getTensixBoundSFPUContract(ID, {constant(7), constant(7),
+                                                      constant(Immediate),
+                                                      constant(GetParam())});
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      const auto &Facts = Contract->getConfigurationFacts();
+      ASSERT_TRUE(Facts);
+      EXPECT_TRUE(Facts->Requirements.empty());
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(ReceivedImmediateForms,
                          RISCVTensixLoadImmediateConfigurationTest,
-                         testing::Values(0, 8, 10));
+                         testing::Values(0, 1, 2, 4, 8, 10));
 
 class RISCVTensixDstConfigurationTest
     : public testing::TestWithParam<ConfigurationCase> {};
@@ -198,6 +225,160 @@ TEST(RISCVTensixConfiguration, ConditionControlHasProvedEmptyRequirements) {
   const auto &Facts = Contract->getConfigurationFacts();
   ASSERT_TRUE(Facts);
   EXPECT_TRUE(Facts->Requirements.empty());
+}
+
+TEST(RISCVTensixConfiguration, SetCCProjectsActualSourceAndConditionEffects) {
+  using Predicate = TensixSFPUConditionPredicate;
+  using Role = TensixBoundArgumentRole;
+  using State = TensixSFPUState;
+  using Access = TensixSFPUAccess;
+  const std::pair<int64_t, Predicate> Modes[] = {{0, Predicate::Negative},
+                                                 {2, Predicate::NonZero},
+                                                 {4, Predicate::NonNegative},
+                                                 {6, Predicate::Zero}};
+  for (Intrinsic::ID ID :
+       {Intrinsic::tt_wh_sfpu_setcc, Intrinsic::tt_bh_sfpu_setcc}) {
+    for (auto [Mode, Pred] : Modes) {
+      SCOPED_TRACE(ID);
+      SCOPED_TRACE(Mode);
+      auto Contract = getTensixBoundSFPUContract(
+          ID, {constant(13), constant(0), constant(Mode)});
+      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+      ASSERT_TRUE(Contract->getConfigurationFacts());
+      EXPECT_TRUE(Contract->getConfigurationFacts()->Requirements.empty());
+      EXPECT_TRUE(Contract->getTransferFacts().empty());
+      EXPECT_TRUE(Contract->getRegisterConstraints().empty());
+      ASSERT_EQ(Contract->getArgumentRoles().size(), 3u);
+      EXPECT_EQ(Contract->getArgumentRoles()[0], Role::ReadRegister);
+      EXPECT_EQ(Contract->getArgumentRoles()[1], Role::LogicalImmediate);
+      EXPECT_EQ(Contract->getArgumentRoles()[2], Role::LogicalImmediate);
+
+      const auto *Compare =
+          std::get_if<TensixSFPUConditionCompare>(&Contract->getLaneControl());
+      ASSERT_NE(Compare, nullptr);
+      EXPECT_EQ(Compare->SourceValue, 0u);
+      EXPECT_EQ(Compare->Predicate, Pred);
+      ASSERT_EQ(Contract->getRegisterArguments().size(), 1u);
+      const auto &Source = Contract->getRegisterArguments()[0];
+      EXPECT_EQ(Source.Argument, Compare->SourceValue);
+      EXPECT_EQ(Source.Role, Role::ReadRegister);
+      EXPECT_FALSE(Source.FixedRegister);
+      ASSERT_EQ(Source.AllowedRegisters.size(), 16u);
+      for (unsigned Register = 0; Register != 16; ++Register)
+        EXPECT_TRUE(is_contained(Source.AllowedRegisters, Register));
+
+      const auto Effects = Contract->getArchitecturalEffects();
+      ASSERT_EQ(Effects.size(), 4u);
+      EXPECT_EQ(count_if(Effects,
+                         [](const auto &Effect) {
+                           const auto *Ref =
+                               std::get_if<TensixBoundArgumentRef>(
+                                   &Effect.Resource);
+                           return Ref && Ref->Argument == 0 &&
+                                  Effect.Access == Access::Read;
+                         }),
+                1);
+      for (auto [Resource, Permission] :
+           {std::pair{State::CC, Access::ReadWrite},
+            std::pair{State::Configuration, Access::Read},
+            std::pair{State::Issue, Access::ReadWrite}}) {
+        EXPECT_EQ(count_if(Effects,
+                           [&](const auto &Effect) {
+                             const auto *Actual =
+                                 std::get_if<State>(&Effect.Resource);
+                             return Actual && *Actual == Resource &&
+                                    Effect.Access == Permission;
+                           }),
+                  1);
+      }
+    }
+  }
+}
+
+TEST(RISCVTensixConfiguration, SetCCRequiresOnlyTheActualComparisonBits) {
+  using Predicate = TensixSFPUConditionPredicate;
+  const TensixSFPUConditionCompare Neg{0, Predicate::Negative};
+  const TensixSFPUConditionCompare NonNeg{0, Predicate::NonNegative};
+  const TensixSFPUConditionCompare NonZero{0, Predicate::NonZero};
+  const TensixSFPUConditionCompare Zero{0, Predicate::Zero};
+  constexpr uint32_t SignBit = 0x80000000u;
+  constexpr uint32_t AllBits = 0xffffffffu;
+  const TensixSFPUValueBits Unknown{0, 0};
+  EXPECT_EQ(Neg.getRequiredSourceBits(), SignBit);
+  EXPECT_EQ(NonNeg.getRequiredSourceBits(), SignBit);
+  EXPECT_EQ(NonZero.getRequiredSourceBits(), AllBits);
+  EXPECT_EQ(Zero.getRequiredSourceBits(), AllBits);
+  EXPECT_EQ(Neg.evaluateFlags(false, true, true, {SignBit, SignBit}), true);
+  EXPECT_EQ(NonNeg.evaluateFlags(false, true, true, {SignBit, 0}), true);
+  EXPECT_EQ(Neg.evaluateFlags(false, true, true, {1, 1}), std::nullopt);
+  EXPECT_EQ(NonZero.evaluateFlags(false, true, true, {1, 1}), true);
+  EXPECT_EQ(Zero.evaluateFlags(false, true, true, {1, 1}), false);
+  EXPECT_EQ(Zero.evaluateFlags(false, true, true, {1, 0}), std::nullopt);
+  EXPECT_EQ(Zero.evaluateFlags(false, true, true, {0, 1}), std::nullopt);
+  EXPECT_EQ(Zero.evaluateFlags(false, true, true, {AllBits, 0}), true);
+  EXPECT_EQ(NonZero.evaluateFlags(false, true, true, {AllBits, 0}), false);
+  EXPECT_EQ(Zero.evaluateFlags(false, true, true, {AllBits, SignBit}), false);
+  EXPECT_EQ(Neg.evaluateFlags(true, false, true, Unknown), true);
+  EXPECT_EQ(Neg.evaluateFlags(true, true, false, Unknown), false);
+  EXPECT_EQ(Neg.evaluateFlags(false, false, true, Unknown), false);
+  EXPECT_EQ(Neg.evaluateFlags(false, true, false, Unknown), false);
+  EXPECT_EQ(Neg.evaluateFlags(false, true, true, Unknown), std::nullopt);
+}
+
+TEST(RISCVTensixConfiguration, SetCCContentsProjectsActualSourceValue) {
+  for (auto Architecture :
+       {TensixSFPUArchitecture::Wormhole, TensixSFPUArchitecture::Blackhole}) {
+    auto Info = getTensixContentsIntrinsicInfo(
+        Intrinsic::riscv_tt_contents_setcc,
+        {{TensixContentsValueKind::Contents, std::nullopt},
+         {TensixContentsValueKind::Scalar, 6}},
+        Architecture);
+    ASSERT_TRUE(bool(Info)) << toString(Info.takeError());
+    const auto *Compare =
+        std::get_if<TensixSFPUConditionCompare>(&Info->LaneControl);
+    ASSERT_NE(Compare, nullptr);
+    EXPECT_EQ(Compare->Predicate, TensixSFPUConditionPredicate::Zero);
+    ASSERT_LT(Compare->SourceValue, Info->TransferValues.size());
+    const auto *Source = std::get_if<TensixContentsArgumentRef>(
+        &Info->TransferValues[Compare->SourceValue]);
+    ASSERT_NE(Source, nullptr);
+    EXPECT_EQ(Source->Argument, 0u);
+  }
+}
+
+TEST(RISCVTensixConfiguration, SetCCRejectsOtherFieldsAndWrongRegisterClass) {
+  using ValueKind = TensixBoundValueKind;
+  for (Intrinsic::ID ID :
+       {Intrinsic::tt_wh_sfpu_setcc, Intrinsic::tt_bh_sfpu_setcc}) {
+    SCOPED_TRACE(ID);
+    const std::pair<unsigned, TensixBoundValue> InvalidFields[] = {
+        {0, constant(-1)},
+        {0, constant(16)},
+        {0, {ValueKind::DynamicScalar}},
+        {1, constant(1)},
+        {1, {ValueKind::UnboundRegister}},
+        {2, constant(1)},
+        {2, constant(8)},
+        {2, {ValueKind::DynamicScalar}}};
+    for (const auto &[Field, Value] : InvalidFields) {
+      SmallVector<TensixBoundValue, 3> Args{constant(0), constant(0),
+                                            constant(0)};
+      Args[Field] = Value;
+      auto Rejected = getTensixBoundSFPUContract(ID, Args);
+      ASSERT_FALSE(bool(Rejected));
+      consumeError(Rejected.takeError());
+    }
+    auto Unbound = getTensixBoundSFPUContract(
+        ID, {{ValueKind::UnboundRegister}, constant(0), constant(4)});
+    ASSERT_TRUE(bool(Unbound)) << toString(Unbound.takeError());
+    ASSERT_EQ(Unbound->getRegisterArguments().size(), 1u);
+    EXPECT_EQ(Unbound->getRegisterArguments()[0].Argument, 0u);
+    auto UnboundIngress = verifyTensixBoundSFPUOperands(
+        ID, {{ValueKind::UnboundRegister}, constant(0), constant(4)});
+    EXPECT_EQ(toString(std::move(UnboundIngress)),
+              "bound SFPU physical operands and logical immediates must be "
+              "constant");
+  }
 }
 
 class RISCVTensixConditionStackConfigurationTest
@@ -289,8 +470,8 @@ INSTANTIATE_TEST_SUITE_P(PlainConditionStack,
 
 TEST(RISCVTensixConfiguration,
      ModeOneStackHasDistinctTypedActionsAndExactStateEffects) {
-  for (Intrinsic::ID ID : {Intrinsic::tt_bh_sfpu_pushc,
-                           Intrinsic::tt_bh_sfpu_popc}) {
+  for (Intrinsic::ID ID :
+       {Intrinsic::tt_bh_sfpu_pushc, Intrinsic::tt_bh_sfpu_popc}) {
     SCOPED_TRACE(ID);
     auto Plain = getTensixBoundSFPUContract(ID, {constant(0), constant(0)});
     ASSERT_TRUE(bool(Plain)) << toString(Plain.takeError());
@@ -347,8 +528,8 @@ TEST(RISCVTensixConfiguration,
        {std::pair<int64_t, Action>{3, Action::AndTop},
         std::pair<int64_t, Action>{4, Action::OrTop}}) {
     SCOPED_TRACE(Mode);
-    auto Contract = getTensixBoundSFPUContract(
-        Intrinsic::tt_bh_sfpu_popc, {constant(0), constant(Mode)});
+    auto Contract = getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_popc,
+                                               {constant(0), constant(Mode)});
     ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
     const auto *Update = std::get_if<TensixSFPUConditionStackUpdate>(
         &Contract->getLaneControl());
@@ -380,9 +561,8 @@ TEST(RISCVTensixConfiguration,
 }
 
 TEST(RISCVTensixConfiguration, SFPPOPCRejectsUnspecifiedCombineMode) {
-  auto Contract = getTensixBoundSFPUContract(
-      Intrinsic::tt_bh_sfpu_popc,
-      {constant(0), constant(2)});
+  auto Contract = getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_popc,
+                                             {constant(0), constant(2)});
   ASSERT_FALSE(bool(Contract));
   EXPECT_EQ(toString(Contract.takeError()),
             "bound SFPU unsupported mode at operand 1");
@@ -392,16 +572,16 @@ TEST(RISCVTensixConfiguration, ConditionStackRejectsUnsupportedFields) {
   // VD stays zero. Push receives only modes zero and one; pop additionally
   // receives Blackhole's mode-three/four Boolean-combine forms. Other
   // mutation and flag-setting modes remain unavailable.
-  for (Intrinsic::ID ID : {Intrinsic::tt_bh_sfpu_pushc,
-                           Intrinsic::tt_bh_sfpu_popc}) {
+  for (Intrinsic::ID ID :
+       {Intrinsic::tt_bh_sfpu_pushc, Intrinsic::tt_bh_sfpu_popc}) {
     SCOPED_TRACE(ID);
     for (unsigned Field : {0u, 1u}) {
       SCOPED_TRACE(Field);
       for (int64_t Value = -1; Value != 17; ++Value) {
         const bool ValidMode =
-            Field == 1 && (Value == 0 || Value == 1 ||
-                           (ID == Intrinsic::tt_bh_sfpu_popc &&
-                            (Value == 3 || Value == 4)));
+            Field == 1 &&
+            (Value == 0 || Value == 1 ||
+             (ID == Intrinsic::tt_bh_sfpu_popc && (Value == 3 || Value == 4)));
         if (Field == 0 && Value == 0)
           continue;
         if (ValidMode)
@@ -461,8 +641,7 @@ TEST(RISCVTensixConfiguration, ConfigurationResetHasProvedEmptyRequirements) {
 }
 
 TEST(RISCVTensixConfiguration, NoOpHasProvedEmptyRequirements) {
-  auto Contract =
-      getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_nop, {});
+  auto Contract = getTensixBoundSFPUContract(Intrinsic::tt_bh_sfpu_nop, {});
   ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
   const auto &Facts = Contract->getConfigurationFacts();
   ASSERT_TRUE(Facts);
@@ -485,6 +664,7 @@ TEST(RISCVTensixConfiguration, ConfigurationResetClearsReceivedLaneFields) {
   EXPECT_TRUE(Reset->ClearsDstWriteColumnExchange);
   EXPECT_TRUE(Reset->ClearsDstIndexCapture);
   EXPECT_TRUE(Reset->ClearsDstMoveBlock);
+  EXPECT_TRUE(Reset->ClearsExchangeSourceBAndC);
 }
 
 TEST(RISCVTensixConfiguration, SignedImmediateHasProvedEmptyRequirements) {
@@ -513,15 +693,14 @@ TEST_P(RISCVTensixUnreceivedConfigurationTest,
 INSTANTIATE_TEST_SUITE_P(
     OtherNativeForms, RISCVTensixUnreceivedConfigurationTest,
     testing::Values(
-        ConfigurationCase{Intrinsic::tt_bh_sfpu_cast,
-                          {constant(0), constant(0), constant(1), constant(1)}},
+        // Mode 4 remains legal on Blackhole without a configuration receiver;
+        // this is distinct from SFPLOADI FloatA's proved empty requirements.
+        ConfigurationCase{
+            Intrinsic::tt_bh_sfpu_shft2,
+            {constant(4), constant(4), constant(1), constant(0), constant(4)}},
         ConfigurationCase{
             Intrinsic::tt_bh_sfpu_config_creg,
             {constant(0), constant(11), constant(0), constant(0)}},
-        ConfigurationCase{Intrinsic::tt_bh_sfpu_loadi,
-                          {constant(7), constant(7), constant(0), constant(1)}},
-        ConfigurationCase{Intrinsic::tt_bh_sfpu_loadi,
-                          {constant(7), constant(7), constant(0), constant(2)}},
         ConfigurationCase{Intrinsic::tt_bh_sfpu_iadd,
                           {constant(0), constant(0), constant(1), constant(0)}},
         ConfigurationCase{Intrinsic::tt_bh_sfpu_iadd,

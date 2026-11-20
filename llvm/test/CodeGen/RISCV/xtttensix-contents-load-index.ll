@@ -30,8 +30,8 @@
 ; additionally checks capture disabled with its maximum native AddrMod.
 ; Dynamic Dst coordinates use the same coupled allocation representation.
 ; OFFSET: contents paired LOAD Dst offset must be in [0, 1023]
-; FORMAT: SFPLOADIndex mode must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
-; ADDRMOD: Wormhole SFPLOADIndex operand 5 must be in [0, 3]
+; FORMAT: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+; ADDRMOD: Tensix function 'invalid_addrmod': Wormhole SFPLOAD operand 3 must be in [0, 3]
 
 ; BH-LABEL: <load_index_capture>:
 ; BH: ttsfpload l0, 4, 0, 3

@@ -59,6 +59,8 @@ if(CXX_SUPPORTS_COVERED_SWITCH_DEFAULT_FLAG)
   add_definitions("-Wno-covered-switch-default")
 endif()
 
+# Catch exceptions thrown by test bodies without changing LLVM product EH.
+set(LLVM_REQUIRES_EH 1)
 set(LLVM_REQUIRES_RTTI 1)
 add_definitions( -DGTEST_HAS_RTTI=0 )
 

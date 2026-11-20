@@ -12,8 +12,27 @@ class TTPhysicalSFPUIntrinsic<int Count, list<IntrinsicProperty> Fields =
         !listconcat([IntrHasSideEffects, IntrConvergent, IntrNoDuplicate],
                     Fields)>;
 
+// The recording identity is symbolic. Machine replay determines the final
+// length and placement after checking the actual body's native effects.
+class TTReplayTemplateControl<int Count>
+    : Intrinsic<[], !listsplat(llvm_i32_ty, Count),
+        !listconcat([IntrHasSideEffects, IntrConvergent, IntrNoDuplicate],
+                    !foreach(Index, !range(Count), ImmArg<ArgIndex<Index>>))>;
+def int_tt_wh_replay_template_begin : TTReplayTemplateControl<4>;
+def int_tt_wh_replay_template_end : TTReplayTemplateControl<1>;
+def int_tt_wh_replay_template_execute : TTReplayTemplateControl<1>;
+def int_tt_wh_replay_template_mop : TTReplayTemplateControl<2>;
+def int_tt_wh_mop_execute : TTReplayTemplateControl<3>;
+def int_tt_bh_replay_template_begin : TTReplayTemplateControl<4>;
+def int_tt_bh_replay_template_end : TTReplayTemplateControl<1>;
+def int_tt_bh_replay_template_execute : TTReplayTemplateControl<1>;
+def int_tt_bh_replay_template_mop : TTReplayTemplateControl<2>;
+
 // Wormhole B0: no ARECIP/GT/LE hardware instructions.
 def int_tt_wh_sfpu_loadi : TTPhysicalSFPUIntrinsic<4>;
+def int_tt_wh_sfpu_macro_address_reset : TTPhysicalSFPUIntrinsic<0>;
+def int_tt_wh_sfpu_macro_configure_addi : TTPhysicalSFPUIntrinsic<2>;
+def int_tt_wh_sfpu_load_macro_addi : TTPhysicalSFPUIntrinsic<3>;
 def int_tt_wh_sfpu_load : TTPhysicalSFPUIntrinsic<5,
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<4>>]>;
 def int_tt_wh_sfpu_store : TTPhysicalSFPUIntrinsic<4,
@@ -69,12 +88,16 @@ def int_tt_wh_sfpu_config_reset : TTPhysicalSFPUIntrinsic<0>;
 
 // Blackhole: receives its native modes, independent of Wormhole limits.
 def int_tt_bh_sfpu_loadi : TTPhysicalSFPUIntrinsic<4>;
+def int_tt_bh_sfpu_macro_address_reset : TTPhysicalSFPUIntrinsic<0>;
+def int_tt_bh_sfpu_macro_configure_addi : TTPhysicalSFPUIntrinsic<2>;
+def int_tt_bh_sfpu_load_macro_addi : TTPhysicalSFPUIntrinsic<3>;
 def int_tt_bh_sfpu_load : TTPhysicalSFPUIntrinsic<5,
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<4>>]>;
 def int_tt_bh_sfpu_store : TTPhysicalSFPUIntrinsic<4,
     [ImmArg<ArgIndex<0>>, ImmArg<ArgIndex<2>>, ImmArg<ArgIndex<3>>]>;
 def int_tt_bh_sfpu_add : TTPhysicalSFPUIntrinsic<5>;
 def int_tt_bh_sfpu_mul : TTPhysicalSFPUIntrinsic<5>;
+def int_tt_bh_sfpu_mul23 : TTPhysicalSFPUIntrinsic<5>;
 def int_tt_bh_sfpu_mad : TTPhysicalSFPUIntrinsic<6>;
 def int_tt_bh_sfpu_iadd : TTPhysicalSFPUIntrinsic<4>;
 def int_tt_bh_sfpu_mov : TTPhysicalSFPUIntrinsic<4>;

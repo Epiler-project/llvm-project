@@ -10,6 +10,7 @@
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
 #include "RISCVTensixContentsGroup.h"
+#include "RISCVTensixMacro.h"
 #include "RISCVTensixReplay.h"
 #include "RISCVTensixReplayTemplate.h"
 #include "llvm/ADT/BitVector.h"
@@ -1002,26 +1003,7 @@ Expected<uint32_t> llvm::getTensixReplayMask(const MachineInstr &MI,
   return uint32_t(((uint64_t(1) << Length) - 1) << Start);
 }
 
-Expected<TensixReplayBundle>
-llvm::getTensixReplayBundle(const MachineInstr &Bundle) {
-  const MachineBasicBlock *BB = Bundle.getParent();
-  if (!BB || !Bundle.isBundle() || Bundle.isBundledWithPred() ||
-      !Bundle.isBundledWithSucc())
-    return createStringError(
-        "bound Tensix SFPU bundle has no verified issue order");
-  TensixReplayBundle Result{&Bundle, nullptr, nullptr, {}};
-  auto It = std::next(Bundle.getIterator());
-  for (;;) {
-    if (It == BB->instr_end() || !It->isBundledWithPred() || It->isBundle())
-      return createStringError(
-          "explicit replay bundle has inconsistent boundaries");
-    Result.Members.push_back(&*It);
-    if (!It->isBundledWithSucc())
-      break;
-    ++It;
-  }
-  Result.Header = Result.Members.front();
-  Result.End = Result.Members.back();
+static Error verifyReplayBundleMembers(const TensixIssueBundle &Result) {
   const MachineInstr &Header = *Result.Header;
   if (Header.getOpcode() != RISCV::PseudoTTExplicitSFPUReplay ||
       Header.getNumExplicitOperands() != 4)
@@ -1081,6 +1063,42 @@ llvm::getTensixReplayBundle(const MachineInstr &Bundle) {
     return createStringError("explicit replay bundle final issue count " +
                              Twine(Count) + " differs from declared length " +
                              Twine(Header.getOperand(2).getImm()));
+  return Error::success();
+}
+
+Expected<TensixIssueBundle>
+llvm::getTensixIssueBundle(const MachineInstr &Bundle) {
+  const MachineBasicBlock *BB = Bundle.getParent();
+  if (!BB || !Bundle.isBundle() || Bundle.isBundledWithPred() ||
+      !Bundle.isBundledWithSucc())
+    return createStringError(
+        "bound Tensix SFPU bundle has no verified issue order");
+  TensixIssueBundle Result{&Bundle, nullptr, nullptr, {}};
+  auto It = std::next(Bundle.getIterator());
+  for (;;) {
+    if (It == BB->instr_end() || !It->isBundledWithPred() || It->isBundle())
+      return createStringError(
+          "explicit replay bundle has inconsistent boundaries");
+    Result.Members.push_back(&*It);
+    if (!It->isBundledWithSucc())
+      break;
+    ++It;
+  }
+  Result.Header = Result.Members.front();
+  Result.End = Result.Members.back();
+  const MachineInstr &Header = *Result.Header;
+  Result.IsMacro = Header.getOpcode() == RISCV::TTSFPLOADMACROFP32Even;
+  if (Result.IsMacro) {
+    auto Drain = drop_begin(Result.Members);
+    if (Result.Members.size() != 1 + TensixMacroDrainIssues ||
+        any_of(Drain, [](const MachineInstr *MI) {
+          return MI->getOpcode() != RISCV::TTSFPNOP;
+        }))
+      return createStringError("SFPLOADMACRO bundle requires four consecutive "
+                               "SFPNOP load-unit drain issues");
+  } else if (Error E = verifyReplayBundleMembers(Result)) {
+    return E;
+  }
 
   // Reconstruct finalizeBundle's dependency contract from the actual members.
   // In particular, uses precede defs, and a physical internal read requires
@@ -1238,7 +1256,8 @@ llvm::getTensixReplayBundle(const MachineInstr &Bundle) {
   return Result;
 }
 
-bool llvm::isTensixReplayBundleMember(const MachineInstr &MI) {
+static bool isTensixIssueBundleMember(const MachineInstr &MI,
+                                     bool ReplayOnly) {
   const MachineBasicBlock *BB = MI.getParent();
   if (!BB || !MI.isBundledWithPred() || MI.isBundle())
     return false;
@@ -1248,12 +1267,21 @@ bool llvm::isTensixReplayBundleMember(const MachineInstr &MI) {
       return false;
     --It;
   }
-  auto Bundle = getTensixReplayBundle(*It);
+  auto Bundle = getTensixIssueBundle(*It);
   if (!Bundle) {
     consumeError(Bundle.takeError());
     return false;
   }
-  return is_contained(Bundle->Members, &MI);
+  return (!ReplayOnly || !Bundle->IsMacro) &&
+         is_contained(Bundle->Members, &MI);
+}
+
+bool llvm::isTensixReplayBundleMember(const MachineInstr &MI) {
+  return ::isTensixIssueBundleMember(MI, true);
+}
+
+bool llvm::isTensixIssueBundleMember(const MachineInstr &MI) {
+  return ::isTensixIssueBundleMember(MI, false);
 }
 
 Expected<TensixReplayScan> llvm::scanTensixReplay(const MachineFunction &MF,
@@ -1262,18 +1290,35 @@ Expected<TensixReplayScan> llvm::scanTensixReplay(const MachineFunction &MF,
   for (const auto &BB : MF) {
     std::optional<TensixReplayRecordRegion> Active;
     for (const auto &MI : BB.instrs()) {
-      if (MI.isBundled() &&
-          !MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU())
-        continue;
+      const bool Bound =
+          MF.getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU();
+      if (Active && isTensixMacroInstruction(MI.getOpcode()))
+        return createStringError("Tensix replay cannot capture an "
+                                 "SFPLOADMACRO issue window");
       if (MI.isBundle()) {
-        auto Bundle = getTensixReplayBundle(MI);
+        if (!Bound) {
+          auto First = std::next(MI.getIterator());
+          if (First == BB.instr_end() ||
+              First->getOpcode() != RISCV::TTSFPLOADMACROFP32Even)
+            continue;
+        }
+        auto Bundle = getTensixIssueBundle(MI);
         if (!Bundle)
           return Bundle.takeError();
+        if (Active && Bundle->IsMacro)
+          return createStringError("Tensix replay cannot capture an "
+                                   "SFPLOADMACRO issue window");
         continue;
       }
-      if (MI.isBundled() && !isTensixReplayBundleMember(MI))
-        return createStringError(
-            "bound Tensix SFPU bundle has no verified issue order");
+      if (MI.isBundled()) {
+        if (!Bound)
+          continue;
+        if (!isTensixIssueBundleMember(MI))
+          return createStringError(
+              "bound Tensix SFPU bundle has no verified issue order");
+        if (!isTensixReplayBundleMember(MI))
+          continue;
+      }
       if (MI.getOpcode() == RISCV::PseudoTTReplayRecordEnd) {
         if (!Active)
           return createStringError("Tensix replay end has no active record");
@@ -1775,9 +1820,10 @@ public:
         // A recording header is never laundered by clearing its bundle bits.
         // Ordinary non-Tensix functions retain generic unpack behavior.
         bool Native = First != BB.instr_end() &&
-                      First->getOpcode() == RISCV::PseudoTTExplicitSFPUReplay;
+                      (First->getOpcode() == RISCV::PseudoTTExplicitSFPUReplay ||
+                       First->getOpcode() == RISCV::TTSFPLOADMACROFP32Even);
         if (Native) {
-          auto Window = getTensixReplayBundle(Bundle);
+          auto Window = getTensixIssueBundle(Bundle);
           if (!Window)
             return Fail(toString(Window.takeError()));
           It =

@@ -80,6 +80,7 @@ add_llvm_target(RISCVCodeGen
   RISCVTensixIRVerification.cpp
   RISCVTensixIssueWordFold.cpp
   RISCVTensixLowering.cpp
+  RISCVTensixNativeLowering.cpp
   RISCVTensixBoundLowering.cpp
   RISCVTensixBoundVerification.cpp
   RISCVTensixSFPUPhysicalIngress.cpp

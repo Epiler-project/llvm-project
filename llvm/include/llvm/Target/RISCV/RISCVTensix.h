@@ -11,6 +11,7 @@
 #include "llvm/ADT/StringTable.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/Error.h"
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <variant>
@@ -69,12 +70,16 @@ const TensixInstructionInfo *getTensixInstructionByIntrinsic(Intrinsic::ID ID);
 const TensixInstructionField *
 getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index);
 bool isTensixIntrinsic(Intrinsic::ID ID);
+bool isTensixBlackholeMutexIntrinsic(Intrinsic::ID ID);
+Error verifyTensixBlackholeMutexIndex(uint32_t Index);
 
 // Logical WH admission is independent of instruction bit positions. The same
 // TableGen bounds and complete-form relation serve IR, MC and external typed
-// compiler clients. Only direct intrinsic IDs and static unsigned fields are
-// admitted; this proves neither execution ownership nor hardware completion.
+// compiler clients. Dynamic fields are available on selected port intrinsics
+// and require an unsigned range and definedness proof at the issuing use.
 bool isTensixWormholeIntrinsic(Intrinsic::ID ID);
+std::optional<uint32_t> getTensixWormholeDynamicFieldMinimum(Intrinsic::ID ID,
+                                                             unsigned Index);
 Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
                                             ArrayRef<uint32_t> Fields);
 
@@ -186,6 +191,14 @@ struct TensixSFPULaneSource {
   unsigned Argument;
   uint32_t Lane;
 };
+// Actual numerical bits generated for an active lane by one instruction.
+// This is independent of initializedness: callers must intersect the mask
+// with their actual lane/write coverage. Bits outside the mask are zero in
+// Value and say nothing about preserved old contents or immutable registers.
+struct TensixSFPUValueBits {
+  uint32_t KnownBitsMask;
+  uint32_t Value;
+};
 struct TensixSFPUTransferFacts {
   TensixSFPUTransferKind Kind = TensixSFPUTransferKind::Unsupported;
   // Bits preserved from the old destination in active lanes. Numerical
@@ -225,6 +238,43 @@ struct TensixSFPUTransferFacts {
   // mask; the instruction's actual immediate owns the numerical value.
   uint32_t CopiedBits = 0;
   uint32_t ConstantBits = 0;
+  // Present only when this native transfer receives an actual immediate
+  // numerical value. Absence does not mean zero or uninitialized contents.
+  std::optional<TensixSFPUValueBits> ImmediateValue;
+};
+
+enum class TensixSFPUDstFormat : uint8_t { BFloat16, Float32, Raw32 };
+struct TensixSFPUDstLoadTransfer {
+  unsigned DestinationValue;
+  // Absent only when the actual native form has no old-destination operand.
+  std::optional<unsigned> OldValue;
+};
+struct TensixSFPUDstStoreTransfer {
+  unsigned SourceValue;
+};
+struct TensixSFPUDstReadModifyWriteTransfer {
+  unsigned DestinationValue;
+  unsigned MacroSlot;
+};
+struct TensixSFPUDstTransferFacts {
+  // Packet indices use actual bound ABI arguments or contents TransferValues,
+  // respectively. A store has no numerical destination or invented result.
+  std::variant<TensixSFPUDstLoadTransfer, TensixSFPUDstStoreTransfer,
+               TensixSFPUDstReadModifyWriteTransfer> Packet;
+  // The actual scalar ABI argument, never an index in contents TransferValues.
+  // Dynamic offsets retain this identity; the query supplies no default value.
+  unsigned OffsetArgument;
+  uint8_t AddressMode;
+  TensixSFPUDstFormat Format;
+  bool RequiresLaneEnable = true;
+  bool RequiresConditionState = true;
+  bool RequiresRowMaskState = true;
+};
+
+struct TensixSFPUMacroConfiguration {
+  unsigned Slot;
+  uint16_t Immediate;
+  unsigned ScratchRegister;
 };
 
 enum class TensixSFPUConditionEnableUpdate : uint8_t {
@@ -264,12 +314,104 @@ struct TensixSFPULaneConfigReset {
   bool ClearsDstWriteColumnExchange = false;
   bool ClearsDstIndexCapture = false;
   bool ClearsDstMoveBlock = false;
+  bool ClearsExchangeSourceBAndC = false;
 };
+/// Actual VD=15, mode=8 LaneConfig assignment. Each selected column reads
+/// the corresponding source lane among the first Columns lanes and broadcasts
+/// the low ValueBits vertically. The first-row effective CC predicates that
+/// entire column; ROW_MASK and other rows' CC do not predicate this operation.
+/// SourceValue indexes the owner's semantic value map (or the bound ABI after
+/// projection). Contents projection retains the actual SSA input staged into
+/// physical L0; the native location never grants initialized payload.
+/// The caller supplies reaching value bits separately; no numerical value,
+/// condition update, issue completion or configuration default is implied.
+struct TensixSFPULaneConfigAssign {
+  unsigned SourceValue;
+  unsigned Columns;
+  uint32_t SelectedColumns;
+  unsigned ValueBits;
+};
+enum class TensixSFPUConditionPredicate : uint8_t {
+  Negative,
+  NonZero,
+  NonNegative,
+  Zero,
+};
+
+/// SetCC compares the actual source lane's raw i32 word against zero.
+/// SourceValue indexes the owning semantics, contents or bound ABI value map.
+struct TensixSFPUConditionCompare {
+  unsigned SourceValue;
+  TensixSFPUConditionPredicate Predicate;
+
+  /// A known one bit can prove nonzero before the entire word is known.
+  constexpr uint32_t getRequiredSourceBits() const {
+    using Pred = TensixSFPUConditionPredicate;
+    return Predicate == Pred::Negative || Predicate == Pred::NonNegative
+               ? 0x80000000u
+               : 0xffffffffu;
+  }
+
+  /// Compute the next LaneFlags bit, preserving UseLaneFlagsForLaneEnable.
+  /// A masked row preserves its old flag. With condition flags disabled the
+  /// instruction clears the flag, and with condition flags enabled an already
+  /// false flag prevents the comparison. Source bits are needed only in the
+  /// remaining case. A missing result carries no numerical assumption.
+  constexpr std::optional<bool> evaluateFlags(bool RowMasked, bool Enable,
+                                              bool Flags,
+                                              TensixSFPUValueBits Bits) const {
+    if (RowMasked)
+      return Flags;
+    if (!Enable || !Flags)
+      return false;
+    using Pred = TensixSFPUConditionPredicate;
+    const uint32_t KnownOnes = Bits.KnownBitsMask & Bits.Value;
+    if (Predicate == Pred::Negative || Predicate == Pred::NonNegative) {
+      constexpr uint32_t SignBit = 0x80000000u;
+      if (!(Bits.KnownBitsMask & SignBit))
+        return std::nullopt;
+      return bool(KnownOnes & SignBit) == (Predicate == Pred::Negative);
+    }
+    if (KnownOnes)
+      return Predicate == Pred::NonZero;
+    if (Bits.KnownBitsMask == 0xffffffffu)
+      return Predicate == Pred::Zero;
+    return std::nullopt;
+  }
+};
+
 using TensixSFPULaneControl =
     std::variant<std::monostate, TensixSFPUConditionUpdate,
-                 TensixSFPULaneConfigReset, TensixSFPUConditionStackUpdate>;
+                 TensixSFPULaneConfigReset, TensixSFPUConditionStackUpdate,
+                 TensixSFPULaneConfigAssign, TensixSFPUConditionCompare>;
 
-enum class TensixSFPUConfigurationField : uint8_t { EnableDestIndex };
+/// Independent values of the actual low-18-bit LaneConfig payload. Unknown
+/// source bits stay unknown; no initialization, predicate or reaching-state
+/// assumption is supplied. Reserved bits remain explicit rather than being
+/// silently interpreted as zero. Both supported generations use this layout.
+struct TensixSFPULaneConfigFields {
+  std::optional<bool> EnableFP16AInf;
+  std::optional<bool> DisableBackdoorLoad;
+  std::optional<bool> EnableDestIndex;
+  std::optional<bool> CaptureDefaultDestIndex;
+  std::optional<bool> BlockDestWriteFromSFPU;
+  std::optional<bool> BlockSFPUReadFromDest;
+  std::optional<bool> DestReadColumnExchange;
+  std::optional<bool> DestWriteColumnExchange;
+  std::optional<bool> ExchangeSourceBAndC;
+  std::optional<bool> BlockDestMoveEven;
+  std::optional<bool> BlockDestMoveOdd;
+  std::array<std::optional<bool>, 4> RowMask;
+  uint32_t ReservedKnownBits = 0;
+  uint32_t ReservedValueBits = 0;
+};
+TensixSFPULaneConfigFields decodeTensixSFPULaneConfig(uint32_t KnownMask,
+                                                      uint32_t ValueBits);
+
+enum class TensixSFPUConfigurationField : uint8_t {
+  EnableDestIndex,
+  ExchangeSourceBAndC
+};
 struct TensixSFPUConfigurationRequirement {
   unsigned Argument;
   TensixSFPUConfigurationField Field;
@@ -307,6 +449,9 @@ struct TensixContentsIntrinsicInfo {
   SmallVector<TensixSFPUTransferFacts, 4> Transfers;
   TensixSFPULaneControl LaneControl;
   std::optional<TensixSFPUConfigurationFacts> Configuration;
+  // Local packet/Dst identities and fields only. No reaching address state,
+  // physical cells, payload initialization or completion is inferred here.
+  std::optional<TensixSFPUDstTransferFacts> DstTransfer;
 };
 
 // Accepts exact scalar/group contents forms and their actual fields. Dynamic
@@ -329,10 +474,7 @@ struct TensixContentsReplayRoleRange {
   unsigned FirstArgument;
   unsigned Count;
 };
-enum class TensixContentsReplayMode : uint8_t {
-  RecordOnly,
-  RecordAndExecute
-};
+enum class TensixContentsReplayMode : uint8_t { RecordOnly, RecordAndExecute };
 enum class TensixContentsReplayPlacement : uint8_t { Automatic, Fixed };
 struct TensixContentsReplayBegin {
   TensixContentsReplayMode Mode;
@@ -377,8 +519,8 @@ struct TensixContentsReplayIntrinsicInfo {
 // always selects LiteralTuple, including NumResults=1. BH/WH share this ABI.
 bool isTensixContentsReplayIntrinsic(Intrinsic::ID ID);
 Expected<TensixContentsReplayIntrinsicInfo>
-getTensixContentsReplayIntrinsicInfo(
-    Intrinsic::ID ID, ArrayRef<TensixContentsValue> Arguments);
+getTensixContentsReplayIntrinsicInfo(Intrinsic::ID ID,
+                                     ArrayRef<TensixContentsValue> Arguments);
 
 class TensixBoundSFPUContract final {
 public:
@@ -398,6 +540,15 @@ public:
   // semantics are unreceived, not that the instruction has no effects.
   ArrayRef<TensixSFPUTransferFacts> getTransferFacts() const {
     return Transfers;
+  }
+  // A separate Dst side transfer, not a numerical-result Transfers entry.
+  // Absent means this architecture/format/address-mode form is unreceived.
+  const std::optional<TensixSFPUDstTransferFacts> &getDstTransferFacts() const {
+    return DstTransfer;
+  }
+  const std::optional<TensixSFPUMacroConfiguration> &
+  getMacroConfiguration() const {
+    return MacroConfiguration;
   }
   // Exact transitions of supported state-control forms, not entry-state or
   // execution proofs. An empty projection does not mean no state effects.
@@ -421,6 +572,8 @@ private:
   SmallVector<TensixSFPUTransferFacts, 4> Transfers;
   TensixSFPULaneControl LaneControl;
   std::optional<TensixSFPUConfigurationFacts> Configuration;
+  std::optional<TensixSFPUDstTransferFacts> DstTransfer;
+  std::optional<TensixSFPUMacroConfiguration> MacroConfiguration;
 };
 
 // The query permits explicitly unbound register arguments but requires actual

@@ -7,6 +7,7 @@
 #include "RISCVInstrInfo.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTensixMacro.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -26,7 +27,8 @@ Error invalid(const Twine &Message) {
 } // namespace
 
 bool llvm::isTensixBoundSFPUIntrinsic(Intrinsic::ID ID) {
-  return RISCV::getTensixBoundInstruction(ID) != nullptr;
+  return RISCV::getTensixBoundInstruction(ID) ||
+         getTensixBoundMacroArchitecture(ID).has_value();
 }
 
 std::optional<unsigned> llvm::getTensixBoundDstOffsetOperand(Intrinsic::ID ID) {
@@ -35,11 +37,13 @@ std::optional<unsigned> llvm::getTensixBoundDstOffsetOperand(Intrinsic::ID ID) {
 }
 
 Error llvm::verifyTensixBoundSFPUIntrinsic(const IntrinsicInst &II) {
+  if (!II.getType()->isVoidTy())
+    return invalid("intrinsic must not return an allocator-owned value");
+  if (getTensixBoundMacroArchitecture(II.getIntrinsicID()))
+    return verifyTensixMacroIntrinsicFields(II);
   const auto *Info = RISCV::getTensixBoundInstruction(II.getIntrinsicID());
   if (!Info)
     return invalid("unknown intrinsic");
-  if (!II.getType()->isVoidTy())
-    return invalid("intrinsic must not return an allocator-owned value");
   SmallVector<RISCV::TensixBoundValue, 12> Args;
   for (const Value *Arg : II.args()) {
     if (!Arg->getType()->isIntegerTy(32))
@@ -121,6 +125,8 @@ SDValue llvm::lowerTensixBoundSFPUIntrinsic(SDValue Op, SelectionDAG &DAG,
 MachineBasicBlock *
 llvm::emitTensixBoundSFPUInstruction(MachineInstr &MI, MachineBasicBlock *MBB,
                                      const RISCVSubtarget &ST) {
+  if (auto *Macro = emitTensixBoundMacroInstruction(MI, MBB, ST))
+    return Macro;
   const auto Architecture = ST.hasVendorXTTTensixWH()
                                 ? RISCV::TensixSFPUArchitecture::Wormhole
                                 : RISCV::TensixSFPUArchitecture::Blackhole;

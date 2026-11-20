@@ -24,16 +24,6 @@
 using namespace llvm;
 
 namespace {
-struct ContentsOperand {
-  std::optional<unsigned> Argument;
-  int64_t Immediate = 0;
-};
-
-struct ContentsInstruction {
-  unsigned Opcode = 0;
-  SmallVector<ContentsOperand, 6> Operands;
-};
-
 // This projection selects native operations and expresses only ABI fields.
 // Register classes, old-destination ties, lane/configuration/PRNG effects and
 // immediate legality remain owned by the existing native descriptors.
@@ -115,7 +105,8 @@ contentsInstruction(Intrinsic::ID ID,
     Select(RISCV::TTSFPARECIP, {0, 1, 2});
     break;
   case Intrinsic::riscv_tt_contents_exexp:
-    Select(RISCV::TTSFPEXEXP, {0, 1, 2});
+    Select(RISCV::selectTensixSFPUDescriptor(RISCV::TTSFPEXEXP, Mode(2)),
+           {0, 1, 2});
     break;
   case Intrinsic::riscv_tt_contents_exman:
     Select(RISCV::TTSFPEXMAN, {0, 1, 2});
@@ -128,7 +119,8 @@ contentsInstruction(Intrinsic::ID ID,
            {0, 1, 2});
     break;
   case Intrinsic::riscv_tt_contents_cast:
-    Select(RISCV::TTSFPCAST, {0, 1, 2});
+    Select(RISCV::selectTensixSFPUDescriptor(RISCV::TTSFPCAST, Mode(2)),
+           {0, 1, 2});
     break;
   case Intrinsic::riscv_tt_contents_setexp_immediate:
   case Intrinsic::riscv_tt_contents_setman_immediate:
@@ -622,122 +614,9 @@ RISCV::getTensixContentsIntrinsicInfo(Intrinsic::ID ID,
       Projection = std::move(*Selected);
     }
   }
-  static const auto Instructions = createTensixBoundMCInstrInfo();
-  const MCInstrDesc &Descriptor = Instructions->get(Opcode);
-  for (MCPhysReg Register : Descriptor.implicit_uses()) {
-    auto Resource = getTensixSFPUArchitecturalResource(Register);
-    if (!Resource)
-      return Resource.takeError();
-    appendTensixSFPUArchitecturalEffect(Info.Effects, *Resource,
-                                        TensixSFPUAccess::Read);
-  }
-  for (MCPhysReg Register : Descriptor.implicit_defs()) {
-    auto Resource = getTensixSFPUArchitecturalResource(Register);
-    if (!Resource)
-      return Resource.takeError();
-    // Numerical results are explicit descriptor operands. An implicit SFPR
-    // definition is real scratch clobber; mutable CRegs/state remain writes.
-    const auto *Fixed = std::get_if<TensixFixedRegisterRef>(&*Resource);
-    TensixSFPUAccess Access = Fixed && Fixed->Number < 8
-                                  ? TensixSFPUAccess::Clobber
-                                  : TensixSFPUAccess::Write;
-    appendTensixSFPUArchitecturalEffect(Info.Effects, *Resource, Access);
-  }
-  // The selected native evaluator is the same owner used by bound forms.
-  // Actual ABI mappings only translate its value indices; they own no second
-  // opcode transfer, predication, lane or configuration table.
-  SmallVector<std::optional<int64_t>, 12> NativeFields(
-      Descriptor.getNumOperands(), std::nullopt);
-  if (Projection) {
-    if (Projection->Operands.size() + Descriptor.getNumDefs() !=
-        Descriptor.getNumOperands())
-      return createStringError(
-          "contents native mapping differs from descriptor");
-    for (auto [Index, Operand] : enumerate(Projection->Operands))
-      NativeFields[Descriptor.getNumDefs() + Index] =
-          Operand.Argument ? NativeArguments[*Operand.Argument]
-                           : std::optional<int64_t>(Operand.Immediate);
-  }
-  auto Semantics = getTensixSFPUInstructionSemantics(Opcode, NativeFields);
-  if (!Semantics)
-    return Semantics.takeError();
-  auto Publish = [&](unsigned Index) -> Expected<unsigned> {
-    if (Index >= Semantics->Values.size())
-      return createStringError("contents semantic value is out of range");
-    TensixContentsTransferValue Value;
-    if (const auto *Fixed =
-            std::get_if<TensixFixedRegisterRef>(&Semantics->Values[Index])) {
-      Value = *Fixed;
-    } else {
-      unsigned Operand =
-          std::get<TensixSFPUInstructionOperandRef>(Semantics->Values[Index])
-              .Operand;
-      if (Operand < Descriptor.getNumDefs()) {
-        if (Operand >= Info.NumResults)
-          return createStringError("native definition has no contents result");
-        Value = TensixContentsResultRef{Operand};
-      } else if (Snapshot && Operand == Descriptor.getNumDefs()) {
-        Value = TensixFixedRegisterRef{*Arguments[0].Constant};
-      } else {
-        unsigned Use = Operand - Descriptor.getNumDefs();
-        if (!Projection || Use >= Projection->Operands.size() ||
-            !Projection->Operands[Use].Argument)
-          return createStringError(
-              "native transfer has no actual contents SSA");
-        unsigned Argument = *Projection->Operands[Use].Argument;
-        if (Argument >= Arguments.size() ||
-            Arguments[Argument].Kind != TensixContentsValueKind::Contents)
-          return createStringError("native transfer input is not contents SSA");
-        Value = TensixContentsArgumentRef{Argument};
-      }
-    }
-    unsigned Published = Info.TransferValues.size();
-    Info.TransferValues.push_back(std::move(Value));
-    return Published;
-  };
-  for (auto Transfer : Semantics->Transfers) {
-    auto Destination = Publish(Transfer.DestinationArgument);
-    if (!Destination)
-      return Destination.takeError();
-    Transfer.DestinationArgument = *Destination;
-    auto Read = [&](std::optional<unsigned> &Index) -> Error {
-      if (!Index)
-        return Error::success();
-      auto Published = Publish(*Index);
-      if (!Published)
-        return Published.takeError();
-      Index = *Published;
-      return Error::success();
-    };
-    if (Error E = Read(Transfer.SourceArgument))
-      return std::move(E);
-    if (Error E = Read(Transfer.OldArgument))
-      return std::move(E);
-    for (auto &Input : Transfer.Inputs) {
-      auto Published = Publish(Input.Argument);
-      if (!Published)
-        return Published.takeError();
-      Input.Argument = *Published;
-    }
-    for (auto &Source : Transfer.LaneSources) {
-      auto Published = Publish(Source.Argument);
-      if (!Published)
-        return Published.takeError();
-      Source.Argument = *Published;
-    }
-    Info.Transfers.push_back(std::move(Transfer));
-  }
-  Info.LaneControl = Semantics->LaneControl;
-  if (Semantics->Configuration) {
-    Info.Configuration = *Semantics->Configuration;
-    for (auto &Requirement : Info.Configuration->Requirements) {
-      auto Published = Publish(Requirement.Argument);
-      if (!Published)
-        return Published.takeError();
-      Requirement.Argument = *Published;
-    }
-  }
-  return Info;
+  return projectTensixContentsNativeSemantics(
+      ID, Opcode, NativeArguments, Architecture, std::move(Projection),
+      Arguments, Snapshot, std::move(Info));
 }
 
 Error llvm::verifyTensixContentsIntrinsicFields(const IntrinsicInst &II,
@@ -956,151 +835,4 @@ SDValue llvm::lowerTensixContentsIntrinsic(SDValue Op, SelectionDAG &DAG,
   if (Dynamic && Load)
     return DAG.getMergeValues({SDValue(Node, 0), SDValue(Node, 3)}, DL);
   return SDValue(Node, ProducesContents ? 0 : Results.size() - 1);
-}
-
-SDValue llvm::lowerTensixOrdinaryIntrinsic(SDValue Op, SelectionDAG &DAG,
-                                           const RISCVSubtarget &ST) {
-  auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
-  bool Clear = ID == Intrinsic::riscv_tt_mop_clear;
-  bool Control = ID == Intrinsic::riscv_tt_mop_control_write;
-  bool End = ID == Intrinsic::riscv_tt_replay_record_end;
-  unsigned TemplateOpcode = 0;
-  switch (ID) {
-  case Intrinsic::riscv_tt_replay_template_begin:
-    TemplateOpcode = RISCV::PseudoTTReplayTemplateBegin;
-    break;
-  case Intrinsic::riscv_tt_replay_template_end:
-    TemplateOpcode = RISCV::PseudoTTReplayTemplateEnd;
-    break;
-  case Intrinsic::riscv_tt_replay_template_execute:
-    TemplateOpcode = RISCV::PseudoTTReplayTemplateExecute;
-    break;
-  case Intrinsic::riscv_tt_replay_template_mop:
-    TemplateOpcode = RISCV::PseudoTTReplayTemplateMop;
-    break;
-  default:
-    break;
-  }
-  const auto *Info = RISCV::getTensixInstructionByIntrinsic(ID);
-  bool Word = ID == Intrinsic::riscv_tt_issue_word;
-  const auto *WordMachine =
-      Word ? RISCV::getTensixMachineInfoByRawOpcode(Op.getConstantOperandVal(3))
-           : nullptr;
-  const bool WormholeZeroaccWord =
-      WordMachine && WordMachine->Opcode == RISCV::TTZEROACC;
-  if (!Info && !Clear && !Control && !End && !TemplateOpcode && !Word)
-    return SDValue();
-  if (!ST.hasVendorXTTTensixBH() && !ST.hasVendorXTTTensixWH())
-    reportFatalUsageError("Tensix intrinsic requires +xtttensixbh");
-  // Native REPLAY supports allocated contents receivers on WH. This does not
-  // admit the legacy raw intrinsic or its bound/template/MOP ingress.
-  if (ST.hasVendorXTTTensixWH() &&
-      (ID == Intrinsic::riscv_tt_replay || ID == Intrinsic::riscv_tt_mop ||
-       (ID != Intrinsic::riscv_tt_mop_control_write &&
-        ID != Intrinsic::riscv_tt_mop_clear && !WormholeZeroaccWord &&
-        !RISCV::isTensixWormholeIntrinsic(ID))))
-    reportFatalUsageError("Tensix intrinsic is not supported on Wormhole");
-  SDLoc DL(Op);
-  if (Word) {
-    // The issue-word fold encoded every field; only the port store remains.
-    const auto *Machine = WordMachine;
-    unsigned Port = Op.getConstantOperandVal(2);
-    if (!Machine || RISCV::isTensixFieldPortOpcode(Machine->Opcode) ||
-        Port > unsigned(RISCV::TensixInstructionPort::BriscToTrisc2))
-      reportFatalUsageError("invalid compiler-private Tensix issue word");
-    SDValue Address =
-        DAG.getConstant(RISCV::getTensixInstructionPortAddress(
-                            static_cast<RISCV::TensixInstructionPort>(Port)),
-                        DL, MVT::i32);
-    MachineSDNode *Node =
-        DAG.getMachineNode(Machine->PortOpcode, DL, MVT::Other,
-                           {DAG.getTargetConstant(Port, DL, MVT::i32),
-                            Op.getOperand(4), Address, Op.getOperand(0)});
-    attachIssueMemory(Node, DAG,
-                      MachineMemOperand::MOLoad | MachineMemOperand::MOStore);
-    return SDValue(Node, 0);
-  }
-  if (Control) {
-    auto *Constant = dyn_cast<ConstantSDNode>(Op.getOperand(3));
-    // Machine immediates use a signed 64-bit container. Keep the i32 payload
-    // zero-extended so bit 31 does not turn a legal uimm32 into a negative MI.
-    SDValue Value =
-        Constant ? DAG.getTargetConstant(Constant->getZExtValue(), DL, MVT::i64)
-                 : Op.getOperand(3);
-    unsigned Scratch = Constant ? 2 : 1;
-    SmallVector<EVT, 3> Results(Scratch, MVT::i32);
-    Results.push_back(MVT::Other);
-    MachineSDNode *Node = DAG.getMachineNode(
-        Constant ? RISCV::PseudoTTMOPControlWriteImm
-                 : RISCV::PseudoTTMOPControlWrite,
-        DL, DAG.getVTList(Results),
-        {DAG.getTargetConstant(Op.getConstantOperandVal(2), DL, MVT::i32),
-         Value, Op.getOperand(0)});
-    attachIssueMemory(Node, DAG, MachineMemOperand::MOStore);
-    return SDValue(Node, Scratch);
-  }
-  if (TemplateOpcode) {
-    SmallVector<SDValue, 5> Fields;
-    for (unsigned I = 2; I != Op.getNumOperands(); ++I)
-      Fields.push_back(
-          DAG.getTargetConstant(Op.getConstantOperandVal(I), DL, MVT::i32));
-    Fields.push_back(Op.getOperand(0));
-    bool TemplateMop = TemplateOpcode == RISCV::PseudoTTReplayTemplateMop;
-    SmallVector<EVT, 3> Results(TemplateMop ? 2 : 0, MVT::i32);
-    Results.push_back(MVT::Other);
-    MachineSDNode *Node =
-        DAG.getMachineNode(TemplateOpcode, DL, DAG.getVTList(Results), Fields);
-    // Actual recording/execution boundaries retain ordinary REPLAY's memory
-    // ordering through effect normalization and final control replacement.
-    // End is only an issue-order marker, not an executed memory operation.
-    if (TemplateMop)
-      attachIssueMemory(Node, DAG, MachineMemOperand::MOStore);
-    else if (TemplateOpcode != RISCV::PseudoTTReplayTemplateEnd)
-      attachIssueMemory(Node, DAG,
-                        MachineMemOperand::MOLoad | MachineMemOperand::MOStore);
-    return SDValue(Node, Results.size() - 1);
-  }
-  if (End)
-    return SDValue(DAG.getMachineNode(RISCV::PseudoTTReplayRecordEnd, DL,
-                                      MVT::Other, Op.getOperand(0)),
-                   0);
-  bool Port = Info && ID == Info->PortIntrinsicID;
-  bool Mop = Clear || (Info && ID == Info->MopIntrinsicID);
-  const auto *Machine =
-      Info ? RISCV::getTensixMachineInfoByIntrinsic(Info->IntrinsicID)
-           : nullptr;
-  if (Port && !RISCV::isTensixFieldPortOpcode(Machine->Opcode))
-    reportFatalUsageError(
-        "Tensix instruction-port issue reached selection without its "
-        "issue-word fold");
-  SmallVector<SDValue, 16> Operands;
-  unsigned First = Port || Mop ? 3 : 2;
-  if (Port || Mop)
-    Operands.push_back(
-        DAG.getTargetConstant(Op.getConstantOperandVal(2), DL, MVT::i32));
-  if (Info)
-    for (unsigned I = 0; I != Info->NumFields; ++I) {
-      SDValue Value = Op.getOperand(First + I);
-      bool Dynamic = Port && Machine->Opcode != RISCV::TTREPLAY;
-      Operands.push_back(
-          Dynamic
-              ? Value
-              : DAG.getTargetConstant(
-                    cast<ConstantSDNode>(Value)->getZExtValue(), DL, MVT::i32));
-    }
-  Operands.push_back(Op.getOperand(0));
-  unsigned Scratch = Port ? 3 : Mop ? 2 : 0;
-  SmallVector<EVT> Results(Scratch, MVT::i32);
-  Results.push_back(MVT::Other);
-  unsigned Opcode = Clear  ? unsigned(RISCV::PseudoTTMOPClear)
-                    : Port ? Machine->PortOpcode
-                    : Mop  ? Machine->MopOpcode
-                           : Machine->Opcode;
-  MachineSDNode *Node =
-      DAG.getMachineNode(Opcode, DL, DAG.getVTList(Results), Operands);
-  auto MemoryFlags = MachineMemOperand::MOStore;
-  if (!Mop)
-    MemoryFlags |= MachineMemOperand::MOLoad;
-  attachIssueMemory(Node, DAG, MemoryFlags);
-  return SDValue(Node, Scratch);
 }

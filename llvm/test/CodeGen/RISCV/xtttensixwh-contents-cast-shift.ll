@@ -32,13 +32,13 @@ define void @wh_cast_contents() "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: wh_cast_contents
 ; ISEL: [[SRC:%[0-9]+]]:sfpr = TTSFPLOAD
 ; ISEL: [[OLD:%[0-9]+]]:sfpr = TTSFPMOVAll $tt_c10
-; ISEL: [[CAST0:%[0-9]+]]:sfpr = TTSFPCAST {{(killed )?}}[[OLD]], {{(killed )?}}[[SRC]], 0,
+; ISEL: [[CAST0:%[0-9]+]]:sfpr = TTSFPCASTDeterministic {{(killed )?}}[[OLD]], {{(killed )?}}[[SRC]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 ; ISEL: [[CAST1:%[0-9]+]]:sfpr = TTSFPCAST [[CAST0]], [[CAST0]], 1, implicit-def{{( dead)?}} $tt_issue, implicit-def{{( dead)?}} $tt_prng, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit $tt_prng
 ; ISEL: TTSFPSTORE {{(killed )?}}[[CAST1]], 0, 0, 3
 ; PHYS-LABEL: name: wh_cast_contents
 ; PHYS: [[SRC:\$tt_l[0-7]]] = TTSFPLOAD
 ; PHYS: [[DST:\$tt_l[0-7]]] = TTSFPMOVAll $tt_c10
-; PHYS: [[DST]] = TTSFPCAST {{(killed )?(renamable )?}}[[DST]], {{(killed )?(renamable )?}}[[SRC]], 0,
+; PHYS: [[DST]] = TTSFPCASTDeterministic {{(killed )?(renamable )?}}[[DST]], {{(killed )?(renamable )?}}[[SRC]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 ; PHYS: [[DST]] = TTSFPCAST {{(killed )?(renamable )?}}[[DST]], {{(killed )?(renamable )?}}[[DST]], 1,
 ; PHYS: TTSFPSTORE {{(killed )?(renamable )?}}[[DST]], 0, 0, 3
 entry:

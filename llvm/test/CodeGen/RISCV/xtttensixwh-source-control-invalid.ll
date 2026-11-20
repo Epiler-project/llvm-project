@@ -9,8 +9,8 @@
 ; FORM: Wormhole UNPACR_NOP does not match an admitted logical form
 ; RESET: Wormhole CLEARDVALID field reset must be in [0, 0]
 ; LANES: Wormhole CLEARDVALID field cleardvalid must be in [1, 2]
-; COUNTER: Wormhole SETRWC field rwc_a must be in [0, 0]
-; FLIP: Wormhole SETRWC field clear_ab_vld must be in [0, 0]
+; COUNTER: {{.*}}rwc_a{{.*}}15
+; FLIP: {{.*}}clear_ab_vld{{.*}}3
 
 ;--- combined.ll
 declare void @llvm.riscv.tt.unpacr.nop(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
@@ -45,12 +45,12 @@ define void @bad() "tensix-executor"="trisc1" {
 ;--- counter-payload.ll
 declare void @llvm.riscv.tt.setrwc(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @bad() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.setrwc(i32 1, i32 1, i32 0, i32 0, i32 0, i32 0)
+  call void @llvm.riscv.tt.setrwc(i32 1, i32 16, i32 0, i32 0, i32 0, i32 0)
   ret void
 }
 ;--- implicit-flip.ll
 declare void @llvm.riscv.tt.setrwc(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @bad() "tensix-executor"="trisc1" {
-  call void @llvm.riscv.tt.setrwc(i32 1, i32 0, i32 0, i32 0, i32 0, i32 1)
+  call void @llvm.riscv.tt.setrwc(i32 1, i32 0, i32 0, i32 0, i32 0, i32 4)
   ret void
 }

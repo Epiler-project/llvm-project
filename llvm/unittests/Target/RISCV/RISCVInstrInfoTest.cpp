@@ -98,7 +98,7 @@ TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsMalformedPortBeforeReadingIt) {
                                 TII->get(RISCV::PseudoTTReplayRecordEnd))
                             .getInstr();
     finalizeBundle(*BB, Header->getIterator(), std::next(End->getIterator()));
-    auto Valid = getTensixReplayBundle(BB->front());
+    auto Valid = getTensixIssueBundle(BB->front());
     ASSERT_TRUE(bool(Valid)) << toString(Valid.takeError());
 
     Body->setDesc(TII->get(RISCV::PseudoTTREPLAYPort));
@@ -108,7 +108,7 @@ TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsMalformedPortBeforeReadingIt) {
     Port.addDef(RISCV::X10).addDef(RISCV::X11).addDef(RISCV::X12);
     if (RegisterPort)
       Port.addReg(RISCV::X13).addImm(0).addImm(0).addImm(1).addImm(0);
-    auto Invalid = getTensixReplayBundle(BB->front());
+    auto Invalid = getTensixIssueBundle(BB->front());
     ASSERT_FALSE(bool(Invalid));
     EXPECT_EQ(toString(Invalid.takeError()),
               "explicit replay bundle requires a complete static "
@@ -132,12 +132,12 @@ TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsShortHeaderBeforeReadingIt) {
                               TII->get(RISCV::PseudoTTReplayRecordEnd))
                           .getInstr();
   finalizeBundle(*BB, Header->getIterator(), std::next(End->getIterator()));
-  auto Valid = getTensixReplayBundle(BB->front());
+  auto Valid = getTensixIssueBundle(BB->front());
   ASSERT_TRUE(bool(Valid)) << toString(Valid.takeError());
 
   while (Header->getNumOperands() > 3)
     Header->removeOperand(Header->getNumOperands() - 1);
-  auto Invalid = getTensixReplayBundle(BB->front());
+  auto Invalid = getTensixIssueBundle(BB->front());
   ASSERT_FALSE(bool(Invalid));
   EXPECT_EQ(toString(Invalid.takeError()),
             "Tensix replay control must remain static");
@@ -163,12 +163,12 @@ TEST_P(RISCVInstrInfoTest, ReplayBundleRejectsShortNativeBodyBeforeReadingIt) {
                               TII->get(RISCV::PseudoTTReplayRecordEnd))
                           .getInstr();
   finalizeBundle(*BB, Header->getIterator(), std::next(End->getIterator()));
-  auto Valid = getTensixReplayBundle(BB->front());
+  auto Valid = getTensixIssueBundle(BB->front());
   ASSERT_TRUE(bool(Valid)) << toString(Valid.takeError());
 
   while (Body->getNumOperands())
     Body->removeOperand(Body->getNumOperands() - 1);
-  auto Invalid = getTensixReplayBundle(BB->front());
+  auto Invalid = getTensixIssueBundle(BB->front());
   ASSERT_FALSE(bool(Invalid));
   EXPECT_EQ(toString(Invalid.takeError()),
             "explicit replay bundle requires a complete native operand shape");

@@ -9,7 +9,8 @@
 # DIS: ttsfpconfig.lane 21844, 8
 # DIS: ttsfpconfig.lane 21845, 8
 # DIS: ttsfpconfig.lane 0, 8
-# INVALID: SFPCONFIG mode 8 mask must select even lane bits
+# ENC: ttsfpconfig.lane 2, 8 # encoding: [0xe2,0x0b,0x00,0x44]
+# DIS: ttsfpconfig.lane 2, 8
 # INVALID: SFPCONFIGLane mode must be one of {8}
 # FEATURE: instruction requires the following: 'XTTTensixBH' or 'XTTTensixWH'
 
@@ -18,6 +19,7 @@ ttsfpconfig.lane 21844, 8
 ttsfpconfig.lane 21845, 8
 ttsfpconfig.lane 0, 8
 
-#--- invalid.s
 ttsfpconfig.lane 2, 8
+
+#--- invalid.s
 ttsfpconfig.lane 0, 0

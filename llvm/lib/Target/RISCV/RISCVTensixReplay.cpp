@@ -22,7 +22,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCInst.h"
-#include "llvm/Support/TensixMOPSequence.h"
+#include "llvm/Target/RISCV/RISCVTensixMOP.h"
 #include <array>
 #include <limits>
 #include <optional>
@@ -554,6 +554,21 @@ bool mopMayContainSFPU(const MachineInstr &MI, const MOPState &S,
   return false;
 }
 
+static TensixMOPSlots getReachingMOPSlots(const MOPState &State,
+                                         const Inventory &Records) {
+  TensixMOPSlots Slots;
+  for (unsigned Slot = 0; Slot != Slots.size(); ++Slot)
+    for (unsigned ID : State.MOPPrograms[Slot]) {
+      const auto &Program = Records.MOPPrograms[ID];
+      using Kind = TensixMOPSlotDeclaration::Kind;
+      Slots[Slot].push_back(
+          {Program.IsNOP ? Kind::Nop
+                        : Program.Range ? Kind::Template : Kind::Opaque,
+           ID});
+    }
+  return Slots;
+}
+
 Expected<TensixMOPExecutionEffects>
 summarizeMOPExecution(const MachineInstr &MI, const MOPState &S,
                        Inventory &Records,
@@ -573,26 +588,22 @@ summarizeMOPExecution(const MachineInstr &MI, const MOPState &S,
     return createStringError("SFPU MOP execution control field is out of range");
   if (Kind == 1 && (MaskLo || Count))
     return createStringError("SFPU MOP count overrides are unverified on Blackhole");
-  TensixMOPSlots Slots;
-  for (unsigned Slot = 0; Slot != Slots.size(); ++Slot)
-    for (unsigned ID : S.MOPPrograms[Slot]) {
-      const auto &Program = Records.MOPPrograms[ID];
-      using Kind = TensixMOPSlotDeclaration::Kind;
-      Slots[Slot].push_back(
-          {Program.IsNOP ? Kind::Nop
-                        : Program.Range ? Kind::Template : Kind::Opaque,
-           ID});
-    }
+  auto Slots = getReachingMOPSlots(S, Records);
+  using Architecture = RISCV::TensixSFPUArchitecture;
+  const auto Target =
+      MI.getMF()->getSubtarget<RISCVSubtarget>().hasVendorXTTTensixWH()
+          ? Architecture::Wormhole
+          : Architecture::Blackhole;
   auto Graph =
       Kind == 0
           ? buildTensixMOPSequence(
                 TensixMOPTemplate0{MaskLo, Count, projectControl(S.MOPControls[1]),
                                   projectControl(S.MOPMaskHi)},
                 Slots)
-          : buildTensixMOPSequence(
+          : decodeTensixMOPTemplate1(
                 TensixMOPTemplate1{projectControl(S.MOPControls[0]),
                                   projectControl(S.MOPControls[1])},
-                Slots);
+                Slots, Target);
   if (!Graph)
     return describeSequenceError(Graph.takeError(), Kind, S);
   MOPSequenceEffects Effects(Records,
@@ -729,6 +740,13 @@ Error transfer(const MachineBasicBlock &BB, MOPState &S, Inventory &Records,
       if (S.MOPKnown != 0x7f)
         return createStringError("Tensix MOP execution requires all seven "
                                  "instruction slots to be configured");
+      const bool Wormhole =
+          MI.getMF()->getSubtarget<RISCVSubtarget>().hasVendorXTTTensixWH();
+      if (Wormhole &&
+          (MI.getOpcode() != RISCV::TTMOP || MI.getNumExplicitOperands() != 3 ||
+           !MI.getOperand(0).isImm() || !MI.getOperand(1).isImm() ||
+           !MI.getOperand(2).isImm() || MI.getOperand(2).getImm() != 1))
+        return createStringError("Wormhole MOP requires local template 1");
       assert(Bank.hasObservationBefore(MI) && "missing MOP execution observation");
       if (mopMayContainSFPU(MI, S, Records, Bank)) {
         auto Effects = summarizeMOPExecution(MI, S, Records, Bank);
@@ -746,6 +764,17 @@ Error transfer(const MachineBasicBlock &BB, MOPState &S, Inventory &Records,
         }
         Records.Analysis.MOPExecutions.try_emplace(&MI, std::move(*Effects));
       } else {
+        if (Wormhole) {
+          if (MI.getOperand(0).getImm() || MI.getOperand(1).getImm())
+            return createStringError("Wormhole MOP template1 requires zero overrides");
+          auto Graph = decodeTensixMOPTemplate1(
+              TensixMOPTemplate1{projectControl(S.MOPControls[0]),
+                                 projectControl(S.MOPControls[1])},
+              getReachingMOPSlots(S, Records),
+              RISCV::TensixSFPUArchitecture::Wormhole);
+          if (!Graph)
+            return describeSequenceError(Graph.takeError(), 1, S);
+        }
         if (Error E = verifyTensixMachineEffects(MI))
           return E;
         for (uint32_t Required : S.MOPRequires)

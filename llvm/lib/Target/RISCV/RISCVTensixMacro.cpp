@@ -10,10 +10,13 @@
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixExplicitReplay.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/CodeGen/SelectionDAG.h"
@@ -21,6 +24,7 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsTT.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCFixup.h"
@@ -37,8 +41,19 @@ using namespace llvm;
 
 namespace {
 constexpr uint32_t MacroMiscFP32 = 3;
-constexpr unsigned MacroDrainIssues = 4;
 constexpr unsigned BlackholeConfigStateGapIssues = 3;
+// The partial AddrMod transition touches Dst, SrcA/SrcB and Bias. WH can
+// select 0 or 4, so receive both triples. The field addresses are for the
+// generation's thread configuration bank (tt-metal cfg_defines.h).
+constexpr unsigned WormholeAddrModWords[] = {7, 23, 48, 15, 27, 52};
+constexpr unsigned BlackholeAddrModWords[] = {12, 20, 28, 47};
+ArrayRef<unsigned> addrModWords(bool Wormhole) {
+  return Wormhole ? ArrayRef(WormholeAddrModWords)
+                  : ArrayRef(BlackholeAddrModWords);
+}
+uint8_t addrModReadyMask(bool Wormhole) {
+  return maskTrailingOnes<uint8_t>(addrModWords(Wormhole).size());
+}
 uint32_t macroSequence(unsigned Index) {
   // Simple/Round disabled, MAD template[Index] at t+1, builtin STORE at t+3.
   // Misc selects elapsed cycles for all sub-units. Four actual load-unit NOP
@@ -80,6 +95,40 @@ Expected<uint32_t> encodeADDITemplate(const MachineFunction &MF,
   return rotr(support::endian::read32le(Bytes.data()), 2);
 }
 
+enum class MacroOperation { AddressReset, ConfigureADDI, LoadADDI };
+
+struct MacroIntrinsic {
+  MacroOperation Operation;
+  std::optional<RISCV::TensixSFPUArchitecture> Architecture;
+};
+
+std::optional<MacroIntrinsic> getMacroIntrinsic(Intrinsic::ID ID) {
+  using Arch = RISCV::TensixSFPUArchitecture;
+  using Op = MacroOperation;
+  switch (ID) {
+  case Intrinsic::riscv_tt_contents_macro_address_reset:
+    return MacroIntrinsic{Op::AddressReset, std::nullopt};
+  case Intrinsic::riscv_tt_contents_macro_configure_addi:
+    return MacroIntrinsic{Op::ConfigureADDI, std::nullopt};
+  case Intrinsic::riscv_tt_contents_load_macro_addi:
+    return MacroIntrinsic{Op::LoadADDI, std::nullopt};
+  case Intrinsic::tt_wh_sfpu_macro_address_reset:
+    return MacroIntrinsic{Op::AddressReset, Arch::Wormhole};
+  case Intrinsic::tt_wh_sfpu_macro_configure_addi:
+    return MacroIntrinsic{Op::ConfigureADDI, Arch::Wormhole};
+  case Intrinsic::tt_wh_sfpu_load_macro_addi:
+    return MacroIntrinsic{Op::LoadADDI, Arch::Wormhole};
+  case Intrinsic::tt_bh_sfpu_macro_address_reset:
+    return MacroIntrinsic{Op::AddressReset, Arch::Blackhole};
+  case Intrinsic::tt_bh_sfpu_macro_configure_addi:
+    return MacroIntrinsic{Op::ConfigureADDI, Arch::Blackhole};
+  case Intrinsic::tt_bh_sfpu_load_macro_addi:
+    return MacroIntrinsic{Op::LoadADDI, Arch::Blackhole};
+  default:
+    return std::nullopt;
+  }
+}
+
 bool immediate(const MachineInstr &MI, unsigned Index, int64_t Value) {
   return Index < MI.getNumExplicitOperands() && MI.getOperand(Index).isImm() &&
          MI.getOperand(Index).getImm() == Value;
@@ -109,8 +158,7 @@ struct MacroState {
   bool StateZero = false;
   bool MathZero = false;
   bool DstZero = false;
-  bool Mod0Zero = false;
-  bool Mod4Zero = false;
+  uint8_t AddrModZero = 0;
   uint8_t BaseBytesZero = 0;
   // Blackhole ordinary FP32 accesses add (Sp + SpBase) & 3. These facts
   // require actual BH setters, independently of the common Dst reset.
@@ -127,8 +175,8 @@ struct MacroState {
 
   bool operator==(const MacroState &Other) const {
     return StateZero == Other.StateZero && MathZero == Other.MathZero &&
-           DstZero == Other.DstZero && Mod0Zero == Other.Mod0Zero &&
-           Mod4Zero == Other.Mod4Zero && BaseBytesZero == Other.BaseBytesZero &&
+           DstZero == Other.DstZero && AddrModZero == Other.AddrModZero &&
+           BaseBytesZero == Other.BaseBytesZero &&
            SpZero == Other.SpZero &&
            SpBaseBytesZero == Other.SpBaseBytesZero &&
            Enable == Other.Enable && Flags == Other.Flags &&
@@ -141,18 +189,16 @@ struct MacroState {
     return LaneZero && (Enable == false || Flags == true);
   }
   bool addressZero(const RISCVSubtarget &ST) const {
-    bool ArchitectureZero = ST.hasVendorXTTTensixWH()
-                                ? Mod4Zero
-                                : SpZero && SpBaseBytesZero == 3;
-    return StateZero && MathZero && DstZero && Mod0Zero && ArchitectureZero &&
-           BaseBytesZero == 3;
+    const bool Wormhole = ST.hasVendorXTTTensixWH();
+    bool ArchitectureZero = Wormhole || (SpZero && SpBaseBytesZero == 3);
+    return StateZero && MathZero && DstZero && ArchitectureZero &&
+           AddrModZero == addrModReadyMask(Wormhole) && BaseBytesZero == 3;
   }
   void meet(const MacroState &Other) {
     StateZero &= Other.StateZero;
     MathZero &= Other.MathZero;
     DstZero &= Other.DstZero;
-    Mod0Zero &= Other.Mod0Zero;
-    Mod4Zero &= Other.Mod4Zero;
+    AddrModZero &= Other.AddrModZero;
     BaseBytesZero &= Other.BaseBytesZero;
     SpZero &= Other.SpZero;
     SpBaseBytesZero &= Other.SpBaseBytesZero;
@@ -178,7 +224,8 @@ struct MacroState {
 void advance(const MachineInstr &MI, MacroState &State,
              const RISCVSubtarget &ST) {
   unsigned Opcode = MI.getOpcode();
-  if (MI.isDebugInstr() || MI.isCFIInstruction() || MI.isTerminator())
+  if (MI.isBundle() || MI.isDebugInstr() || MI.isCFIInstruction() ||
+      MI.isTerminator())
     return;
   // These native issue controls do not mutate macro configuration, lane
   // state or Dst addressing. Their ordinary descriptor has conservative
@@ -186,6 +233,11 @@ void advance(const MachineInstr &MI, MacroState &State,
   // Preserve facts only: neither control establishes ConfigReady nor replaces
   // the actual consecutive SFPU load-unit NOP drain checked below.
   if (Opcode == RISCV::TTSTALLWAIT || Opcode == RISCV::TTNOP)
+    return;
+  // This absolute write targets the bias counter only. It neither changes
+  // the SFPU Dst/SP counters nor selects a different address modifier.
+  if (Opcode == RISCV::TTSETIBRWC && immediate(MI, 0, 0) &&
+      immediate(MI, 1, 0) && immediate(MI, 2, 0))
     return;
   if (Opcode == RISCV::TTSFPNOP) {
     State.ConfigReady = true;
@@ -205,10 +257,18 @@ void advance(const MachineInstr &MI, MacroState &State,
       }
     } else if (Index == 1) {
       State.MathZero = Zero;
-    } else if (Index == (Wormhole ? 23u : 28u)) {
-      State.Mod0Zero = Zero;
-    } else if (Wormhole && Index == 27) {
-      State.Mod4Zero = Zero;
+    } else {
+      auto Words = addrModWords(Wormhole);
+      auto Word = llvm::find(Words, Index);
+      if (Word != Words.end()) {
+        uint8_t Bit = 1u << std::distance(Words.begin(), Word);
+        State.AddrModZero =
+            (State.AddrModZero & ~Bit) | (Zero ? Bit : 0);
+      } else if (!Wormhole && Index >= 128) {
+        // The high-index Blackhole alias writes thread configuration without
+        // its normal immediate effects. Do not treat it as inert.
+        State = {};
+      }
     }
     return;
   }
@@ -261,10 +321,11 @@ void advance(const MachineInstr &MI, MacroState &State,
     State.ConfigReady = false;
     return;
   }
-  if (Opcode == RISCV::TTSFPLOADI &&
+  bool FullImmediate = Opcode == RISCV::TTSFPLOADIFull;
+  if ((Opcode == RISCV::TTSFPLOADI || FullImmediate) &&
       MI.getOperand(0).getReg() == RISCV::TT_L0 && State.allActive()) {
-    uint32_t Value = MI.getOperand(2).getImm();
-    unsigned Mode = MI.getOperand(3).getImm();
+    uint32_t Value = MI.getOperand(FullImmediate ? 1 : 2).getImm();
+    unsigned Mode = MI.getOperand(FullImmediate ? 2 : 3).getImm();
     if (Mode == 0)
       State.L0 = Value << 16;
     else if (Mode == 10 && State.L0)
@@ -298,7 +359,7 @@ void advance(const MachineInstr &MI, MacroState &State,
     unsigned AddrMode = Opcode == RISCV::TTSFPLOAD ? 3 : 2;
     if (Opcode != RISCV::TTSFPLOADMACROFP32Even && !immediate(MI, AddrMode, 0))
       State.DstZero = false;
-    if (!State.Mod0Zero || (ST.hasVendorXTTTensixWH() && !State.Mod4Zero))
+    if (State.AddrModZero != addrModReadyMask(ST.hasVendorXTTTensixWH()))
       State.DstZero = false;
     if (!ST.hasVendorXTTTensixWH() &&
         Opcode != RISCV::TTSFPLOADMACROFP32Even) {
@@ -338,6 +399,10 @@ Error verifyCurrent(const MachineInstr &MI, const MacroState &State,
                              "all-active zero LaneConfig");
   if (Opcode != RISCV::TTSFPLOADMACROFP32Even)
     return Error::success();
+  if (MI.getMF()->getInfo<RISCVMachineFunctionInfo>()->usesBoundTensixSFPU() &&
+      !isTensixIssueBundleMember(MI))
+    return createStringError("bound SFPLOADMACRO requires a verified "
+                             "machine issue bundle");
   if (Error E = verifyTensixMachineEffects(MI))
     return E;
   const auto &ST = MI.getMF()->getSubtarget<RISCVSubtarget>();
@@ -358,10 +423,10 @@ Error verifyCurrent(const MachineInstr &MI, const MacroState &State,
   // NOPs cannot collide with MAD/STORE and bound every outstanding countdown.
   // A STALLWAIT, scalar delay or CFG edge is intentionally not accepted here.
   auto It = std::next(MI.getIterator());
-  for (unsigned I = 0; I != MacroDrainIssues; ++I) {
-    while (It != MI.getParent()->end() && It->isDebugInstr())
+  for (unsigned I = 0; I != TensixMacroDrainIssues; ++I) {
+    while (It != MI.getParent()->instr_end() && It->isDebugInstr())
       ++It;
-    if (It == MI.getParent()->end() || It->getOpcode() != RISCV::TTSFPNOP)
+    if (It == MI.getParent()->instr_end() || It->getOpcode() != RISCV::TTSFPNOP)
       return createStringError("SFPLOADMACRO requires four actual consecutive "
                                "SFPNOP load-unit drain issues");
     ++It;
@@ -371,44 +436,54 @@ Error verifyCurrent(const MachineInstr &MI, const MacroState &State,
 } // namespace
 
 bool llvm::isTensixMacroIntrinsic(Intrinsic::ID ID) {
-  return ID == Intrinsic::riscv_tt_contents_macro_address_reset ||
-         ID == Intrinsic::riscv_tt_contents_macro_configure_addi ||
-         ID == Intrinsic::riscv_tt_contents_load_macro_addi;
+  auto Macro = getMacroIntrinsic(ID);
+  return Macro && !Macro->Architecture;
+}
+
+std::optional<RISCV::TensixSFPUArchitecture>
+llvm::getTensixBoundMacroArchitecture(Intrinsic::ID ID) {
+  auto Macro = getMacroIntrinsic(ID);
+  return Macro ? Macro->Architecture : std::nullopt;
 }
 
 Error llvm::verifyTensixMacroIntrinsicFields(const IntrinsicInst &II) {
-  auto Index = [&](unsigned I, uint64_t Max) -> bool {
+  auto Macro = getMacroIntrinsic(II.getIntrinsicID());
+  if (!Macro)
+    return createStringError("unknown SFPLOADMACRO intrinsic");
+  auto Range = [&](unsigned I, uint64_t Max) -> bool {
     auto *CI = dyn_cast<ConstantInt>(II.getArgOperand(I));
     return CI && CI->getValue().getActiveBits() <= 32 &&
            CI->getZExtValue() <= Max;
   };
-  switch (II.getIntrinsicID()) {
-  case Intrinsic::riscv_tt_contents_macro_address_reset:
+  switch (Macro->Operation) {
+  case MacroOperation::AddressReset:
     return Error::success();
-  case Intrinsic::riscv_tt_contents_macro_configure_addi:
-    if (!Index(0, 3))
+  case MacroOperation::ConfigureADDI:
+    if (!Range(0, 3))
       return createStringError("SFPLOADMACRO macro index must be in [0, 3]");
-    if (!Index(1, 65535))
+    if (!Range(1, 65535))
       return createStringError(
           "SFPLOADMACRO ADDI immediate must fit BF16 bits");
     return Error::success();
-  case Intrinsic::riscv_tt_contents_load_macro_addi:
-    if (!Index(1, 1022) ||
+  case MacroOperation::LoadADDI:
+    if (Macro->Architecture && !Range(0, 3))
+      return createStringError("SFPLOADMACRO requires physical LReg[0..3]");
+    if (!Range(1, 1022) ||
         (cast<ConstantInt>(II.getArgOperand(1))->getZExtValue() & 1))
       return createStringError("SFPLOADMACRO FP32 offset must be an even "
                                "constant in [0, 1022]");
-    if (!Index(2, 3))
+    if (!Range(2, 3))
       return createStringError("SFPLOADMACRO macro index must be in [0, 3]");
     return Error::success();
-  default:
-    return createStringError("unknown SFPLOADMACRO intrinsic");
   }
+  llvm_unreachable("known macro operation");
 }
 
 SDValue llvm::lowerTensixMacroIntrinsic(SDValue Op, SelectionDAG &DAG,
                                         const RISCVSubtarget &ST) {
   auto ID = static_cast<Intrinsic::ID>(Op.getConstantOperandVal(1));
-  if (!isTensixMacroIntrinsic(ID))
+  auto Macro = getMacroIntrinsic(ID);
+  if (!Macro)
     return SDValue();
   if (!ST.hasVendorXTTTensixWH() && !ST.hasVendorXTTTensixBH())
     reportFatalUsageError(
@@ -417,30 +492,30 @@ SDValue llvm::lowerTensixMacroIntrinsic(SDValue Op, SelectionDAG &DAG,
   Attribute Executor = F.getFnAttribute("tensix-executor");
   if (!Executor.isStringAttribute() || Executor.getValueAsString() != "trisc1")
     reportFatalUsageError("SFPLOADMACRO requires the TRISC1 executor");
+  const bool Bound = Macro->Architecture.has_value();
+  const bool Load = Macro->Operation == MacroOperation::LoadADDI;
   SDLoc DL(Op);
+  auto Immediate = [&](uint64_t Value) {
+    return DAG.getTargetConstant(Value, DL, MVT::i32);
+  };
   unsigned Opcode = RISCV::PseudoTTSFPMacroAddressReset;
   SmallVector<SDValue, 4> Operands;
-  if (ID == Intrinsic::riscv_tt_contents_macro_configure_addi) {
+  if (Macro->Operation == MacroOperation::ConfigureADDI) {
     Opcode = RISCV::PseudoTTSFPMacroConfigureADDI;
-    Operands.push_back(
-        DAG.getTargetConstant(Op.getConstantOperandVal(2), DL, MVT::i32));
-    Operands.push_back(
-        DAG.getTargetConstant(Op.getConstantOperandVal(3), DL, MVT::i32));
-  } else if (ID == Intrinsic::riscv_tt_contents_load_macro_addi) {
-    Opcode = RISCV::PseudoTTSFPContentsLoadMacroADDI;
-    Operands.push_back(Op.getOperand(2));
-    Operands.push_back(
-        DAG.getTargetConstant(Op.getConstantOperandVal(3) >> 1, DL, MVT::i32));
-    Operands.push_back(
-        DAG.getTargetConstant(Op.getConstantOperandVal(4), DL, MVT::i32));
+    Operands.push_back(Immediate(Op.getConstantOperandVal(2)));
+    Operands.push_back(Immediate(Op.getConstantOperandVal(3)));
+  } else if (Load) {
+    Opcode = Bound ? RISCV::PseudoTTBoundSFPLOADMACROADDI
+                   : RISCV::PseudoTTSFPLoadMacroADDI;
+    Operands.push_back(Bound ? Immediate(Op.getConstantOperandVal(2))
+                             : Op.getOperand(2));
+    Operands.push_back(Immediate(Op.getConstantOperandVal(3) >> 1));
+    Operands.push_back(Immediate(Op.getConstantOperandVal(4)));
   }
   Operands.push_back(Op.getOperand(0));
-  bool Load = ID == Intrinsic::riscv_tt_contents_load_macro_addi;
-  MachineSDNode *Node = DAG.getMachineNode(
-      Opcode, DL,
-      Load ? DAG.getVTList(MVT::v32i32, MVT::Other) : DAG.getVTList(MVT::Other),
-      Operands);
-  if (Load || ID == Intrinsic::riscv_tt_contents_macro_address_reset) {
+  MachineSDNode *Node =
+      DAG.getMachineNode(Opcode, DL, Op.getNode()->getVTList(), Operands);
+  if (Load || Macro->Operation == MacroOperation::AddressReset) {
     auto *MMO = DAG.getMachineFunction().getMachineMemOperand(
         MachinePointerInfo(),
         MachineMemOperand::MOLoad | MachineMemOperand::MOStore |
@@ -451,11 +526,50 @@ SDValue llvm::lowerTensixMacroIntrinsic(SDValue Op, SelectionDAG &DAG,
   return SDValue(Node, 0);
 }
 
+MachineBasicBlock *llvm::emitTensixBoundMacroInstruction(
+    MachineInstr &MI, MachineBasicBlock *MBB, const RISCVSubtarget &ST) {
+  if (MI.getOpcode() != RISCV::PseudoTTBoundSFPLOADMACROADDI)
+    return nullptr;
+
+  MachineFunction &MF = *MBB->getParent();
+  auto *Info = MF.getInfo<RISCVMachineFunctionInfo>();
+  auto Reject = [&](const Twine &Message) {
+    Info->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(
+        DiagnosticInfoUnsupported(MF.getFunction(), Message));
+    MI.eraseFromParent();
+    return MBB;
+  };
+  if (!Info->usesBoundTensixSFPU())
+    return Reject("SFPLOADMACRO requires bound machine mode");
+  if (Error E = verifyTensixMachineEffects(MI))
+    return Reject(toString(std::move(E)));
+  if (Error E = verifyTensixMachineOperands(MI, MF.getRegInfo(),
+                                            *ST.getRegisterInfo()))
+    return Reject(toString(std::move(E)));
+  auto Slot = MI.getOperand(0).getImm();
+  auto Offset = MI.getOperand(1).getImm();
+  auto Index = MI.getOperand(2).getImm();
+  if (!isUInt<2>(Slot) || !isUInt<9>(Offset) || !isUInt<2>(Index))
+    return Reject("SFPLOADMACRO physical issue fields are out of range");
+
+  Register Reg = RISCV::getTensixSFPURegister(Slot);
+  const auto &TII = *ST.getInstrInfo();
+  BuildMI(*MBB, MI, MI.getDebugLoc(),
+          TII.get(RISCV::PseudoTTSFPLoadMacroADDI), Reg)
+      .addReg(Reg)
+      .addImm(Offset)
+      .addImm(Index)
+      .cloneMemRefs(MI);
+  MI.eraseFromParent();
+  return MBB;
+}
+
 bool llvm::expandTensixMacroPseudo(MachineInstr &MI, const RISCVSubtarget &ST) {
   unsigned Opcode = MI.getOpcode();
   if (Opcode != RISCV::PseudoTTSFPMacroAddressReset &&
       Opcode != RISCV::PseudoTTSFPMacroConfigureADDI &&
-      Opcode != RISCV::PseudoTTSFPContentsLoadMacroADDI)
+      Opcode != RISCV::PseudoTTSFPLoadMacroADDI)
     return false;
   MachineFunction &MF = *MI.getMF();
   auto Reject = [&](const Twine &Message) {
@@ -490,17 +604,13 @@ bool llvm::expandTensixMacroPseudo(MachineInstr &MI, const RISCVSubtarget &ST) {
     Emit(RISCV::TTRMWCIB0).addImm(6).addImm(0).addImm(255);
     Emit(RISCV::TTRMWCIB1).addImm(6).addImm(0).addImm(255);
     bool Wormhole = ST.hasVendorXTTTensixWH();
-    if (Wormhole) {
-      Emit(RISCV::TTSETC16).addImm(0).addImm(23);
-      Emit(RISCV::TTSETC16).addImm(0).addImm(27);
-    } else {
-      // BH DEST_SP_BASE is config word7, not thread config. Its direct
-      // AddrMod0 destination and A/B words are thread words28 and12.
+    if (!Wormhole) {
+      // BH DEST_SP_BASE is config word7, not thread configuration.
       Emit(RISCV::TTRMWCIB0).addImm(7).addImm(0).addImm(255);
       Emit(RISCV::TTRMWCIB1).addImm(7).addImm(0).addImm(255);
-      Emit(RISCV::TTSETC16).addImm(0).addImm(28);
-      Emit(RISCV::TTSETC16).addImm(0).addImm(12);
     }
+    for (unsigned Word : addrModWords(Wormhole))
+      Emit(RISCV::TTSETC16).addImm(0).addImm(Word);
     Emit(RISCV::TTSETRWC)
         .addImm(Wormhole ? 4 : 20)
         .addImm(0)
@@ -520,9 +630,8 @@ bool llvm::expandTensixMacroPseudo(MachineInstr &MI, const RISCVSubtarget &ST) {
       // FLOATB writes upper16 and clears lower16. Under the independently
       // verified all-active LaneConfig it is a complete first L0 definition;
       // the subsequent LOWER write consumes that actual upper-half contents.
-      Emit(RISCV::TTSFPLOADI)
+      Emit(RISCV::TTSFPLOADIFull)
           .addReg(RISCV::TT_L0, RegState::Define)
-          .addReg(RISCV::TT_L0, RegState::Undef)
           .addImm(Word >> 16)
           .addImm(0);
       Emit(RISCV::TTSFPLOADI)
@@ -540,14 +649,15 @@ bool llvm::expandTensixMacroPseudo(MachineInstr &MI, const RISCVSubtarget &ST) {
     Emit(RISCV::TTSFPCONFIGMacroMisc).addImm(MacroMiscFP32);
     Emit(RISCV::TTSFPNOP);
   } else {
-    Emit(RISCV::TTSFPLOADMACROFP32Even)
-        .add(MI.getOperand(0))
-        .add(MI.getOperand(1))
-        .add(MI.getOperand(2))
-        .add(MI.getOperand(3))
-        .cloneMemRefs(MI);
-    for (unsigned I = 0; I != MacroDrainIssues; ++I)
+    auto Launch = Emit(RISCV::TTSFPLOADMACROFP32Even)
+                      .add(MI.getOperand(0))
+                      .add(MI.getOperand(1))
+                      .add(MI.getOperand(2))
+                      .add(MI.getOperand(3))
+                      .cloneMemRefs(MI);
+    for (unsigned I = 0; I != TensixMacroDrainIssues; ++I)
       Emit(RISCV::TTSFPNOP);
+    finalizeBundle(*MI.getParent(), Launch->getIterator(), MI.getIterator());
   }
   MI.eraseFromParent();
   return true;
@@ -561,7 +671,8 @@ bool llvm::isTensixMacroInstruction(unsigned Opcode) {
   case RISCV::TTSFPLOADMACROFP32Even:
   case RISCV::PseudoTTSFPMacroAddressReset:
   case RISCV::PseudoTTSFPMacroConfigureADDI:
-  case RISCV::PseudoTTSFPContentsLoadMacroADDI:
+  case RISCV::PseudoTTSFPLoadMacroADDI:
+  case RISCV::PseudoTTBoundSFPLOADMACROADDI:
     return true;
   default:
     return false;
@@ -570,7 +681,7 @@ bool llvm::isTensixMacroInstruction(unsigned Opcode) {
 
 Error llvm::verifyTensixMacroMachineFunction(const MachineFunction &MF) {
   bool Uses = any_of(MF, [](const MachineBasicBlock &BB) {
-    return any_of(BB, [](const MachineInstr &MI) {
+    return any_of(BB.instrs(), [](const MachineInstr &MI) {
       return isTensixMacroInstruction(MI.getOpcode());
     });
   });
@@ -580,11 +691,14 @@ Error llvm::verifyTensixMacroMachineFunction(const MachineFunction &MF) {
   if (!ST.hasVendorXTTTensixWH() && !ST.hasVendorXTTTensixBH())
     return createStringError(
         "SFPLOADMACRO requires a Wormhole or Blackhole target");
+  auto Executor = MF.getFunction().getFnAttribute("tensix-executor");
+  if (!Executor.isStringAttribute() || Executor.getValueAsString() != "trisc1")
+    return createStringError("SFPLOADMACRO requires the TRISC1 executor");
   // MIR can bypass IR and post-RA expansion. Validate every native field
   // before dataflow reads it; final issue state never trusts a forged pseudo,
   // an omitted implicit effect, or an out-of-range truncated MC operand.
   for (const auto &BB : MF)
-    for (const auto &MI : BB) {
+    for (const auto &MI : BB.instrs()) {
       unsigned Opcode = MI.getOpcode();
       bool Native =
           isTensixMacroInstruction(Opcode) && RISCV::getTensixEncoding(Opcode);
@@ -593,7 +707,8 @@ Error llvm::verifyTensixMacroMachineFunction(const MachineFunction &MF) {
                    Opcode == RISCV::TTSTALLWAIT || Opcode == RISCV::TTNOP;
       bool Lane = Opcode == RISCV::TTSFPENCC ||
                   Opcode == RISCV::TTSFPCONFIGReset ||
-                  Opcode == RISCV::TTSFPLOADI || Opcode == RISCV::TTSFPNOP;
+                  Opcode == RISCV::TTSFPLOADI ||
+                  Opcode == RISCV::TTSFPLOADIFull || Opcode == RISCV::TTSFPNOP;
       if (!Native && !Setup && !Lane)
         continue;
       if (Error E = verifyTensixMachineEffects(MI))
@@ -640,10 +755,10 @@ Error llvm::verifyTensixMacroMachineFunction(const MachineFunction &MF) {
         // an attribute or a CFG edge cannot establish the issue separation.
         auto It = std::next(MI.getIterator());
         for (unsigned I = 0; I != BlackholeConfigStateGapIssues; ++I) {
-          while (It != BB.end() &&
+          while (It != BB.instr_end() &&
                  (It->isDebugInstr() || It->isCFIInstruction()))
             ++It;
-          if (It == BB.end() || It->getOpcode() != RISCV::TTNOP)
+          if (It == BB.instr_end() || It->getOpcode() != RISCV::TTNOP)
             return createStringError(
                 "SFPLOADMACRO Blackhole CFG_STATE_ID requires three actual "
                 "consecutive TTNOP issue separators");
@@ -678,7 +793,7 @@ Error llvm::verifyTensixMacroMachineFunction(const MachineFunction &MF) {
       if (!Incoming)
         continue;
       MacroState State = *Incoming;
-      for (const auto &MI : BB)
+      for (const auto &MI : BB.instrs())
         advance(MI, State, ST);
       auto [It, Inserted] = Outputs.try_emplace(&BB, State);
       if (Inserted || It->second != State) {
@@ -703,7 +818,7 @@ Error llvm::verifyTensixMacroMachineFunction(const MachineFunction &MF) {
         Incoming = It->second;
     }
     MacroState State = *Incoming;
-    for (const auto &MI : BB) {
+    for (const auto &MI : BB.instrs()) {
       if (isTensixMacroInstruction(MI.getOpcode()) &&
           !RISCV::getTensixEncoding(MI.getOpcode()))
         return createStringError("unexpanded SFPLOADMACRO pseudo reached "

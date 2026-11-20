@@ -16,7 +16,7 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -O0 -verify-machineinstrs -filetype=obj %t/too-positive.ll -o %t/too-positive.o 2>&1 | FileCheck %s --check-prefix=SIGNED
 ; RUN: test ! -e %t/too-positive.o
 
-; CAST: Wormhole SFPCAST operand 3 must be in [0, 1]
+; CAST: Wormhole SFPCASTDeterministic operand 3 must be in [0, 0]
 ; SHIFT: Wormhole SFPSHFT operand 4 must be in [0, 1]
 ; SIGNED: Tensix immediate operand must fit in 12 signed bits
 

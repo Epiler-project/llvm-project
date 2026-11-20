@@ -28,6 +28,6 @@ ttpacr 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0
 ttpacr 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0
 # Packer mask5 is an undefined hardware combination.
 ttpacr 1, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0
-# Thread override and bank-flip reset are outside the admitted contract.
+# Thread override and the Blackhole counter stack selector exceed this target.
 ttsetadc 65536, 0, 1, 4
-ttsetrwc 15, 0, 0, 0, 0, 1
+ttsetrwc 16, 0, 0, 0, 0, 1

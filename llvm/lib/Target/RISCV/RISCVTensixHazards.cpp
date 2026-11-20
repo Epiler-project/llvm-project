@@ -224,7 +224,7 @@ unsigned afterDstIssue(const MachineInstr &MI, unsigned Cycles) {
 // part of such a function, including instructions outside a recorded region.
 bool hasExternalIssueOwner(const MachineFunction &MF) {
   for (const auto &BB : MF)
-    for (const auto &MI : BB)
+    for (const auto &MI : BB.instrs())
       if (isTensixMacroInstruction(MI.getOpcode()) ||
           MI.isCall() || MI.isInlineAsm() ||
           RISCV::getTensixMachineInfoByPort(MI.getOpcode()) ||
@@ -532,12 +532,12 @@ public:
     for (const auto &BB : MF)
       for (const auto &MI : BB.instrs()) {
         if (MI.isBundle()) {
-          auto Bundle = getTensixReplayBundle(MI);
+          auto Bundle = getTensixIssueBundle(MI);
           if (!Bundle)
             return Fail(toString(Bundle.takeError()));
           continue;
         }
-        if (MI.isBundled() && !isTensixReplayBundleMember(MI))
+        if (MI.isBundled() && !isTensixIssueBundleMember(MI))
           return Fail(
               "bundled instructions have no verified Tensix SFPU issue order");
         if (MI.isInlineAsm())

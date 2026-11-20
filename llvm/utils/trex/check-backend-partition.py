@@ -125,31 +125,38 @@ L_BIND_EXTRACTION_LINES = dict(
 # they do not allocate SFPRs, repair CC or extract automatic Replay/MOP.
 # Pin ordered additions only; this is not an exemption for arbitrary removals.
 L_BIND_EXTRACTION_PATCHES = {
-    # Exact forwarding to the native effects descriptor selector. The frozen
-    # contents owner gains no modifier table, allocation or CC repair logic.
+    # Exact forwarding to native descriptor selection and actual-ABI semantic
+    # projection. The frozen owner gains no transfer table, allocation, CC
+    # repair or Dst interpretation; all reprojection stays in BoundContract.
     "llvm/lib/Target/RISCV/RISCVTensixLowering.cpp": (
-        2,
-        "fca4106019c18a909f295325f8ce61676d81b12640298c2942096ed1cf38a9c0",
+        9,
+        "33103d335916b8dc6fa24374de9d806e0af5fac2369df5215dceed55afe548bd",
     ),
     "llvm/lib/Target/RISCV/RISCVTargetMachine.cpp": (
         9,
         "a1327049553da10da684d14169233e10aa8a2d1afc78c9f9ac033d6ae3be76fb",
     ),
     "llvm/lib/Target/RISCV/RISCVTensixExplicitReplay.cpp": (
-        1652,
-        "785e65cdb145cd27920e23044db0a19705884b95fe4cfb41f647f8c80b2859f2",
+        1698,
+        "c34d9b990ad2ed9364fb94f9e07b24dac412077f4d96a0156b188b9d438f9dac",
     ),
     "llvm/lib/Target/RISCV/RISCVTensixExplicitReplay.h": (
         268,
-        "ab66c5116c94ede4282dda8165b5621d3397066a11c6ae0d2724667bef3537d1",
+        "3c42a03165508ddca9e45392cded79192dcb9f5a9bf20c02bcdbec3e14e7e493",
     ),
     "llvm/lib/Target/RISCV/RISCVTensixHazards.cpp": (
-        30,
-        "5b2137548aa103af6864b31e981880e671702d88586584844a0d7ee9562d383d",
+        31,
+        "8b8dd840232b41157a7e4f8984b7fad84a9573ebfe98700083ad3e65e783bd4a",
+    ),
+    # Decode the seven-bit Wormhole fields at native reception. The existing
+    # sequence graph remains frozen until its transitional consumers leave.
+    "llvm/include/llvm/Target/RISCV/RISCVTensixMOP.h": (
+        41,
+        "7ec4ade6f7c7fd9d05ac427727c189342e92b6a86d2484c43cb72f84ec96862d",
     ),
     "llvm/lib/Target/RISCV/RISCVTensixReplay.cpp": (
-        139,
-        "b4200e58097256a476fba15afb78c78a7fe5fb0906431861b85ac3ce352f3ab5",
+        181,
+        "11ae53605bc92a575d81907355df989c0ecb9768674679bb6c9329f87fd2d246",
     ),
     "llvm/lib/Target/RISCV/RISCVTensixReplay.h": (
         2,

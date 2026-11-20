@@ -50,6 +50,10 @@ class TensixBoundBinary : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old, uimm4:$lhs, uimm4:$rhs, uimm2:$mode)>;
 def PseudoTTBoundSFPADD : TensixBoundBinary;
 def PseudoTTBoundSFPMUL : TensixBoundBinary;
+def PseudoTTBoundSFPMUL24 : TensixBoundPseudo<
+    (ins uimm3:$dst, uimm3:$old, uimm4:$lhs, uimm4:$rhs, uimm1:$mode)> {
+  let Predicates = [HasVendorXTTTensixBH];
+}
 def PseudoTTBoundSFPMAD : TensixBoundPseudo<
     (ins uimm3:$dst, uimm3:$old, uimm4:$a, uimm4:$b, uimm4:$c,
          uimm2:$mode)>;

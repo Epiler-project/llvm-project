@@ -11,6 +11,25 @@
 namespace llvm {
 class MCInstrInfo;
 class MCRegisterInfo;
+// Private actual-ABI fields shared by contents lowering and native reception.
+struct ContentsOperand {
+  std::optional<unsigned> Argument;
+  int64_t Immediate = 0;
+};
+
+struct ContentsFixedRegisterArgument {
+  unsigned Register;
+  unsigned Argument;
+};
+
+struct ContentsInstruction {
+  unsigned Opcode = 0;
+  SmallVector<ContentsOperand, 6> Operands;
+  // A group ABI stages these actual contents values into native fixed inputs.
+  // Physical placement does not replace their numerical SSA identity.
+  SmallVector<ContentsFixedRegisterArgument, 4> FixedRegisterArguments;
+};
+
 namespace RISCV {
 // Reuse the target's generated descriptors without global target registration.
 std::unique_ptr<MCInstrInfo> createTensixBoundMCInstrInfo();
@@ -59,9 +78,25 @@ struct TensixSFPUInstructionSemantics {
   SmallVector<TensixSFPUTransferFacts, 4> Transfers;
   TensixSFPULaneControl LaneControl;
   std::optional<TensixSFPUConfigurationFacts> Configuration;
+  // Packet indices address Values; OffsetArgument names the actual native
+  // scalar operand. Each ABI maps the two namespaces independently.
+  std::optional<TensixSFPUDstTransferFacts> DstTransfer;
 };
-Expected<TensixSFPUInstructionSemantics> getTensixSFPUInstructionSemantics(
-    unsigned Opcode, ArrayRef<std::optional<int64_t>> NativeFields);
+Expected<TensixSFPUInstructionSemantics>
+getTensixSFPUInstructionSemantics(unsigned Opcode,
+                                  ArrayRef<std::optional<int64_t>> NativeFields,
+                                  TensixSFPUArchitecture Architecture);
+
+// Reproject native values into the actual contents ABI. Scalar coordinates
+// and numerical packets retain independent operand namespaces. This adapter
+// consumes validated fields and never selects registers or initializes state.
+Expected<TensixContentsIntrinsicInfo> projectTensixContentsNativeSemantics(
+    Intrinsic::ID ID, unsigned Opcode,
+    ArrayRef<std::optional<int64_t>> NativeArguments,
+    TensixSFPUArchitecture Architecture,
+    std::optional<ContentsInstruction> Projection,
+    ArrayRef<TensixContentsValue> Arguments, bool Snapshot,
+    TensixContentsIntrinsicInfo Info);
 
 MCRegister getTensixSFPURegister(uint32_t Number);
 // Pure architectural descriptor projection shared by bound and contents ABI.

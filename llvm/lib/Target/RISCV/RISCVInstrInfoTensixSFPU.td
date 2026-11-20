@@ -96,6 +96,13 @@ def TTSFPEXEXP : TensixUnary<0x77, "ttsfpexexp", 0x0f0f> {
   let WormholeSupported = 1;
   let Defs = [TT_CC, TT_ISSUE];
 }
+// Exponent extraction without SET_CC or COMP_CC reads the predicate and
+// leaves lane flags unchanged. The same bits retain the canonical MC opcode.
+def TTSFPEXEXPPreserveCC : TensixUnary<0x77, "ttsfpexexp", 0x0003> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let isCodeGenOnly = 1;
+}
 def TTSFPEXMAN : TensixUnary<0x78, "ttsfpexman", 0x0003> {
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
@@ -125,6 +132,15 @@ def TTSFPCAST : TensixUnary<0x90, "ttsfpcast", 0x000f> {
   // The shared descriptor conservatively includes the stochastic mode's PRNG.
   let Uses = [TT_CC, TT_CONFIG, TT_ISSUE, TT_PRNG];
   let Defs = [TT_ISSUE, TT_PRNG];
+}
+
+// The stochastic form advances PRNG. Deterministic conversions have the
+// same MC encoding but no random-state dependency.
+def TTSFPCASTDeterministic : TensixUnary<0x90, "ttsfpcast", 0x000d> {
+  let isCodeGenOnly = 1;
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeOperandMaxima = [-1, -1, -1, 0];
 }
 
 class TensixSetField<bits<8> Opcode, string Name, bits<16> Modes>

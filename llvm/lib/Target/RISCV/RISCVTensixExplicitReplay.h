@@ -22,16 +22,16 @@ class RISCVInstrInfo;
 class PassRegistry;
 class RISCVSubtarget;
 
-/// One complete, contiguous authored native recording window. Reception
-/// independently checks structure, native issue count, internal reads and
-/// aggregate dependencies; no caller-provided permission bit admits a bundle.
-struct TensixReplayBundle {
+/// One complete native issue window with verified aggregate dependencies.
+struct TensixIssueBundle {
   const MachineInstr *Bundle;
   const MachineInstr *Header;
   const MachineInstr *End;
   SmallVector<const MachineInstr *, 32> Members;
+  bool IsMacro = false;
 };
-Expected<TensixReplayBundle> getTensixReplayBundle(const MachineInstr &Bundle);
+Expected<TensixIssueBundle> getTensixIssueBundle(const MachineInstr &Bundle);
+bool isTensixIssueBundleMember(const MachineInstr &MI);
 /// True only for an actual member of the currently verified live window.
 bool isTensixReplayBundleMember(const MachineInstr &MI);
 inline constexpr unsigned TensixReplaySlotCount = 32;

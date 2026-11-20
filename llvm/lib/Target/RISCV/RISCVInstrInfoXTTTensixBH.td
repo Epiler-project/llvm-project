@@ -68,6 +68,7 @@ let Predicates = [HasVendorXTTTensix], hasSideEffects = 1, isNotDuplicable = 1,
 def PseudoTTDependentUse : Pseudo<(outs), (ins GPR:$value), []>;
 }
 
+include "RISCVInstrInfoTensixNative.td"
 include "RISCVInstrInfoTensixOrdinary.td"
 
 class TensixPhysicalInst<bits<8> RawOpcodeValue, dag Outputs, dag Inputs,

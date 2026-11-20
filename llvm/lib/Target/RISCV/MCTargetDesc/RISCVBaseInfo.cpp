@@ -147,12 +147,34 @@ getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index) {
 
 bool isTensixWormholeIntrinsic(Intrinsic::ID ID) {
   const auto *Info = getTensixInstructionByIntrinsic(ID);
-  if (!Info ||
-      (ID != Info->IntrinsicID && ID != Intrinsic::riscv_tt_zeroacc_port))
+  if (!Info)
     return false;
   const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
   const auto *Encoding = getTensixEncoding(Machine->Opcode);
-  return Encoding && Encoding->WormholeSupported;
+  return Encoding && Encoding->WormholeSupported &&
+         (ID == Info->IntrinsicID ||
+          (ID == Info->PortIntrinsicID && Machine->WormholeDynamicFields));
+}
+
+bool isTensixBlackholeMutexIntrinsic(Intrinsic::ID ID) {
+  return ID == Intrinsic::riscv_tt_atgetm || ID == Intrinsic::riscv_tt_atrelm;
+}
+
+Error verifyTensixBlackholeMutexIndex(uint32_t Index) {
+  if (Index == 1 || Index > 4)
+    return createStringError("Blackhole mutex index must be 0, 2, 3, or 4");
+  return Error::success();
+}
+
+std::optional<uint32_t> getTensixWormholeDynamicFieldMinimum(Intrinsic::ID ID,
+                                                             unsigned Index) {
+  const auto *Info = getTensixInstructionByIntrinsic(ID);
+  if (!Info || ID != Info->PortIntrinsicID || Index >= Info->NumFields)
+    return std::nullopt;
+  const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
+  if (!(Machine->WormholeDynamicFields & (1u << Index)))
+    return std::nullopt;
+  return getTensixWormholeField(Machine->Opcode, Index)->MinValue;
 }
 
 Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
@@ -265,6 +287,8 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
                                  " must be in [0, " +
                                  Twine(Field->MaxValue) + "]");
     }
+    if (isTensixBlackholeMutexIntrinsic(Info->IntrinsicID))
+      return verifyTensixBlackholeMutexIndex(MI.getOperand(0).getImm());
     return Error::success();
   }
   for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
@@ -391,7 +415,10 @@ Error verifyTensixMCInstructionFields(const MCInst &MI,
     unsigned Mode = MI.getOperand(1).getImm();
     if (Mode == 0 && Mask != 0)
       return createStringError("SFPCONFIG mode 0 requires a zero mask");
-    if (Mode == 8 && (Mask & ~uint64_t(0x5555)) != 0)
+    // LaneConfig mode 8 consults only the even selector bits; odd bits
+    // are ignored by both Wormhole and Blackhole hardware.
+    if (Mode == 8 && MI.getOpcode() != RISCV::TTSFPCONFIGLane &&
+        (Mask & ~uint64_t(0x5555)) != 0)
       return createStringError(
           "SFPCONFIG mode 8 mask must select even lane bits");
     break;

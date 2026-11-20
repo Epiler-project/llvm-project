@@ -8,7 +8,8 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/lane-mode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E6
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/mask-overflow.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E7
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/nonzero-unmasked.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E8
-; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/odd-mask.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E9
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh %t/odd-mask.ll -o - | FileCheck %s --check-prefix=ODD
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh %t/odd-mask.ll -o - | FileCheck %s --check-prefix=ODD
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh %t/lane-reaching.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=REACHING
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/lut-mode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E1
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/six-mode.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=E2
@@ -23,7 +24,7 @@
 ; E6: contents lane configuration mode must be 8
 ; E7: contents configuration mask must fit u16
 ; E8: SFPCONFIG mode 0 requires a zero mask
-; E9: SFPCONFIG mode 8 mask must select even lane bits
+; ODD: .word 0x44000be2
 ; REACHING: contents SFPU requires ENABLE_DEST_INDEX known disabled
 
 ;--- swap-mode.ll
@@ -129,7 +130,13 @@ define void @nonzero_unmasked() "tensix-executor"="trisc1" {
 ;--- odd-mask.ll
 declare <32 x i32> @llvm.riscv.tt.contents.read.constant(i32 immarg)
 declare void @llvm.riscv.tt.contents.config.lane(<32 x i32>, i32 immarg, i32 immarg)
+declare void @llvm.riscv.tt.contents.encc(i32 immarg, i32 immarg)
+declare void @llvm.riscv.tt.contents.config.reset()
+declare void @llvm.riscv.tt.contents.nop()
 define void @odd_mask() "tensix-executor"="trisc1" {
+  call void @llvm.riscv.tt.contents.encc(i32 3, i32 10)
+  call void @llvm.riscv.tt.contents.config.reset()
+  call void @llvm.riscv.tt.contents.nop()
   %v = call <32 x i32> @llvm.riscv.tt.contents.read.constant(i32 9)
   call void @llvm.riscv.tt.contents.config.lane(<32 x i32> %v, i32 2, i32 8)
   ret void

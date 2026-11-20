@@ -2,6 +2,11 @@
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -O2 -verify-machineinstrs -filetype=obj %s -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixwh - | FileCheck %s
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -O2 -regalloc=fast -verify-machineinstrs -filetype=obj %s -o - | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixwh - | FileCheck %s
 ; RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -O2 -verify-machineinstrs -stop-after=finalize-isel %s -o - | FileCheck %s --check-prefix=ISEL
+; RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -O2 -verify-machineinstrs -stop-after=riscv-tensix-hazards %s -o %t.mir
+; RUN: FileCheck %s --check-prefix=MACRO-BUNDLE < %t.mir
+; RUN: sed '/BUNDLE.*{/,/^    }/{ /TTSFPNOP/d; }' %t.mir > %t.bad.mir
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -run-pass=riscv-tensix-hazards %t.bad.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=MACRO-BUNDLE-ERR
+
 
 ; Real same-function setup, first-eight-column macro programming, tied ordinary
 ; L0..L3 allocation and a finite queue drain. No ordinary ADD substitutes for
@@ -44,7 +49,15 @@ define void @wh_macro_addi_loop(i32 %limit) "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: wh_macro_addi_loop
 ; ISEL: PseudoTTSFPMacroAddressReset
 ; ISEL: PseudoTTSFPMacroConfigureADDI 0, 16256
-; ISEL: :sfprlow = PseudoTTSFPContentsLoadMacroADDI
+; ISEL: :sfprlow = PseudoTTSFPLoadMacroADDI
+; MACRO-BUNDLE: BUNDLE {{.*}} :: (volatile load store (s32)) {
+; MACRO-BUNDLE-NEXT: {{.*}}TTSFPLOADMACROFP32Even {{.*}}, 8, 0,
+; MACRO-BUNDLE-NEXT: TTSFPNOP {{.*}}internal{{.*}}$tt_issue
+; MACRO-BUNDLE-NEXT: TTSFPNOP
+; MACRO-BUNDLE-NEXT: TTSFPNOP
+; MACRO-BUNDLE-NEXT: TTSFPNOP
+; MACRO-BUNDLE-NEXT: }
+; MACRO-BUNDLE-ERR: SFPLOADMACRO bundle requires four consecutive SFPNOP load-unit drain issues
 entry:
   call void @llvm.riscv.tt.contents.macro.address.reset()
   call void @llvm.riscv.tt.contents.encc(i32 3, i32 10)

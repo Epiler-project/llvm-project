@@ -4,6 +4,8 @@
 # RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/cfg-gap-2.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=CFG-GAP
 # RUN: not llc -mtriple=riscv32 -run-pass=riscv-tensix-hazards %t/no-feature.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ARCH
 # RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/safe.mir -o /dev/null
+# RUN: sed '/TTSETC16 0, 20,/d' %t/safe.mir | not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards -x mir - -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
+# RUN: sed 's/TTSETC16 0, 20,/TTSETC16 1, 20,/' %t/safe.mir | not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards -x mir - -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
 # RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/no-sp.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
 # RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/sp-nonzero.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
 # RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/reserved-mask.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDRESS
@@ -41,7 +43,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -84,7 +89,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -127,7 +135,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -170,7 +181,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -214,7 +228,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -257,7 +274,10 @@ body: |
     TTRMWCIB0 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -301,6 +321,7 @@ body: |
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 23, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -343,7 +364,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -387,7 +411,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -429,7 +456,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -474,7 +504,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 4, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -524,7 +557,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -565,7 +601,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
@@ -607,7 +646,10 @@ body: |
     TTRMWCIB1 6, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB0 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTRMWCIB1 7, 0, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 12, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 20, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETC16 0, 28, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTSETC16 0, 47, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSETRWC 20, 0, 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
     TTSFPENCC 3, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_cc
     TTSFPCONFIGReset implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue

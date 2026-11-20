@@ -31,7 +31,7 @@ define void @wh_exexp_modes() "tensix-executor"="trisc1" {
 ; CHECK: ttsfpstore [[VALUE]], 0, 0, 3
 ; ISEL-LABEL: name: wh_exexp_modes
 ; ISEL: [[LOAD:%[0-9]+]]:sfpr = TTSFPLOAD
-; ISEL: [[VALUE:%[0-9]+]]:sfpr = TTSFPEXEXP [[LOAD]], [[LOAD]], 0
+; ISEL: [[VALUE:%[0-9]+]]:sfpr = TTSFPEXEXPPreserveCC [[LOAD]], [[LOAD]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 entry:
   call void @llvm.riscv.tt.contents.encc(i32 3, i32 10)
   call void @llvm.riscv.tt.contents.config.reset()
@@ -151,7 +151,7 @@ define void @wh_unary_mad_hazards() "tensix-executor"="trisc1" {
 ; CHECK: ttsfpstore [[VALUE]], 0, 0, 3
 ; ISEL-LABEL: name: wh_unary_mad_hazards
 ; ISEL: [[MAD1:%[0-9]+]]:sfpr = TTSFPMAD
-; ISEL: [[EXP:%[0-9]+]]:sfpr = TTSFPEXEXP [[MAD1]], [[MAD1]], 0
+; ISEL: [[EXP:%[0-9]+]]:sfpr = TTSFPEXEXPPreserveCC [[MAD1]], [[MAD1]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 ; ISEL: [[MAD2:%[0-9]+]]:sfpr = TTSFPMAD [[EXP]],
 ; ISEL: [[MAN:%[0-9]+]]:sfpr = TTSFPEXMAN [[MAD2]], [[MAD2]], 0
 ; ISEL: [[MAD3:%[0-9]+]]:sfpr = TTSFPMAD [[MAN]],
@@ -185,7 +185,7 @@ define void @wh_unary_contents_loop(i32 %limit) "tensix-executor"="trisc1" {
 ; ISEL-LABEL: name: wh_unary_contents_loop
 ; ISEL: [[OLD:%[0-9]+]]:sfpr = PHI
 ; ISEL: [[PARTIAL:%[0-9]+]]:sfpr = TTSFPLOAD [[OLD]], 0, 3, 14
-; ISEL: [[EXP:%[0-9]+]]:sfpr = TTSFPEXEXP [[PARTIAL]], [[PARTIAL]], 0
+; ISEL: [[EXP:%[0-9]+]]:sfpr = TTSFPEXEXPPreserveCC [[PARTIAL]], [[PARTIAL]], 0, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 ; ISEL: [[MAN:%[0-9]+]]:sfpr = TTSFPEXMAN [[EXP]], [[EXP]], 1
 ; ISEL: :sfpr = TTSFPLZPreserveCC [[MAN]], [[MAN]], 4, implicit-def{{( dead)?}} $tt_issue, implicit $tt_cc, implicit $tt_config, implicit $tt_issue{{$}}
 entry:

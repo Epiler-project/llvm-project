@@ -17,6 +17,12 @@ class AssumptionCache;
 class DominatorTree;
 bool isTensixSFPUIntrinsic(Intrinsic::ID ID);
 
+/// Use one semantic control for validation and machine selection. The
+/// architecture-qualified spelling still requires a matching subtarget.
+Intrinsic::ID getTensixReplayControl(Intrinsic::ID ID);
+std::optional<RISCV::TensixSFPUArchitecture>
+getTensixReplayControlArchitecture(Intrinsic::ID ID);
+
 /// Return true for the pre-bound LLVM ABI names retired by the physical
 /// ingress cutover.  This name-based check remains available while old
 /// textual IR can still declare these symbols as ordinary calls; it does not

@@ -28,4 +28,5 @@ add_llvm_target_unittest(RISCVTests
   RISCVTensixContentsIndexTest.cpp
   RISCVTensixConfigurationTest.cpp
   RISCVTensixComparisonTest.cpp
+  RISCVTensixElementwiseTest.cpp
   )

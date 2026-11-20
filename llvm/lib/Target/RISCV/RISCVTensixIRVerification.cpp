@@ -30,6 +30,7 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsTT.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
@@ -46,6 +47,13 @@
 #include <optional>
 
 using namespace llvm;
+
+static std::optional<RISCV::TensixSFPUArchitecture>
+getBoundArchitecture(Intrinsic::ID ID) {
+  if (auto Macro = getTensixBoundMacroArchitecture(ID))
+    return Macro;
+  return RISCV::getTensixBoundSFPUArchitecture(ID);
+}
 
 bool llvm::isTensixSFPUIntrinsic(Intrinsic::ID ID) {
   return isTensixBoundSFPUIntrinsic(ID) || isTensixContentsIntrinsic(ID);
@@ -131,7 +139,48 @@ bool llvm::isRetiredTensixSFPUIntrinsicName(StringRef Name) {
          Suffix.starts_with("lreg.") || Suffix.starts_with("creg.");
 }
 
+Intrinsic::ID llvm::getTensixReplayControl(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::tt_wh_mop_execute:
+    return Intrinsic::riscv_tt_mop;
+  case Intrinsic::tt_wh_replay_template_begin:
+  case Intrinsic::tt_bh_replay_template_begin:
+    return Intrinsic::riscv_tt_replay_template_begin;
+  case Intrinsic::tt_wh_replay_template_end:
+  case Intrinsic::tt_bh_replay_template_end:
+    return Intrinsic::riscv_tt_replay_template_end;
+  case Intrinsic::tt_wh_replay_template_execute:
+  case Intrinsic::tt_bh_replay_template_execute:
+    return Intrinsic::riscv_tt_replay_template_execute;
+  case Intrinsic::tt_wh_replay_template_mop:
+  case Intrinsic::tt_bh_replay_template_mop:
+    return Intrinsic::riscv_tt_replay_template_mop;
+  default:
+    return ID;
+  }
+}
+
+std::optional<RISCV::TensixSFPUArchitecture>
+llvm::getTensixReplayControlArchitecture(Intrinsic::ID ID) {
+  switch (ID) {
+  case Intrinsic::tt_wh_mop_execute:
+  case Intrinsic::tt_wh_replay_template_begin:
+  case Intrinsic::tt_wh_replay_template_end:
+  case Intrinsic::tt_wh_replay_template_execute:
+  case Intrinsic::tt_wh_replay_template_mop:
+    return RISCV::TensixSFPUArchitecture::Wormhole;
+  case Intrinsic::tt_bh_replay_template_begin:
+  case Intrinsic::tt_bh_replay_template_end:
+  case Intrinsic::tt_bh_replay_template_execute:
+  case Intrinsic::tt_bh_replay_template_mop:
+    return RISCV::TensixSFPUArchitecture::Blackhole;
+  default:
+    return std::nullopt;
+  }
+}
+
 bool llvm::RISCV::isTensixIntrinsic(Intrinsic::ID ID) {
+  ID = getTensixReplayControl(ID);
   return isTensixSFPUIntrinsic(ID) || getTensixInstructionByIntrinsic(ID) ||
          ID == Intrinsic::riscv_tt_dependent_use ||
          ID == Intrinsic::riscv_tt_coprocessor_wait ||
@@ -844,7 +893,7 @@ Error verifyFullLoadsOutsideRecording(Function &F) {
       const auto *II = dyn_cast<IntrinsicInst>(&I);
       if (!II)
         continue;
-      Intrinsic::ID ID = II->getIntrinsicID();
+      Intrinsic::ID ID = getTensixReplayControl(II->getIntrinsicID());
       if (ID == Intrinsic::riscv_tt_contents_replay_template_begin ||
           ID == Intrinsic::riscv_tt_replay_template_begin) {
         TemplateActive = true;
@@ -903,7 +952,8 @@ Error verifyReplayTemplates(Function &F, DominatorTree &DT) {
     uint32_t ActiveID = 0;
     for (const Instruction &I : BB) {
       const auto *II = dyn_cast<IntrinsicInst>(&I);
-      auto Kind = II ? II->getIntrinsicID() : Intrinsic::not_intrinsic;
+      auto Kind = II ? getTensixReplayControl(II->getIntrinsicID())
+                     : Intrinsic::not_intrinsic;
       if (Kind == Intrinsic::riscv_tt_replay_template_begin ||
           Kind == Intrinsic::riscv_tt_replay_template_end ||
           Kind == Intrinsic::riscv_tt_replay_template_execute ||
@@ -981,7 +1031,11 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     // The scalar readback dependency uses ordinary RISC-V instructions rather
     // than a model-specific Tensix instruction encoding.
     if (auto Architecture =
-            RISCV::getTensixBoundSFPUArchitecture(II->getIntrinsicID())) {
+            getTensixReplayControlArchitecture(II->getIntrinsicID())) {
+      if ((*Architecture == RISCV::TensixSFPUArchitecture::Wormhole) != Wormhole)
+        return invalid(F, "Replay intrinsic architecture does not match target feature");
+    } else if (auto Architecture =
+                   getBoundArchitecture(II->getIntrinsicID())) {
       if ((*Architecture == RISCV::TensixSFPUArchitecture::Wormhole) !=
           Wormhole)
         return invalid(
@@ -1010,7 +1064,7 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
       return invalid(
           F,
           "Tensix intrinsic requires a direct C call without operand bundles");
-    Intrinsic::ID ID = II->getIntrinsicID();
+    Intrinsic::ID ID = getTensixReplayControl(II->getIntrinsicID());
     if (ID == Intrinsic::riscv_tt_dependent_use)
       continue;
     if (ID == Intrinsic::riscv_tt_coprocessor_wait) {
@@ -1021,7 +1075,10 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     if (Executor == "ncrisc")
       return invalid(F, "ncrisc cannot issue Tensix instructions");
     if (isTensixSFPUIntrinsic(ID)) {
-      if (isTensixBoundSFPUIntrinsic(ID)) {
+      if (isTensixMacroIntrinsic(ID) || getTensixBoundMacroArchitecture(ID)) {
+        if (Executor != "trisc1")
+          return invalid(F, "SFPLOADMACRO requires the TRISC1 executor");
+      } else if (isTensixBoundSFPUIntrinsic(ID)) {
         if (Executor != "trisc0" && Executor != "trisc1" &&
             Executor != "trisc2")
           return invalid(F, "bound SFPU execution requires a TRISC executor");
@@ -1076,6 +1133,9 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
       continue;
     }
     const auto *Info = RISCV::getTensixInstructionByIntrinsic(ID);
+    if (II->getIntrinsicID() == Intrinsic::tt_wh_mop_execute &&
+        Executor == "brisc")
+      return invalid(F, "MOP execution requires a TRISC executor");
     bool Mop = ID == Info->MopIntrinsicID;
     bool Replay = Info->IntrinsicID == Intrinsic::riscv_tt_replay;
     bool Port = ID == Info->PortIntrinsicID;
@@ -1083,14 +1143,14 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     if (Wormhole) {
       SmallVector<uint32_t, 16> Fields;
       for (unsigned N = 0; N != Info->NumFields; ++N) {
-        // Only ZEROACC's absolute face is dynamic on the ordinary WH port.
-        // Other fields retain the exact static form checked by MC. A zero
-        // placeholder receives the form; the issuing-use range check below
-        // receives the actual dynamic face without masking or truncation.
-        if (ID == Intrinsic::riscv_tt_zeroacc_port && N == 0 &&
-            !isa<ConstantInt>(II->getArgOperand(First + N))) {
-          Fields.push_back(0);
-          continue;
+        // Use the minimum of a dynamic field for static form validation.
+        // The issuing-use range check below receives the actual value.
+        if (!isa<ConstantInt>(II->getArgOperand(First + N))) {
+          if (auto Minimum =
+                  RISCV::getTensixWormholeDynamicFieldMinimum(ID, N)) {
+            Fields.push_back(*Minimum);
+            continue;
+          }
         }
         auto Value = immediate(*II, First + N);
         if (!Value)
@@ -1098,6 +1158,13 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
         Fields.push_back(static_cast<uint32_t>(*Value));
       }
       if (Error E = RISCV::verifyTensixWormholeInstructionFields(ID, Fields))
+        return invalid(F, toString(std::move(E)));
+    } else if (RISCV::isTensixBlackholeMutexIntrinsic(Info->IntrinsicID)) {
+      // Encodable mutex indices outside this set cause an indefinite wait.
+      auto Index = immediate(*II, First);
+      if (!Index)
+        return Index.takeError();
+      if (Error E = RISCV::verifyTensixBlackholeMutexIndex(*Index))
         return invalid(F, toString(std::move(E)));
     }
     if (Mop) {
@@ -1121,17 +1188,21 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
     }
     for (unsigned N = 0; N != Info->NumFields; ++N) {
       const auto *Field = RISCV::getTensixInstructionField(*Info, N);
+      uint64_t Minimum = 0;
       uint64_t Maximum = Field->MaxValue;
       if (Wormhole && Port) {
         const auto *Machine =
             RISCV::getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
-        Maximum = RISCV::getTensixWormholeField(Machine->Opcode, N)->MaxValue;
+        const auto *WormholeField =
+            RISCV::getTensixWormholeField(Machine->Opcode, N);
+        Minimum = WormholeField->MinValue;
+        Maximum = WormholeField->MaxValue;
         if (ID == Intrinsic::riscv_tt_zeroacc_port && N == 0)
           Maximum >>=
               cast<ConstantInt>(II->getArgOperand(First + 3))->getZExtValue();
       }
       if (!Port || Replay) {
-        if (Error E = range(*II, First + N, 0, Maximum))
+        if (Error E = range(*II, First + N, Minimum, Maximum))
           return E;
         continue;
       }
@@ -1146,25 +1217,32 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
       // including a dominating body guard; retain the separate poison proof.
       // Combine the recurrence's global bounds with edge constraints at this
       // use. Neither alone need prove derived fields such as 1 - induction.
+      auto NeedsRefinement = [Minimum, Maximum](const ConstantRange &Bounds) {
+        return !Bounds.isEmptySet() && (Bounds.getUnsignedMin().ult(Minimum) ||
+                                        Bounds.getUnsignedMax().ugt(Maximum));
+      };
       ConstantRange Bounds = SE.getUnsignedRange(FieldValue);
-      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Maximum))
+      if (NeedsRefinement(Bounds))
         Bounds = Bounds.intersectWith(
             LVI.getConstantRangeAtUse(II->getArgOperandUse(First + N),
                                       /*UndefAllowed=*/false),
             ConstantRange::Unsigned);
-      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Maximum))
+      if (NeedsRefinement(Bounds))
         Bounds = refineWithRelatedInductions(FieldValue, Bounds, *II, SE, LVI,
                                              AC, DT);
-      if (!Bounds.isEmptySet() && Bounds.getUnsignedMax().ugt(Maximum))
+      if (NeedsRefinement(Bounds))
         Bounds = refineWithScalarExpressions(const_cast<Value *>(V), Bounds,
                                              *II, SE, LVI);
       if (Bounds.isEmptySet() ||
+          (Bounds.getUnsignedMin().ult(Minimum) &&
+           !SE.isKnownPredicateAt(ICmpInst::ICMP_UGE, FieldValue,
+                                  SE.getConstant(V->getType(), Minimum), II)) ||
           (Bounds.getUnsignedMax().ugt(Maximum) &&
            !SE.isKnownPredicateAt(ICmpInst::ICMP_ULE, FieldValue,
                                   SE.getConstant(V->getType(), Maximum), II)))
         return invalid(F, Twine(Info->getName()) + " field " +
-                              Field->getName() + " must be proven in [0, " +
-                              Twine(Maximum) + "]");
+                              Field->getName() + " must be proven in [" +
+                              Twine(Minimum) + ", " + Twine(Maximum) + "]");
     }
     if (Replay) {
       if (Error E = range(*II, First + 1, 0, 1))
@@ -1548,7 +1626,7 @@ void updateContentsLaneConfig(const Instruction &I, ContentsLaneConfig &State,
       State = {};
     return;
   }
-  Intrinsic::ID ID = II->getIntrinsicID();
+  Intrinsic::ID ID = getTensixReplayControl(II->getIntrinsicID());
   // A typed observation neither issues a word nor changes numerical or
   // architectural configuration facts, including inside replay accounting.
   if (ID == Intrinsic::riscv_tt_contents_entry || ID == Intrinsic::assume)
@@ -1815,8 +1893,7 @@ llvm::verifyTensixSFPUFunction(Function &F, ScalarEvolution &SE,
     const auto *II = dyn_cast<IntrinsicInst>(&I);
     if (!II || !isTensixSFPUIntrinsic(II->getIntrinsicID()))
       continue;
-    if (auto IntrinsicArchitecture =
-            RISCV::getTensixBoundSFPUArchitecture(II->getIntrinsicID()))
+    if (auto IntrinsicArchitecture = getBoundArchitecture(II->getIntrinsicID()))
       if (*IntrinsicArchitecture != Architecture)
         return invalid(
             F, "SFPU intrinsic architecture does not match target feature");
