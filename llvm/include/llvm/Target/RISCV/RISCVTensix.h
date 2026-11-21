@@ -62,6 +62,7 @@ struct TensixInstructionField {
   uint8_t Index;
   StringTable::Offset Name;
   uint32_t MaxValue;
+  uint32_t WormholeMaxValue;
   StringRef getName() const;
 };
 

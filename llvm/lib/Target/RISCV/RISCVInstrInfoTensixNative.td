@@ -19,6 +19,8 @@ class TensixOrdinaryInst<string LogicalName, bits<8> RawOpcodeValue,
   Intrinsic MopIntrinsicID =
       !cast<Intrinsic>("int_riscv_tt_" # !tolower(LogicalName) # "_mop");
   Instruction MopOpcode = !cast<Instruction>("PseudoTT" # LogicalName # "Mop");
+  bit WormholeMopSupported = !not(!empty(!filter(P, MopOpcode.Predicates,
+                                                   !eq(P, HasVendorXTTTensix))));
   Instruction PortOpcode = !cast<Instruction>("PseudoTT" # LogicalName # "Port");
   bit WritesDst = !or(!eq(LogicalName, "APOOL3S1"), !eq(LogicalName, "APOOL3S2"),
       !eq(LogicalName, "CONV3S1"), !eq(LogicalName, "CONV3S2"),
@@ -248,14 +250,16 @@ def PseudoTTSFPUDstRecordWord : TensixDstRecordPayload<
     (ins uimm32:$opcode, uimm32:$reg, uimm32:$old,
          GPR:$offset, uimm3:$addrmode, uimm4:$format)>;
 
-def PseudoTTADDDMAREGPort : TensixOrdinaryPort;
-def PseudoTTADDDMAREGMop : TensixOrdinaryMop<
-    (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst)>;
-def TTADDDMAREG : TensixOrdinaryInst<"ADDDMAREG", 0x58,
+class TensixScalarArithmetic<string name, bits<8> opcode>
+    : TensixOrdinaryInst<name, opcode,
     (ins uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst),
     "$oparegindex, $opbregindex, $resultregindex, $opbisconst",
     ["oparegindex", "opbregindex", "resultregindex", "opbisconst"],
     [63, 63, 2047, 1]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  // WH ADDDMAREG/MULDMAREG name a six-bit destination GPR in bits 17:12.
+  let WormholeFieldMaxima = [63, 63, 63, 1];
   bits<6> oparegindex;
   bits<6> opbregindex;
   bits<11> resultregindex;
@@ -266,6 +270,11 @@ def TTADDDMAREG : TensixOrdinaryInst<"ADDDMAREG", 0x58,
   let RawWord{23} = opbisconst;
 }
 
+def PseudoTTADDDMAREGPort : TensixOrdinaryPort;
+def PseudoTTADDDMAREGMop : TensixOrdinaryMop<
+    (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst)>;
+def TTADDDMAREG : TensixScalarArithmetic<"ADDDMAREG", 0x58>;
+
 def PseudoTTADDRCRXYPort : TensixOrdinaryPort;
 def PseudoTTADDRCRXYMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$bitmask, uimm32:$ch0_x, uimm32:$ch0_y, uimm32:$ch1_x, uimm32:$ch1_y, uimm32:$cntsetmask)>;
@@ -274,6 +283,11 @@ def TTADDRCRXY : TensixOrdinaryInst<"ADDRCRXY", 0x53,
     "$bitmask, $ch0_x, $ch0_y, $ch1_x, $ch1_y, $cntsetmask",
     ["bitmask", "ch0_x", "ch0_y", "ch1_x", "ch1_y", "cntsetmask"],
     [63, 7, 7, 7, 63, 7]> {
+  // Wormhole bitmask selects four channel/dimension lanes and ch1_y bits 4:3
+  // are ThreadOverride; receive current-thread counters (ThreadOverride=0).
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [15, 7, 7, 7, 7, 7];
   bits<6> bitmask;
   bits<3> ch0_x;
   bits<3> ch0_y;
@@ -296,6 +310,9 @@ def TTADDRCRZW : TensixOrdinaryInst<"ADDRCRZW", 0x56,
     "$bitmask, $ch0_x, $ch0_y, $ch1_x, $ch1_y, $cntsetmask",
     ["bitmask", "ch0_x", "ch0_y", "ch1_x", "ch1_y", "cntsetmask"],
     [63, 7, 7, 7, 63, 7]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [15, 7, 7, 7, 7, 7];
   bits<6> bitmask;
   bits<3> ch0_x;
   bits<3> ch0_y;
@@ -313,11 +330,77 @@ def TTADDRCRZW : TensixOrdinaryInst<"ADDRCRZW", 0x56,
 def PseudoTTAPOOL3S1Port : TensixOrdinaryPort;
 def PseudoTTAPOOL3S1Mop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$index_en, uimm32:$pool_addr_mode, uimm32:$clear_dvalid)>;
+// LLK encodes CONV's address mode one bit higher on Wormhole. Its
+// destination occupies bits 14:0 there, versus bits 13:0 on Blackhole.
+class Tensix3SConvEncoding<bits<8> opcode>
+    : InstructionEncoding {
+  let Size = 4;
+  let DecoderNamespace = "Tensix";
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0;
+  bits<5> rotate_weights;
+  bits<2> clear_dvalid;
+  let RawWord{31-24} = opcode;
+  let RawWord{23-22} = clear_dvalid;
+  let RawWord{21-17} = rotate_weights;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+class Tensix3SPoolEncoding<bits<8> opcode> : InstructionEncoding {
+  let Size = 4;
+  let DecoderNamespace = "Tensix";
+  bits<32> Inst;
+  bits<32> SoftFail = 0;
+  bits<32> RawWord = 0;
+  let RawWord{31-24} = opcode;
+  let Inst{31-2} = RawWord{29-0};
+  let Inst{1-0} = RawWord{31-30};
+}
+class Tensix3SPoolBlackhole<bits<8> opcode> : Tensix3SPoolEncoding<opcode> {
+  bits<14> dst;
+  bits<1> index_en;
+  bits<7> pool_addr_mode;
+  bits<2> clear_dvalid;
+  let RawWord{13-0} = dst;
+  let RawWord{14} = index_en;
+  let RawWord{21-15} = pool_addr_mode;
+  let RawWord{23-22} = clear_dvalid;
+}
+class Tensix3SPoolWormhole<bits<8> opcode> : Tensix3SPoolEncoding<opcode> {
+  bits<10> dst;
+  bits<1> index_en;
+  bits<2> pool_addr_mode;
+  bits<2> clear_dvalid;
+  let RawWord{9-0} = dst;
+  let RawWord{14} = index_en;
+  let RawWord{16-15} = pool_addr_mode;
+  let RawWord{23-22} = clear_dvalid;
+}
+class Tensix3SConvBlackhole<bits<8> opcode> : Tensix3SConvEncoding<opcode> {
+  bits<14> dst;
+  bits<3> addr_mode;
+  let RawWord{13-0} = dst;
+  let RawWord{16-14} = addr_mode;
+}
+class Tensix3SConvWormhole<bits<8> opcode> : Tensix3SConvEncoding<opcode> {
+  bits<10> dst;
+  bits<2> addr_mode;
+  let RawWord{9-0} = dst;
+  let RawWord{16-15} = addr_mode;
+}
 def TTAPOOL3S1 : TensixOrdinaryInst<"APOOL3S1", 0x25,
     (ins uimm32:$dst, uimm32:$index_en, uimm32:$pool_addr_mode, uimm32:$clear_dvalid),
     "$dst, $index_en, $pool_addr_mode, $clear_dvalid",
     ["dst", "index_en", "pool_addr_mode", "clear_dvalid"],
     [16383, 1, 127, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 1, 3, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SPoolBlackhole<0x25>,
+       Tensix3SPoolWormhole<0x25>]>;
   bits<14> dst;
   bits<1> index_en;
   bits<7> pool_addr_mode;
@@ -336,6 +419,13 @@ def TTAPOOL3S2 : TensixOrdinaryInst<"APOOL3S2", 0x32,
     "$dst, $index_en, $pool_addr_mode, $clear_dvalid",
     ["dst", "index_en", "pool_addr_mode", "clear_dvalid"],
     [16383, 1, 127, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 1, 3, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SPoolBlackhole<0x32>,
+       Tensix3SPoolWormhole<0x32>]>;
   bits<14> dst;
   bits<1> index_en;
   bits<7> pool_addr_mode;
@@ -388,6 +478,8 @@ def TTATINCGET : TensixOrdinaryInst<"ATINCGET", 0x61,
     "$addrregindex, $dataregindex, $sel32b, $wrapval, $memhiersel",
     ["addrregindex", "dataregindex", "sel32b", "wrapval", "memhiersel"],
     [63, 63, 3, 511, 1]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<6> addrregindex;
   bits<6> dataregindex;
   bits<2> sel32b;
@@ -555,6 +647,13 @@ def TTCONV3S1 : TensixOrdinaryInst<"CONV3S1", 0x22,
     "$dst, $addr_mode, $rotate_weights, $clear_dvalid",
     ["dst", "addr_mode", "rotate_weights", "clear_dvalid"],
     [16383, 7, 31, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 3, 1, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SConvBlackhole<0x22>,
+       Tensix3SConvWormhole<0x22>]>;
   bits<14> dst;
   bits<3> addr_mode;
   bits<5> rotate_weights;
@@ -573,6 +672,13 @@ def TTCONV3S2 : TensixOrdinaryInst<"CONV3S2", 0x23,
     "$dst, $addr_mode, $rotate_weights, $clear_dvalid",
     ["dst", "addr_mode", "rotate_weights", "clear_dvalid"],
     [16383, 7, 31, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 3, 1, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SConvBlackhole<0x23>,
+       Tensix3SConvWormhole<0x23>]>;
   bits<14> dst;
   bits<3> addr_mode;
   bits<5> rotate_weights;
@@ -591,6 +697,8 @@ def TTDMANOP : TensixOrdinaryInst<"DMANOP", 0x60,
     "",
     [],
     []> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
 }
 
 // ELWADD retains one five-field logical ABI. WH ELWADD.md narrows DstRow
@@ -748,6 +856,8 @@ def TTGATESRCRST : TensixOrdinaryInst<"GATESRCRST", 0x35,
     "$reset_srca_gate_control, $reset_srcb_gate_control",
     ["reset_srca_gate_control", "reset_srcb_gate_control"],
     [1, 8388607]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<1> reset_srca_gate_control;
   bits<23> reset_srcb_gate_control;
   let RawWord{0} = reset_srca_gate_control;
@@ -787,6 +897,9 @@ def TTINCADCXY : TensixOrdinaryInst<"INCADCXY", 0x52,
     "$ch0_x, $ch0_y, $ch1_x, $ch1_y, $cntsetmask",
     ["ch0_x", "ch0_y", "ch1_x", "ch1_y", "cntsetmask"],
     [7, 7, 7, 63, 7]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [7, 7, 7, 7, 7];
   bits<3> ch0_x;
   bits<3> ch0_y;
   bits<3> ch1_x;
@@ -807,6 +920,9 @@ def TTINCADCZW : TensixOrdinaryInst<"INCADCZW", 0x55,
     "$ch0_x, $ch0_y, $ch1_x, $ch1_y, $cntsetmask",
     ["ch0_x", "ch0_y", "ch1_x", "ch1_y", "cntsetmask"],
     [7, 7, 7, 63, 7]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [7, 7, 7, 7, 7];
   bits<3> ch0_x;
   bits<3> ch0_y;
   bits<3> ch1_x;
@@ -827,6 +943,10 @@ def TTINCRWC : TensixOrdinaryInst<"INCRWC", 0x38,
     "$rwc_a, $rwc_b, $rwc_d, $rwc_cr",
     ["rwc_a", "rwc_b", "rwc_d", "rwc_cr"],
     [15, 15, 15, 63]> {
+  // Wormhole INCRWC encodes {DstCr, SrcBCr, SrcACr} in the low 3 bits of rwc_cr.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [15, 15, 15, 7];
   bits<4> rwc_a;
   bits<4> rwc_b;
   bits<4> rwc_d;
@@ -879,6 +999,13 @@ def TTMFCONV3S1 : TensixOrdinaryInst<"MFCONV3S1", 0x3a,
     "$dst, $addr_mode, $rotate_weights, $clear_dvalid",
     ["dst", "addr_mode", "rotate_weights", "clear_dvalid"],
     [16383, 7, 31, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 3, 1, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SConvBlackhole<0x3a>,
+       Tensix3SConvWormhole<0x3a>]>;
   bits<14> dst;
   bits<3> addr_mode;
   bits<5> rotate_weights;
@@ -1133,6 +1260,13 @@ def TTMPOOL3S1 : TensixOrdinaryInst<"MPOOL3S1", 0x24,
     "$dst, $index_en, $pool_addr_mode, $clear_dvalid",
     ["dst", "index_en", "pool_addr_mode", "clear_dvalid"],
     [16383, 1, 127, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 1, 3, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SPoolBlackhole<0x24>,
+       Tensix3SPoolWormhole<0x24>]>;
   bits<14> dst;
   bits<1> index_en;
   bits<7> pool_addr_mode;
@@ -1151,6 +1285,13 @@ def TTMPOOL3S2 : TensixOrdinaryInst<"MPOOL3S2", 0x31,
     "$dst, $index_en, $pool_addr_mode, $clear_dvalid",
     ["dst", "index_en", "pool_addr_mode", "clear_dvalid"],
     [16383, 1, 127, 3]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [1023, 1, 3, 3];
+  let EncodingInfos = EncodingByHwMode<
+      [DefaultMode, TensixWormholeEncoding],
+      [Tensix3SPoolBlackhole<0x31>,
+       Tensix3SPoolWormhole<0x31>]>;
   bits<14> dst;
   bits<1> index_en;
   bits<7> pool_addr_mode;
@@ -1164,20 +1305,7 @@ def TTMPOOL3S2 : TensixOrdinaryInst<"MPOOL3S2", 0x31,
 def PseudoTTMULDMAREGPort : TensixOrdinaryPort;
 def PseudoTTMULDMAREGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst)>;
-def TTMULDMAREG : TensixOrdinaryInst<"MULDMAREG", 0x5a,
-    (ins uimm32:$oparegindex, uimm32:$opbregindex, uimm32:$resultregindex, uimm32:$opbisconst),
-    "$oparegindex, $opbregindex, $resultregindex, $opbisconst",
-    ["oparegindex", "opbregindex", "resultregindex", "opbisconst"],
-    [63, 63, 2047, 1]> {
-  bits<6> oparegindex;
-  bits<6> opbregindex;
-  bits<11> resultregindex;
-  bits<1> opbisconst;
-  let RawWord{5-0} = oparegindex;
-  let RawWord{11-6} = opbregindex;
-  let RawWord{22-12} = resultregindex;
-  let RawWord{23} = opbisconst;
-}
+def TTMULDMAREG : TensixScalarArithmetic<"MULDMAREG", 0x5a>;
 
 // Keep the formal logical ABI shared. WH MVMUL.md places its two-bit AddrMod
 // at raw bits 16:15, whereas the existing BH encoding starts at bit14. Narrow
@@ -1231,7 +1359,9 @@ def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
 
 def PseudoTTNOPPort : TensixOrdinaryPort;
 def PseudoTTNOPMop : TensixOrdinaryMop<
-    (ins uimm8:$slot)>;
+    (ins uimm8:$slot)> {
+  let Predicates = [HasVendorXTTTensix];
+}
 def TTNOP : TensixOrdinaryInst<"NOP", 0x02,
     (ins ),
     "",
@@ -1388,6 +1518,7 @@ def TTREPLAY : TensixOrdinaryInst<"REPLAY", 0x04,
   // the legacy raw LLVM intrinsic retains its separate WH ingress guard.
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
+  let WormholeMopSupported = 0;
   let WormholeFieldMinima = [0, 0, 1, 0];
   let WormholeFieldMaxima = [1, 1, 32, 31];
   let WormholeLogicalForms = [[0, 0, -1, -1], [1, 0, -1, -1],
@@ -1608,6 +1739,8 @@ def TTSETADCXX : TensixOrdinaryInst<"SETADCXX", 0x5e,
     "$x_start, $x_end2, $cntsetmask",
     ["x_start", "x_end2", "cntsetmask"],
     [1023, 2047, 7]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
   bits<10> x_start;
   bits<11> x_end2;
   bits<3> cntsetmask;
@@ -1624,6 +1757,9 @@ def TTSETADCXY : TensixOrdinaryInst<"SETADCXY", 0x51,
     "$bitmask, $ch0_x, $ch0_y, $ch1_x, $ch1_y, $cntsetmask",
     ["bitmask", "ch0_x", "ch0_y", "ch1_x", "ch1_y", "cntsetmask"],
     [63, 7, 7, 7, 63, 7]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [15, 7, 7, 7, 7, 7];
   bits<6> bitmask;
   bits<3> ch0_x;
   bits<3> ch0_y;
@@ -1646,6 +1782,9 @@ def TTSETADCZW : TensixOrdinaryInst<"SETADCZW", 0x54,
     "$bitmask, $ch0_x, $ch0_y, $ch1_x, $ch1_y, $cntsetmask",
     ["bitmask", "ch0_x", "ch0_y", "ch1_x", "ch1_y", "cntsetmask"],
     [63, 7, 7, 7, 63, 7]> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMaxima = [15, 7, 7, 7, 7, 7];
   bits<6> bitmask;
   bits<3> ch0_x;
   bits<3> ch0_y;
@@ -1768,6 +1907,14 @@ def TTSETDVALID : TensixOrdinaryInst<"SETDVALID", 0x57,
     "$setvalid",
     ["setvalid"],
     [16777215]> {
+  // Wormhole SETDVALID is a Miscellaneous Unit bank handoff.  Its two
+  // low-order bits select SrcA/SrcB, and zero is not an admitted no-op form.
+  // Blackhole remains rejected because the ISA documents its implied-format
+  // result as unsupported.
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
+  let WormholeFieldMinima = [1];
+  let WormholeFieldMaxima = [3];
   bits<24> setvalid;
   let RawWord{23-0} = setvalid;
 }
@@ -2033,6 +2180,8 @@ def TTTRNSPSRCB : TensixOrdinaryInst<"TRNSPSRCB", 0x16,
     "",
     [],
     []> {
+  let Predicates = [HasVendorXTTTensix];
+  let WormholeSupported = 1;
 }
 
 def PseudoTTUNPACRPort : TensixOrdinaryPort;
@@ -2290,7 +2439,7 @@ def RISCVTensixMachineTable : GenericTable {
   let FilterClass = "TensixOrdinaryInst";
   let CppTypeName = "TensixMachineInfo";
   let Fields = ["Opcode", "PortOpcode", "MopOpcode", "IntrinsicID", "WritesDst",
-                "RawOpcode", "WormholeDynamicFields"];
+                "RawOpcode", "WormholeDynamicFields", "WormholeMopSupported"];
   let PrimaryKey = ["Opcode"];
   let PrimaryKeyName = "getTensixMachineInfo";
 }
@@ -2311,20 +2460,25 @@ def getTensixMachineInfoByIntrinsic : SearchIndex {
   let Key = ["IntrinsicID"];
 }
 
-class TensixLogicalField<Intrinsic ID, int I, string N, int Maximum> {
+class TensixLogicalField<Intrinsic ID, int I, string N, int Maximum,
+                         int WormholeMaximum> {
   Intrinsic IntrinsicID = ID;
   bits<8> Index = I;
   string Name = N;
   bits<32> MaxValue = Maximum;
+  bits<32> WormholeMaxValue = WormholeMaximum;
 }
 foreach Op = !instances<TensixOrdinaryInst>() in
   foreach I = !range(!size(Op.FieldNames)) in
     def : TensixLogicalField<Op.IntrinsicID, I, Op.FieldNames[I],
-                             Op.FieldMaxima[I]>;
+                             Op.FieldMaxima[I],
+                             !if(Op.WormholeSupported,
+                                 Op.WormholeFieldMaxima[I],
+                                 Op.FieldMaxima[I])>;
 def RISCVTensixFieldTable : GenericTable {
   let FilterClass = "TensixLogicalField";
   let CppTypeName = "TensixInstructionField";
-  let Fields = ["IntrinsicID", "Index", "Name", "MaxValue"];
+  let Fields = ["IntrinsicID", "Index", "Name", "MaxValue", "WormholeMaxValue"];
   let PrimaryKey = ["IntrinsicID", "Index"];
   let PrimaryKeyName = "lookupTensixInstructionField";
 }

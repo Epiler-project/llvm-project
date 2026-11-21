@@ -153,6 +153,7 @@ bool isTensixWormholeIntrinsic(Intrinsic::ID ID) {
   const auto *Encoding = getTensixEncoding(Machine->Opcode);
   return Encoding && Encoding->WormholeSupported &&
          (ID == Info->IntrinsicID ||
+          (ID == Info->MopIntrinsicID && Machine->WormholeMopSupported) ||
           (ID == Info->PortIntrinsicID && Machine->WormholeDynamicFields));
 }
 

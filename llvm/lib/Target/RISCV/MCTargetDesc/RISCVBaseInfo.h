@@ -975,6 +975,7 @@ struct TensixMachineInfo {
   bool WritesDst;
   uint8_t RawOpcode;
   uint16_t WormholeDynamicFields;
+  bool WormholeMopSupported;
 };
 
 // Bit layout of an ordinary instruction-port word, derived from the MC encoder.
