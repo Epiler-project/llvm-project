@@ -1175,6 +1175,8 @@ tryToUnrollLoop(Loop *L, DominatorTree &DT, LoopInfo *LI, ScalarEvolution &SE,
       L, SE, TTI, BFI, PSI, ORE, OptLevel, ProvidedThreshold,
       ProvidedAllowPartial, ProvidedRuntime, ProvidedUpperBound,
       ProvidedFullUnrollMaxCount);
+  if (UP.PreserveIterations)
+    return LoopUnrollResult::Unmodified;
   TargetTransformInfo::PeelingPreferences PP = gatherPeelingPreferences(
       L, SE, TTI, ProvidedAllowPeeling, ProvidedAllowProfileBasedPeeling, true);
 

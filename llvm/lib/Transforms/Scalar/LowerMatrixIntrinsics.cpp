@@ -338,15 +338,21 @@ class LowerMatrixIntrinsics {
   /// required to lower a matrix operation.
   struct OpInfoTy {
     /// Number of stores emitted to generate this matrix.
-    unsigned NumStores = 0;
+    unsigned NumStores;
     /// Number of loads emitted to generate this matrix.
-    unsigned NumLoads = 0;
+    unsigned NumLoads;
     /// Number of compute operations emitted to generate this matrix.
-    unsigned NumComputeOps = 0;
+    unsigned NumComputeOps;
     /// Most of the time transposes can be fused with matrix multiplies or can
     /// be folded away via algebraic simplifications.  This is the number of
     /// transposes that we failed to make "free" via such optimizations.
-    unsigned NumExposedTransposes = 0;
+    unsigned NumExposedTransposes;
+
+    OpInfoTy(unsigned NumStores = 0, unsigned NumLoads = 0,
+             unsigned NumComputeOps = 0, unsigned NumExposedTransposes = 0)
+        : NumStores(NumStores), NumLoads(NumLoads),
+          NumComputeOps(NumComputeOps),
+          NumExposedTransposes(NumExposedTransposes) {}
 
     OpInfoTy &operator+=(const OpInfoTy &RHS) {
       NumStores += RHS.NumStores;

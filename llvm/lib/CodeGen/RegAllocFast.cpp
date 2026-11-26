@@ -1459,10 +1459,18 @@ void RegAllocFastImpl::setPhysReg(MachineOperand &MO,
     MO.setSubReg(0);
 
   // A kill flag implies killing the full register, and a <def,read-undef> of
-  // a sub-register requires an implicit def of the full register.
+  // a sub-register requires an implicit def of the full register. An undef
+  // subregister def can also be tied to a real read after coalescing; in that
+  // case the tied use must retain its assignment.
+  MachineInstr &OperandMI = *MO.getParent();
+  bool TiedToRead =
+      MO.isDef() && MO.isTied() &&
+      !OperandMI
+           .getOperand(OperandMI.findTiedOperandIdx(OperandMI.getOperandNo(&MO)))
+           .isUndef();
   if (MO.isKill())
     PendingImplicitOps.emplace_back(PhysReg, ImplicitKill);
-  else if (MO.isDef() && MO.isUndef())
+  else if (MO.isDef() && MO.isUndef() && !TiedToRead)
     PendingImplicitOps.emplace_back(PhysReg,
                                     MO.isDead() ? ImplicitDead : ImplicitDef);
 }
@@ -1948,6 +1956,10 @@ void RegAllocFastImpl::handleBundle(MachineInstr &MI) {
       assert(DI != BundleVirtRegsMap.end() && "Unassigned virtual register");
 
       setPhysReg(MO, DI->second);
+      // Bundled instructions are not visited by allocateInstruction(), which
+      // normally clears the subregister marker left on physical defs.
+      if (MO.isDef())
+        MO.setSubReg(0);
     }
 
     ++BundledMI;

@@ -1,0 +1,72 @@
+# RUN: llc -mtriple=riscv64 -mattr=+v -O0 -run-pass=regallocfast -verify-machineinstrs %s -o - | FileCheck %s
+
+# Coalescing can leave an undef subregister def tied to a real old-value use.
+# FastRA must keep that use's allocation while rewriting the def.
+---
+name: real_tied_subreg
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $v8
+    ; CHECK-LABEL: name: real_tied_subreg
+    ; CHECK: undef renamable $v[[COPY_BASE:[0-9]+]] = COPY killed $v8, implicit-def $v[[COPY_BASE]]m4
+    ; CHECK: undef early-clobber renamable $[[PAIR:v[0-9]+m2]] = PseudoVSLIDEUP_VI_M2 renamable $[[PAIR]],
+    undef %0.sub_vrm1_0:vrm4 = COPY $v8
+    %1:vrm2 = IMPLICIT_DEF
+    %2:gprnox0 = ADDI $x0, 32
+    undef early-clobber %0.sub_vrm2_0:vrm4 = PseudoVSLIDEUP_VI_M2 %0.sub_vrm2_0, %1, 16, %2, 3, 1
+    $v8m4 = COPY %0
+    PseudoRET implicit $v8m4
+...
+
+# An undef tied use inside a bundle still defines the containing group.
+---
+name: bundled_undef_tied_subreg
+tracksRegLiveness: true
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: bundled_undef_tied_subreg
+    ; CHECK: BUNDLE {{.*}}implicit-def renamable $v[[BUNDLE_NUM:[0-9]+]]m4
+    ; CHECK: PseudoVMV_V_I_M2 undef renamable $v[[BUNDLE_NUM]]m2, 0,
+    %0:gprnox0 = ADDI $x0, 32
+    BUNDLE implicit %0, implicit-def %1 {
+      undef %1.sub_vrm2_0:vrm4 = PseudoVMV_V_I_M2 undef %1.sub_vrm2_0, 0, %0, 3, 0
+    }
+    $v8m4 = COPY %1
+    PseudoRET implicit $v8m4
+...
+
+# With an undef tied use there is no old value to preserve, so the full-group
+# implicit def is still needed.
+---
+name: undef_tied_subreg
+tracksRegLiveness: true
+body: |
+  bb.0:
+    ; CHECK-LABEL: name: undef_tied_subreg
+    ; CHECK: PseudoVMV_V_I_M2 undef renamable $v[[PAIR_NUM:[0-9]+]]m2, 0, {{.*}}implicit-def $v[[PAIR_NUM]]m4
+    %0:gprnox0 = ADDI $x0, 32
+    undef %1.sub_vrm2_0:vrm4 = PseudoVMV_V_I_M2 undef %1.sub_vrm2_0, 0, %0, 3, 0
+    $v8m4 = COPY %1
+    PseudoRET implicit $v8m4
+...
+
+# The tied operand lives on an instruction inside the bundle, not on its header.
+---
+name: bundled_real_tied_subreg
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $v8
+    ; CHECK-LABEL: name: bundled_real_tied_subreg
+    ; CHECK: BUNDLE
+    ; CHECK: undef early-clobber renamable $[[BUNDLE_PAIR:v[0-9]+m2]] = PseudoVSLIDEUP_VI_M2 renamable $[[BUNDLE_PAIR]],
+    undef %0.sub_vrm1_0:vrm4 = COPY $v8
+    %1:vrm2 = IMPLICIT_DEF
+    %2:gprnox0 = ADDI $x0, 32
+    %0:vrm4 = BUNDLE implicit %0, implicit %1, implicit %2 {
+      undef early-clobber %0.sub_vrm2_0:vrm4 = PseudoVSLIDEUP_VI_M2 %0.sub_vrm2_0, %1, 16, %2, 3, 1
+    }
+    $v8m4 = COPY %0
+    PseudoRET implicit $v8m4
+...

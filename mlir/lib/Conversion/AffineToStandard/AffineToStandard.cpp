@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -560,6 +561,25 @@ void mlir::populateAffineToVectorConversionPatterns(
 }
 
 namespace {
+// Observe committed mutations, including folds of ops not explicitly legal on
+// the target. The absence of Affine ops alone does not guarantee unchanged IR.
+struct ConversionChanges : RewriterBase::Listener {
+  void notifyOperationInserted(Operation *, OpBuilder::InsertPoint) override {
+    changed = true;
+  }
+  void notifyOperationModified(Operation *) override { changed = true; }
+  void notifyOperationReplaced(Operation *, ValueRange) override {
+    changed = true;
+  }
+  void notifyOperationErased(Operation *) override { changed = true; }
+  void notifyBlockInserted(Block *, Region *, Region::iterator) override {
+    changed = true;
+  }
+  void notifyBlockErased(Block *) override { changed = true; }
+
+  bool changed = false;
+};
+
 class LowerAffine : public impl::LowerAffinePassBase<LowerAffine> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
@@ -569,9 +589,14 @@ class LowerAffine : public impl::LowerAffinePassBase<LowerAffine> {
     ConversionTarget target(getContext());
     target.addLegalDialect<arith::ArithDialect, memref::MemRefDialect,
                            scf::SCFDialect, VectorDialect>();
+    ConversionChanges changes;
+    ConversionConfig config;
+    config.listener = &changes;
     if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
-      signalPassFailure();
+                                      std::move(patterns), config)))
+      return signalPassFailure();
+    if (!changes.changed)
+      markAllAnalysesPreserved();
   }
 };
 } // namespace
