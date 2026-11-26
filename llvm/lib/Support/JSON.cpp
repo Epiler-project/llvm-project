@@ -533,16 +533,23 @@ bool Parser::parseNumber(char First, Value &Out) {
 }
 
 bool Parser::parseString(std::string &Out) {
-  // leading quote was already consumed.
-  for (char C = next(); C != '"'; C = next()) {
+  // The leading quote was already consumed. Copy runs of literal bytes in
+  // bulk; the document's UTF-8 has already been validated.
+  while (true) {
+    const char *Run = P;
+    while (P != End && *P != '"' && *P != '\\' &&
+           static_cast<unsigned char>(*P) >= 0x20)
+      ++P;
+    if (P != Run)
+      Out.append(Run, P - Run);
+
+    char C = next();
+    if (C == '"')
+      return true;
     if (LLVM_UNLIKELY(P == End))
       return parseError("Unterminated string");
     if (LLVM_UNLIKELY((C & 0x1f) == C))
       return parseError("Control character in string");
-    if (LLVM_LIKELY(C != '\\')) {
-      Out.push_back(C);
-      continue;
-    }
     // Handle escape sequence.
     switch (C = next()) {
     case '"':
@@ -573,7 +580,6 @@ bool Parser::parseString(std::string &Out) {
       return parseError("Invalid escape sequence");
     }
   }
-  return true;
 }
 
 static void encodeUtf8(uint32_t Rune, std::string &Out) {
