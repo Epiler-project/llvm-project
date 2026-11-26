@@ -1,0 +1,511 @@
+//===-- RISCVTensix.h - Public Tensix target contracts -----------*- C++
+//-*-===//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#ifndef LLVM_TARGET_RISCV_RISCVTENSIX_H
+#define LLVM_TARGET_RISCV_RISCVTENSIX_H
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringTable.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/Error.h"
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <variant>
+
+namespace llvm {
+class Module;
+class TargetMachine;
+class Triple;
+
+namespace RISCV {
+
+/// Optional optimizations only. Disabling them never disables mandatory
+/// hazard repair, explicit replay legality, or final machine verification.
+struct TensixOptimizationOptions {
+  bool LatencyScheduling = true;
+};
+
+/// Override the command-line defaults for this machine only. Set before
+/// constructing its codegen pipeline and do not mutate it during emission.
+/// Independently configured machines may be used concurrently. Foreign target
+/// machines are rejected, even if their triple names RISC-V.
+Error setTensixOptimizationOptions(TargetMachine &TM,
+                                   TensixOptimizationOptions Options);
+
+/// Return this machine's effective options: its explicit override, or the
+/// command-line defaults when no override has been supplied.
+Expected<TensixOptimizationOptions>
+getTensixOptimizationOptions(const TargetMachine &TM);
+
+// Logical instruction contracts deliberately expose no bit positions or masks.
+struct TensixInstructionInfo {
+  StringTable::Offset Name;
+  unsigned IntrinsicID;
+  unsigned PortIntrinsicID;
+  unsigned MopIntrinsicID;
+  uint8_t NumFields;
+  StringRef getName() const;
+};
+struct TensixInstructionField {
+  unsigned IntrinsicID;
+  uint8_t Index;
+  StringTable::Offset Name;
+  uint32_t MaxValue;
+  uint32_t WormholeMaxValue;
+  StringRef getName() const;
+};
+
+const TensixInstructionInfo *getTensixInstructionByName(StringRef Name);
+const TensixInstructionInfo *getTensixInstructionByIntrinsic(Intrinsic::ID ID);
+const TensixInstructionField *
+getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index);
+bool isTensixIntrinsic(Intrinsic::ID ID);
+bool isTensixBlackholeMutexIntrinsic(Intrinsic::ID ID);
+Error verifyTensixBlackholeMutexIndex(uint32_t Index);
+
+// Logical WH admission is independent of instruction bit positions. The same
+// TableGen bounds and complete-form relation serve IR, MC and external typed
+// compiler clients. Dynamic fields are available on selected port intrinsics
+// and require an unsigned range and definedness proof at the issuing use.
+bool isTensixWormholeIntrinsic(Intrinsic::ID ID);
+std::optional<uint32_t> getTensixWormholeDynamicFieldMinimum(Intrinsic::ID ID,
+                                                             unsigned Index);
+Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
+                                            ArrayRef<uint32_t> Fields);
+
+// Non-encoding SFPU facts shared by the compiler's explicit-object binder and
+// native ingress. Logical fields select the actual native descriptor; an
+// intrinsic ID alone does not determine all condition/configuration effects.
+enum class TensixBoundValueKind : uint8_t {
+  Constant,
+  UnboundRegister,
+  DynamicScalar,
+};
+struct TensixBoundValue {
+  TensixBoundValueKind Kind;
+  int64_t Constant = 0;
+};
+enum class TensixBoundArgumentRole : uint8_t {
+  WriteLReg,
+  ReadLReg,
+  ReadRegister,
+  OldDestination,
+  FixedGroupRead,
+  FixedGroupWrite,
+  FixedGroupClobber,
+  WriteCReg,
+  LogicalImmediate,
+  DstOffset,
+};
+enum class TensixSFPUAccess : uint8_t { Read, Write, ReadWrite, Clobber };
+// Coverage of an actual selected native form, not an initialization proof.
+// StateDependent includes unresolved lane selection, cross-lane reads and
+// partial-bit writes. It does not promise preservation of inactive lanes.
+enum class TensixSFPURegisterFootprint : uint8_t {
+  Unsupported,
+  StateDependent,
+  WholeRegister,
+};
+struct TensixBoundRegisterArgument {
+  unsigned Argument;
+  TensixBoundArgumentRole Role;
+  SmallVector<uint32_t, 16> AllowedRegisters;
+  std::optional<uint32_t> FixedRegister;
+  TensixSFPURegisterFootprint Footprint =
+      TensixSFPURegisterFootprint::Unsupported;
+};
+enum class TensixBoundConstraintKind : uint8_t {
+  SameLocation,
+  DistinctLocation,
+  EarlyClobber,
+};
+struct TensixBoundRegisterConstraint {
+  TensixBoundConstraintKind Kind;
+  unsigned FirstArgument;
+  unsigned SecondArgument;
+};
+enum class TensixSFPUState : uint8_t {
+  CC,
+  CCStack,
+  Configuration,
+  Dst,
+  Issue,
+  PRNG,
+};
+struct TensixBoundArgumentRef {
+  unsigned Argument;
+};
+struct TensixFixedRegisterRef {
+  uint32_t Number;
+};
+using TensixSFPUResource =
+    std::variant<TensixBoundArgumentRef, TensixFixedRegisterRef,
+                 TensixSFPUState>;
+struct TensixSFPUArchitecturalEffect {
+  // Conservative descriptor effects, not exact per-lane read/write coverage.
+  TensixSFPUResource Resource;
+  TensixSFPUAccess Access;
+};
+
+// Physical SFPU architecture selector. The physical intrinsic ID carries the
+// architecture independently of any function feature.
+enum class TensixSFPUArchitecture : uint8_t { Wormhole, Blackhole };
+std::optional<TensixSFPUArchitecture>
+getTensixBoundSFPUArchitecture(Intrinsic::ID ID);
+
+enum class TensixSFPUTransferKind : uint8_t {
+  Unsupported,
+  Identity,
+  ImmediateFull,
+  ImmediateUpperHalf,
+  ImmediateLowerHalf,
+  LaneWise,
+  LanePermutation,
+  RegisterPermutation,
+  MaskedIdentity,
+};
+struct TensixSFPUTransferInput {
+  unsigned Argument;
+  uint32_t DemandedBits;
+};
+struct TensixSFPULaneSource {
+  unsigned Argument;
+  uint32_t Lane;
+};
+// Actual numerical bits generated for an active lane by one instruction.
+// This is independent of initializedness: callers must intersect the mask
+// with their actual lane/write coverage. Bits outside the mask are zero in
+// Value and say nothing about preserved old contents or immutable registers.
+struct TensixSFPUValueBits {
+  uint32_t KnownBitsMask;
+  uint32_t Value;
+};
+struct TensixSFPUTransferFacts {
+  TensixSFPUTransferKind Kind = TensixSFPUTransferKind::Unsupported;
+  // Bits preserved from the old destination in active lanes. Numerical
+  // dependencies on the old value belong in Inputs, never in this mask.
+  uint32_t DemandedOldBits = 0;
+  uint32_t GeneratedBits = 0;
+  uint32_t GuaranteedWriteBits = 0;
+  bool RequiresLaneEnable = true;
+  bool PreservesInactiveLanes = false;
+  // CC and ROW_MASK are independent semantic inputs to lane selection.  The
+  // native register descriptor currently exposes CC effects only; this pair
+  // keeps the unresolved ROW_MASK dependency explicit without inventing a
+  // physical LLVM state register.
+  bool RequiresConditionState = true;
+  bool RequiresRowMaskState = true;
+  // Each entry retains one value in the owning query namespace. Bound queries
+  // use actual bound ABI arguments; contents queries use TransferValues.
+  // LaneWise results are
+  // known only when every demanded input bit in that active lane is known.
+  SmallVector<TensixSFPUTransferInput, 3> Inputs;
+  // For LanePermutation only: destination lane -> source lane. This complete
+  // permutation is owned by the native instruction semantics. Inactive
+  // destinations preserve their own old lane, not the mapped source lane.
+  SmallVector<uint32_t, 0> SourceLanes;
+  // Explicit owning-query value identities; consumers never infer these from
+  // the descriptor's register order. SourceArgument applies only to transfers
+  // with one bit-preserving source; numerical dependencies remain in Inputs.
+  unsigned DestinationArgument = 0;
+  std::optional<unsigned> SourceArgument;
+  std::optional<unsigned> OldArgument;
+  // For RegisterPermutation only: destination lane -> actual source ABI
+  // argument and lane in the pre-instruction snapshot. Predication selects
+  // destinations, so inactive source lanes remain available to the mapping.
+  SmallVector<TensixSFPULaneSource, 0> LaneSources;
+  // MaskedIdentity partitions generated bits into same-coordinate source
+  // copies and input-independent known bits. ConstantBits is an initializedness
+  // mask; the instruction's actual immediate owns the numerical value.
+  uint32_t CopiedBits = 0;
+  uint32_t ConstantBits = 0;
+  // Present only when this native transfer receives an actual immediate
+  // numerical value. Absence does not mean zero or uninitialized contents.
+  std::optional<TensixSFPUValueBits> ImmediateValue;
+};
+
+enum class TensixSFPUDstFormat : uint8_t { BFloat16, Float32, Raw32 };
+struct TensixSFPUDstLoadTransfer {
+  unsigned DestinationValue;
+  // Absent only when the actual native form has no old-destination operand.
+  std::optional<unsigned> OldValue;
+};
+struct TensixSFPUDstStoreTransfer {
+  unsigned SourceValue;
+};
+struct TensixSFPUDstReadModifyWriteTransfer {
+  unsigned DestinationValue;
+  unsigned MacroSlot;
+};
+struct TensixSFPUDstTransferFacts {
+  // Packet indices use actual bound ABI arguments or contents TransferValues,
+  // respectively. A store has no numerical destination or invented result.
+  std::variant<TensixSFPUDstLoadTransfer, TensixSFPUDstStoreTransfer,
+               TensixSFPUDstReadModifyWriteTransfer> Packet;
+  // The actual scalar ABI argument, never an index in contents TransferValues.
+  // Dynamic offsets retain this identity; the query supplies no default value.
+  unsigned OffsetArgument;
+  uint8_t AddressMode;
+  TensixSFPUDstFormat Format;
+  bool RequiresLaneEnable = true;
+  bool RequiresConditionState = true;
+  bool RequiresRowMaskState = true;
+};
+
+struct TensixSFPUMacroConfiguration {
+  unsigned Slot;
+  uint16_t Immediate;
+  unsigned ScratchRegister;
+};
+
+enum class TensixSFPUConditionEnableUpdate : uint8_t {
+  Preserve,
+  Invert,
+  Disable,
+  Enable,
+};
+struct TensixSFPUConditionUpdate {
+  TensixSFPUConditionEnableUpdate Enable;
+  bool Flags;
+};
+enum class TensixSFPUConditionStackAction : uint8_t {
+  Push,
+  Pop,
+  Complement,
+  ReplaceTop,
+  Peek,
+  // Raw SFPPOPC Boolean modes combine LaneFlags with the saved top and
+  // restore its enable flag. They peek, including at an empty stack.
+  AndTop,
+  OrTop,
+};
+struct TensixSFPUConditionStackUpdate {
+  TensixSFPUConditionStackAction Action;
+};
+struct TensixSFPULaneConfigReset {
+  // Fields are projected by the native owner; no client decodes bit positions.
+  // Only CC-active lanes among the first Columns predicates clear the column;
+  // ROW_MASK does not predicate SFPCONFIG. High configuration bits survive.
+  unsigned Columns;
+  bool ClearsRowMask = true;
+  bool ClearsDestIndex = false;
+  bool ClearsDstReadBlock = false;
+  bool ClearsDstWriteBlock = false;
+  bool ClearsDstReadColumnExchange = false;
+  bool ClearsDstWriteColumnExchange = false;
+  bool ClearsDstIndexCapture = false;
+  bool ClearsDstMoveBlock = false;
+  bool ClearsExchangeSourceBAndC = false;
+};
+/// Actual VD=15, mode=8 LaneConfig assignment. Each selected column reads
+/// the corresponding source lane among the first Columns lanes and broadcasts
+/// the low ValueBits vertically. The first-row effective CC predicates that
+/// entire column; ROW_MASK and other rows' CC do not predicate this operation.
+/// SourceValue indexes the owner's semantic value map (or the bound ABI after
+/// projection). Contents projection retains the actual SSA input staged into
+/// physical L0; the native location never grants initialized payload.
+/// The caller supplies reaching value bits separately; no numerical value,
+/// condition update, issue completion or configuration default is implied.
+struct TensixSFPULaneConfigAssign {
+  unsigned SourceValue;
+  unsigned Columns;
+  uint32_t SelectedColumns;
+  unsigned ValueBits;
+};
+enum class TensixSFPUConditionPredicate : uint8_t {
+  Negative,
+  NonZero,
+  NonNegative,
+  Zero,
+};
+
+/// SetCC compares the actual source lane's raw i32 word against zero.
+/// SourceValue indexes the owning semantics, contents or bound ABI value map.
+struct TensixSFPUConditionCompare {
+  unsigned SourceValue;
+  TensixSFPUConditionPredicate Predicate;
+
+  /// A known one bit can prove nonzero before the entire word is known.
+  constexpr uint32_t getRequiredSourceBits() const {
+    using Pred = TensixSFPUConditionPredicate;
+    return Predicate == Pred::Negative || Predicate == Pred::NonNegative
+               ? 0x80000000u
+               : 0xffffffffu;
+  }
+
+  /// Compute the next LaneFlags bit, preserving UseLaneFlagsForLaneEnable.
+  /// A masked row preserves its old flag. With condition flags disabled the
+  /// instruction clears the flag, and with condition flags enabled an already
+  /// false flag prevents the comparison. Source bits are needed only in the
+  /// remaining case. A missing result carries no numerical assumption.
+  constexpr std::optional<bool> evaluateFlags(bool RowMasked, bool Enable,
+                                              bool Flags,
+                                              TensixSFPUValueBits Bits) const {
+    if (RowMasked)
+      return Flags;
+    if (!Enable || !Flags)
+      return false;
+    using Pred = TensixSFPUConditionPredicate;
+    const uint32_t KnownOnes = Bits.KnownBitsMask & Bits.Value;
+    if (Predicate == Pred::Negative || Predicate == Pred::NonNegative) {
+      constexpr uint32_t SignBit = 0x80000000u;
+      if (!(Bits.KnownBitsMask & SignBit))
+        return std::nullopt;
+      return bool(KnownOnes & SignBit) == (Predicate == Pred::Negative);
+    }
+    if (KnownOnes)
+      return Predicate == Pred::NonZero;
+    if (Bits.KnownBitsMask == 0xffffffffu)
+      return Predicate == Pred::Zero;
+    return std::nullopt;
+  }
+};
+
+using TensixSFPULaneControl =
+    std::variant<std::monostate, TensixSFPUConditionUpdate,
+                 TensixSFPULaneConfigReset, TensixSFPUConditionStackUpdate,
+                 TensixSFPULaneConfigAssign, TensixSFPUConditionCompare>;
+
+/// Independent values of the actual low-18-bit LaneConfig payload. Unknown
+/// source bits stay unknown; no initialization, predicate or reaching-state
+/// assumption is supplied. Reserved bits remain explicit rather than being
+/// silently interpreted as zero. Both supported generations use this layout.
+struct TensixSFPULaneConfigFields {
+  std::optional<bool> EnableFP16AInf;
+  std::optional<bool> DisableBackdoorLoad;
+  std::optional<bool> EnableDestIndex;
+  std::optional<bool> CaptureDefaultDestIndex;
+  std::optional<bool> BlockDestWriteFromSFPU;
+  std::optional<bool> BlockSFPUReadFromDest;
+  std::optional<bool> DestReadColumnExchange;
+  std::optional<bool> DestWriteColumnExchange;
+  std::optional<bool> ExchangeSourceBAndC;
+  std::optional<bool> BlockDestMoveEven;
+  std::optional<bool> BlockDestMoveOdd;
+  std::array<std::optional<bool>, 4> RowMask;
+  uint32_t ReservedKnownBits = 0;
+  uint32_t ReservedValueBits = 0;
+};
+TensixSFPULaneConfigFields decodeTensixSFPULaneConfig(uint32_t KnownMask,
+                                                      uint32_t ValueBits);
+
+enum class TensixSFPUConfigurationField : uint8_t {
+  EnableDestIndex,
+  ExchangeSourceBAndC
+};
+struct TensixSFPUConfigurationRequirement {
+  unsigned Argument;
+  TensixSFPUConfigurationField Field;
+  SmallVector<uint32_t, 4> Registers;
+};
+struct TensixSFPUConfigurationFacts {
+  // A requirement applies only when this actual ABI operand selects one of
+  // Registers. The named field must be disabled in every native lane.
+  SmallVector<TensixSFPUConfigurationRequirement, 2> Requirements;
+};
+
+class TensixBoundSFPUContract final {
+public:
+  Intrinsic::ID getIntrinsicID() const { return ID; }
+  unsigned getArgumentCount() const { return Roles.size(); }
+  ArrayRef<TensixBoundArgumentRole> getArgumentRoles() const { return Roles; }
+  ArrayRef<TensixBoundRegisterArgument> getRegisterArguments() const {
+    return Registers;
+  }
+  ArrayRef<TensixBoundRegisterConstraint> getRegisterConstraints() const {
+    return Constraints;
+  }
+  ArrayRef<TensixSFPUArchitecturalEffect> getArchitecturalEffects() const {
+    return Effects;
+  }
+  // One fact per received numerical result. Empty means numerical transfer
+  // semantics are unreceived, not that the instruction has no effects.
+  ArrayRef<TensixSFPUTransferFacts> getTransferFacts() const {
+    return Transfers;
+  }
+  // A separate Dst side transfer, not a numerical-result Transfers entry.
+  // Absent means this architecture/format/address-mode form is unreceived.
+  const std::optional<TensixSFPUDstTransferFacts> &getDstTransferFacts() const {
+    return DstTransfer;
+  }
+  const std::optional<TensixSFPUMacroConfiguration> &
+  getMacroConfiguration() const {
+    return MacroConfiguration;
+  }
+  // Exact transitions of supported state-control forms, not entry-state or
+  // execution proofs. An empty projection does not mean no state effects.
+  const TensixSFPULaneControl &getLaneControl() const { return LaneControl; }
+  // Absent means this native form's configuration legality is unreceived.
+  // Present with no requirements is a proved empty set, never the default.
+  const std::optional<TensixSFPUConfigurationFacts> &
+  getConfigurationFacts() const {
+    return Configuration;
+  }
+
+private:
+  friend Expected<TensixBoundSFPUContract>
+      getTensixBoundSFPUContract(Intrinsic::ID, ArrayRef<TensixBoundValue>);
+  TensixBoundSFPUContract() = default;
+  Intrinsic::ID ID = Intrinsic::not_intrinsic;
+  SmallVector<TensixBoundArgumentRole, 12> Roles;
+  SmallVector<TensixBoundRegisterArgument, 12> Registers;
+  SmallVector<TensixBoundRegisterConstraint, 8> Constraints;
+  SmallVector<TensixSFPUArchitecturalEffect, 16> Effects;
+  SmallVector<TensixSFPUTransferFacts, 4> Transfers;
+  TensixSFPULaneControl LaneControl;
+  std::optional<TensixSFPUConfigurationFacts> Configuration;
+  std::optional<TensixSFPUDstTransferFacts> DstTransfer;
+  std::optional<TensixSFPUMacroConfiguration> MacroConfiguration;
+};
+
+// The query permits explicitly unbound register arguments but requires actual
+// logical fields. It never chooses registers, constructs IR, or grants program
+// admission. DynamicScalar is allowed only at a dynamic Dst-offset position.
+Expected<TensixBoundSFPUContract>
+getTensixBoundSFPUContract(Intrinsic::ID ID,
+                           ArrayRef<TensixBoundValue> Arguments);
+// Complete bound ingress additionally rejects every UnboundRegister.
+Error verifyTensixBoundSFPUOperands(Intrinsic::ID ID,
+                                    ArrayRef<TensixBoundValue> Arguments);
+// Architectural numbers use the formal ABI, not internal MC register IDs.
+Expected<bool> tensixSFPURegistersOverlap(uint32_t First, uint32_t Second);
+
+struct TensixSFPURegisterGeometry {
+  uint32_t NumLanes;
+  uint32_t BitsPerLane;
+};
+// Raw physical geometry from the native register class, not a tensor layout.
+// A successful query says nothing about contents, masks or initialization.
+Expected<TensixSFPURegisterGeometry>
+getTensixSFPURegisterGeometry(uint32_t Number);
+
+// A hardware property of one actual physical register, not an initialization
+// seed supplied by a caller or inferred from a nonallocatable register class.
+// ImmutableInitialized guarantees defined bits in every native lane. It does
+// not describe numerical values or imply that lanes contain equal values.
+enum class TensixSFPURegisterContents : uint8_t {
+  Unknown,
+  ImmutableInitialized,
+};
+Expected<TensixSFPURegisterContents>
+getTensixSFPURegisterContents(uint32_t Number);
+
+// Check width and Tensix feature compatibility without constructing a target
+// subtarget whose CLI diagnostics terminate the process.
+Expected<bool> verifyTensixTargetFeatures(const Triple &TT, StringRef CPU,
+                                          StringRef Features);
+
+// Recoverable preflight for compiler library clients. Function target-features
+// must describe the same feature set used to construct the TargetMachine.
+// Checks LLVM IR validity and the target's logical field, issue, feature,
+// definedness, carrier ABI and condition-stack contracts before code
+// generation.
+Error verifyTensixModule(Module &M);
+
+} // namespace RISCV
+} // namespace llvm
+#endif

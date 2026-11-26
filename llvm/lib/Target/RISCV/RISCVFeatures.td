@@ -1366,6 +1366,25 @@ def HasStdExtZyhybrid
 // Vendor extensions
 //===----------------------------------------------------------------------===//
 
+// Tenstorrent Blackhole Tensix extension
+
+def FeatureVendorXTTTensixBH
+    : RISCVExtension<1, 0, "Tenstorrent Blackhole Tensix instructions">;
+def HasVendorXTTTensixBH : Predicate<"Subtarget->hasVendorXTTTensixBH()">,
+    AssemblerPredicate<(all_of FeatureVendorXTTTensixBH), "'XTTTensixBH'">;
+
+// Sharing a proved encoding does not enable Blackhole's remaining ISA.
+def FeatureVendorXTTTensixWH
+    : RISCVExtension<1, 0, "Tenstorrent Wormhole Tensix instructions">;
+def HasVendorXTTTensixWH : Predicate<"Subtarget->hasVendorXTTTensixWH()">,
+    AssemblerPredicate<(all_of FeatureVendorXTTTensixWH), "'XTTTensixWH'">;
+def HasVendorXTTTensix
+    : Predicate<"Subtarget->hasVendorXTTTensixBH() || "
+                "Subtarget->hasVendorXTTTensixWH()">,
+      AssemblerPredicate<(any_of FeatureVendorXTTTensixBH,
+                                FeatureVendorXTTTensixWH),
+                         "'XTTTensixBH' or 'XTTTensixWH'">;
+
 // T-Head Extensions
 
 def FeatureVendorXTHeadBa
@@ -2076,7 +2095,8 @@ def FeatureForcedAtomics : SubtargetFeature<
     "forced-atomics", "HasForcedAtomics", "true",
     "Assume that lock-free native-width atomics are available">;
 def HasAtomicLdSt
-    : Predicate<"Subtarget->hasStdExtZalrsc() || Subtarget->hasForcedAtomics()">;
+    : Predicate<"Subtarget->hasStdExtZalrsc() || Subtarget->hasStdExtZaamo() || "
+                "Subtarget->hasForcedAtomics()">;
 
 // The RISC-V Unprivileged Architecture - ISA Volume 1 (Version: 20250508)
 // [https://docs.riscv.org/reference/isa/_attachments/riscv-unprivileged.pdf]

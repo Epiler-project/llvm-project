@@ -1495,11 +1495,15 @@ std::string RISCVAsmParser::getCustomOperandDiag(unsigned MatchError) {
     return Range(0, (1 << 10) - 1);
   case Match_InvalidUImm11:
     return Range(0, (1 << 11) - 1);
+  case Match_InvalidUImm12:
+    return Range(0, (1 << 12) - 1);
   case Match_InvalidUImm14Lsb00:
     return Range(0, (1 << 14) - 4,
                  "immediate must be a multiple of 4 bytes in the range");
   case Match_InvalidUImm16NonZero:
     return Range(1, (1 << 16) - 1);
+  case Match_InvalidUImm16:
+    return Range(0, (1 << 16) - 1);
   case Match_InvalidSImm12:
     return Range(-(1 << 11), (1 << 11) - 1);
   case Match_InvalidSImm12LO:
@@ -2511,9 +2515,12 @@ ParseStatus RISCVAsmParser::parseMaskReg(OperandVector &Operands) {
 
   StringRef Name = getLexer().getTok().getIdentifier();
   if (!Name.consume_back(".t")) {
-    // Non-register identifiers may belong to another optional operand in an
-    // overloaded mnemonic. Let the matcher try those alternatives.
-    if (matchRegisterNameHelper(Name))
+    // Only vector registers require the mask suffix. Other identifiers may
+    // belong to an optional operand in an overloaded mnemonic: for example,
+    // the tile-size spelling l2 also names a Tensix SFPU register.
+    MCRegister Reg = matchRegisterNameHelper(Name);
+    if (Reg && getContext().getRegisterInfo()->getRegClass(RISCV::VRRegClassID)
+                   .contains(Reg))
       return Error(getLoc(), "expected '.t' suffix");
     return ParseStatus::NoMatch;
   }
@@ -4194,7 +4201,17 @@ bool RISCVAsmParser::validateInstruction(MCInst &Inst,
 bool RISCVAsmParser::processInstruction(MCInst &Inst, SMLoc IDLoc,
                                         OperandVector &Operands,
                                         MCStreamer &Out) {
+  // .option directives can enable incompatible extensions after STI
+  // construction. Check the Tensix contract without changing the ordinary
+  // assembler's .attribute arch handling of the base architecture.
+  if (getSTI().getFeatureBits()[RISCV::FeatureVendorXTTTensixBH] ||
+      getSTI().getFeatureBits()[RISCV::FeatureVendorXTTTensixWH])
+    RISCVFeatures::validate(getSTI().getTargetTriple(), getSTI().getFeatureBits());
   Inst.setLoc(IDLoc);
+  if (llvm::Error E = RISCV::verifyTensixMCInstruction(
+          Inst, MII, *getContext().getRegisterInfo(),
+          getSTI().hasFeature(RISCV::FeatureVendorXTTTensixWH)))
+    return Error(IDLoc, toString(std::move(E)));
 
   switch (Inst.getOpcode()) {
   default:

@@ -11,12 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVMCTargetDesc.h"
+#include "RISCVBaseInfo.h"
 #include "RISCVELFStreamer.h"
 #include "RISCVInstPrinter.h"
 #include "RISCVMCAsmInfo.h"
 #include "RISCVMCObjectFileInfo.h"
 #include "RISCVMCOptions.h"
 #include "RISCVTargetStreamer.h"
+#include "RISCVTensixBoundContract.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -51,10 +53,48 @@
 
 using namespace llvm;
 
+Expected<FeatureBitset> llvm::RISCV::getTensixTargetFeatureBits(const Triple &TT,
+                                                     StringRef CPU,
+                                                     StringRef Features) {
+  if (CPU.empty() || CPU == "generic")
+    CPU = TT.isArch64Bit() ? "generic-rv64" : "generic-rv32";
+  if (!RISCV::parseCPU(CPU, TT.isArch64Bit()))
+    return createStringError("invalid RISC-V CPU: " + CPU);
+  std::unique_ptr<MCSubtargetInfo> STI(
+      createRISCVMCSubtargetInfoImpl(TT, CPU, CPU, Features));
+  RISCV::updateCZceFeatureImplications(*STI);
+  if (STI->hasFeature(RISCV::Feature64Bit) != TT.isArch64Bit() ||
+      STI->hasFeature(RISCV::Feature32Bit) != TT.isArch32Bit())
+    return createStringError("RISC-V feature width conflicts with target triple");
+  if (Error E = RISCV::verifyTensixFeatureBits(TT, STI->getFeatureBits()))
+    return std::move(E);
+  return STI->getFeatureBits();
+}
+
+Expected<bool> llvm::RISCV::verifyTensixTargetFeatures(const Triple &TT,
+                                                     StringRef CPU,
+                                                     StringRef Features) {
+  auto Bits = getTensixTargetFeatureBits(TT, CPU, Features);
+  if (!Bits)
+    return Bits.takeError();
+  return (*Bits)[RISCV::FeatureVendorXTTTensixBH] ||
+         (*Bits)[RISCV::FeatureVendorXTTTensixWH];
+}
+
 static MCInstrInfo *createRISCVMCInstrInfo() {
   MCInstrInfo *X = new MCInstrInfo();
   InitRISCVMCInstrInfo(X);
   return X;
+}
+
+std::unique_ptr<MCInstrInfo> llvm::RISCV::createTensixBoundMCInstrInfo() {
+  return std::unique_ptr<MCInstrInfo>(createRISCVMCInstrInfo());
+}
+
+std::unique_ptr<MCRegisterInfo> llvm::RISCV::createTensixBoundMCRegisterInfo() {
+  auto Info = std::make_unique<MCRegisterInfo>();
+  InitRISCVMCRegisterInfo(Info.get(), RISCV::X1);
+  return Info;
 }
 
 static MCRegisterInfo *createRISCVMCRegisterInfo(const Triple &TT) {
@@ -132,6 +172,13 @@ createRISCVMCSubtargetInfo(const Triple &TT, StringRef CPU, StringRef FS) {
   }
 
   RISCV::updateCZceFeatureImplications(*X);
+
+  // Tensix must reject incompatible feature combinations. Preserve ordinary
+  // MC consumers that intentionally override a file's base architecture via
+  // its attributes (for example, llvm-objdump with an explicit RV32 triple).
+  if (X->hasFeature(RISCV::FeatureVendorXTTTensixBH) ||
+      X->hasFeature(RISCV::FeatureVendorXTTTensixWH))
+    RISCVFeatures::validate(TT, X->getFeatureBits());
 
   return X;
 }

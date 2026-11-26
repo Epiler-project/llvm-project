@@ -1,0 +1,2065 @@
+//===-- RISCVTensixBoundContract.cpp
+//---------------------------------------===//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+#include "RISCVTensixBoundContract.h"
+#include "RISCVBaseInfo.h"
+#include "RISCVMCTargetDesc.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsTT.h"
+#include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCRegisterInfo.h"
+
+using namespace llvm;
+using namespace llvm::RISCV;
+
+namespace {
+using Role = TensixBoundArgumentRole;
+using Access = TensixSFPUAccess;
+using ValueKind = TensixBoundValueKind;
+
+struct NativeRegisterGeometry {
+  unsigned ClassID;
+  uint16_t NumLanes;
+  uint16_t BitsPerLane;
+};
+struct NativeRegisterContents {
+  unsigned RegisterID;
+  bool ImmutableInitialized;
+};
+#define GET_RISCVTensixRegisterGeometryTable_IMPL
+#define GET_RISCVTensixRegisterContentsTable_IMPL
+#include "RISCVGenSearchableTables.inc"
+
+// The formal ABI-to-ingress mapping owns no encoding or machine constraints.
+constexpr TensixBoundInstruction Instructions[] = {
+    {Intrinsic::tt_wh_sfpu_loadi, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLOADI, 4},
+    {Intrinsic::tt_wh_sfpu_load, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLOAD, 5, 2},
+    {Intrinsic::tt_wh_sfpu_store, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSTORE, 4, 1},
+    {Intrinsic::tt_wh_sfpu_add, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPADD, 5},
+    {Intrinsic::tt_wh_sfpu_mul, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMUL, 5},
+    {Intrinsic::tt_wh_sfpu_mad, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMAD, 6},
+    {Intrinsic::tt_wh_sfpu_iadd, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPIADD, 4},
+    {Intrinsic::tt_wh_sfpu_mov, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMOV, 4},
+    {Intrinsic::tt_wh_sfpu_mov_all, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMOVAll, 2},
+    {Intrinsic::tt_wh_sfpu_mov_prng_advance, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPMOVPRNGAdvance, 2},
+    {Intrinsic::tt_wh_sfpu_exexp, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPEXEXP, 4},
+    {Intrinsic::tt_wh_sfpu_exman, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPEXMAN, 4},
+    {Intrinsic::tt_wh_sfpu_abs, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPABS, 4},
+    {Intrinsic::tt_wh_sfpu_lz, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLZ, 4},
+    {Intrinsic::tt_wh_sfpu_cast, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCAST, 4},
+    {Intrinsic::tt_wh_sfpu_setexp_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETEXPI, 5},
+    {Intrinsic::tt_wh_sfpu_setexp_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETEXPV, 5},
+    {Intrinsic::tt_wh_sfpu_setman_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETMANI, 5},
+    {Intrinsic::tt_wh_sfpu_setman_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETMANV, 5},
+    {Intrinsic::tt_wh_sfpu_setsgn_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETSGNI, 5},
+    {Intrinsic::tt_wh_sfpu_setsgn_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETSGNV, 5},
+    {Intrinsic::tt_wh_sfpu_iadd_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPIADDI, 4},
+    {Intrinsic::tt_wh_sfpu_shft_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFTI, 4},
+    {Intrinsic::tt_wh_sfpu_and, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPAND, 3},
+    {Intrinsic::tt_wh_sfpu_or, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPOR, 3},
+    {Intrinsic::tt_wh_sfpu_xor, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPXOR, 3},
+    {Intrinsic::tt_wh_sfpu_not, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPNOT, 2},
+    {Intrinsic::tt_wh_sfpu_shft_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFTV, 4},
+    {Intrinsic::tt_wh_sfpu_shft2, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFT2, 5},
+    {Intrinsic::tt_wh_sfpu_shft2_copy4, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFT2Copy4, 9},
+    {Intrinsic::tt_wh_sfpu_shft2_rotate4, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSHFT2Rotate4, 9},
+    {Intrinsic::tt_wh_sfpu_stochrnd_i, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDI, 6},
+    {Intrinsic::tt_wh_sfpu_stochrnd_v, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDV, 6},
+    {Intrinsic::tt_wh_sfpu_lutfp32_6r, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Six, 10},
+    {Intrinsic::tt_wh_sfpu_lutfp32_3r, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Three, 17},
+    {Intrinsic::tt_wh_sfpu_lut, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPLUT, 7},
+    {Intrinsic::tt_wh_sfpu_swap, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSWAP, 5},
+    {Intrinsic::tt_wh_sfpu_transp, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPTRANSP, 12},
+    {Intrinsic::tt_wh_sfpu_setcc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPSETCC, 3},
+    {Intrinsic::tt_wh_sfpu_encc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPENCC, 2},
+    {Intrinsic::tt_wh_sfpu_pushc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPPUSHC, 2},
+    {Intrinsic::tt_wh_sfpu_popc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPPOPC, 2},
+    {Intrinsic::tt_wh_sfpu_config_creg, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCONFIGCReg, 4},
+    {Intrinsic::tt_wh_sfpu_config_lane, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCONFIGLane, 3},
+    {Intrinsic::tt_wh_sfpu_nop, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPNOP, 0},
+    {Intrinsic::tt_wh_sfpu_compc, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCOMPC, 0},
+    {Intrinsic::tt_wh_sfpu_config_reset, TensixSFPUArchitecture::Wormhole,
+     RISCV::PseudoTTBoundSFPCONFIGReset, 0},
+    {Intrinsic::tt_bh_sfpu_loadi, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLOADI, 4},
+    {Intrinsic::tt_bh_sfpu_load, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLOAD, 5, 2},
+    {Intrinsic::tt_bh_sfpu_store, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSTORE, 4, 1},
+    {Intrinsic::tt_bh_sfpu_add, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPADD, 5},
+    {Intrinsic::tt_bh_sfpu_mul, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMUL, 5},
+    {Intrinsic::tt_bh_sfpu_mul23, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMUL24, 5},
+    {Intrinsic::tt_bh_sfpu_mad, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMAD, 6},
+    {Intrinsic::tt_bh_sfpu_iadd, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPIADD, 4},
+    {Intrinsic::tt_bh_sfpu_mov, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMOV, 4},
+    {Intrinsic::tt_bh_sfpu_mov_all, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMOVAll, 2},
+    {Intrinsic::tt_bh_sfpu_mov_prng_advance, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPMOVPRNGAdvance, 2},
+    {Intrinsic::tt_bh_sfpu_arecip, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPARECIP, 4},
+    {Intrinsic::tt_bh_sfpu_exexp, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPEXEXP, 4},
+    {Intrinsic::tt_bh_sfpu_exman, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPEXMAN, 4},
+    {Intrinsic::tt_bh_sfpu_abs, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPABS, 4},
+    {Intrinsic::tt_bh_sfpu_lz, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLZ, 4},
+    {Intrinsic::tt_bh_sfpu_cast, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCAST, 4},
+    {Intrinsic::tt_bh_sfpu_setexp_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETEXPI, 5},
+    {Intrinsic::tt_bh_sfpu_setexp_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETEXPV, 5},
+    {Intrinsic::tt_bh_sfpu_setman_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETMANI, 5},
+    {Intrinsic::tt_bh_sfpu_setman_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETMANV, 5},
+    {Intrinsic::tt_bh_sfpu_setsgn_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETSGNI, 5},
+    {Intrinsic::tt_bh_sfpu_setsgn_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETSGNV, 5},
+    {Intrinsic::tt_bh_sfpu_iadd_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPIADDI, 4},
+    {Intrinsic::tt_bh_sfpu_shft_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFTI, 4},
+    {Intrinsic::tt_bh_sfpu_and, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPAND, 3},
+    {Intrinsic::tt_bh_sfpu_or, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPOR, 3},
+    {Intrinsic::tt_bh_sfpu_xor, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPXOR, 3},
+    {Intrinsic::tt_bh_sfpu_not, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPNOT, 2},
+    {Intrinsic::tt_bh_sfpu_shft_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFTV, 4},
+    {Intrinsic::tt_bh_sfpu_shft2, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFT2, 5},
+    {Intrinsic::tt_bh_sfpu_shft2_copy4, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFT2Copy4, 9},
+    {Intrinsic::tt_bh_sfpu_shft2_rotate4, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSHFT2Rotate4, 9},
+    {Intrinsic::tt_bh_sfpu_stochrnd_i, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDI, 6},
+    {Intrinsic::tt_bh_sfpu_stochrnd_v, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSTOCHRNDV, 6},
+    {Intrinsic::tt_bh_sfpu_lutfp32_6r, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Six, 10},
+    {Intrinsic::tt_bh_sfpu_lutfp32_3r, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLUTFP32Three, 17},
+    {Intrinsic::tt_bh_sfpu_lut, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLUT, 7},
+    {Intrinsic::tt_bh_sfpu_swap, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSWAP, 5},
+    {Intrinsic::tt_bh_sfpu_transp, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPTRANSP, 12},
+    {Intrinsic::tt_bh_sfpu_setcc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPSETCC, 3},
+    {Intrinsic::tt_bh_sfpu_gt, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPGT, 3},
+    {Intrinsic::tt_bh_sfpu_le, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPLE, 3},
+    {Intrinsic::tt_bh_sfpu_encc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPENCC, 2},
+    {Intrinsic::tt_bh_sfpu_pushc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPPUSHC, 2},
+    {Intrinsic::tt_bh_sfpu_popc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPPOPC, 2},
+    {Intrinsic::tt_bh_sfpu_config_creg, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCONFIGCReg, 4},
+    {Intrinsic::tt_bh_sfpu_config_lane, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCONFIGLane, 3},
+    {Intrinsic::tt_bh_sfpu_nop, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPNOP, 0},
+    {Intrinsic::tt_bh_sfpu_compc, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCOMPC, 0},
+    {Intrinsic::tt_bh_sfpu_config_reset, TensixSFPUArchitecture::Blackhole,
+     RISCV::PseudoTTBoundSFPCONFIGReset, 0},
+};
+
+constexpr unsigned ConfigOpcodes[] = {
+    RISCV::TTSFPCONFIGC11, RISCV::TTSFPCONFIGC12, RISCV::TTSFPCONFIGC13,
+    RISCV::TTSFPCONFIGC14};
+
+const MCInstrInfo &instructions() {
+  static const auto Info = createTensixBoundMCInstrInfo();
+  return *Info;
+}
+const MCRegisterInfo &registers() {
+  static const auto Info = createTensixBoundMCRegisterInfo();
+  return *Info;
+}
+Error invalid(const Twine &Message) {
+  return createStringError(Twine("bound SFPU ") + Message);
+}
+
+std::optional<uint32_t> registerNumber(MCRegister Register) {
+  const auto &MRI = registers();
+  if (!MRI.getRegClass(RISCV::SFPRReadRegClassID).contains(Register))
+    return std::nullopt;
+  return MRI.getEncodingValue(Register);
+}
+SmallVector<MCRegister, 8> inClass(ArrayRef<MCPhysReg> Regs, unsigned ClassID) {
+  SmallVector<MCRegister, 8> Result;
+  for (MCPhysReg Reg : Regs)
+    if (registers().getRegClass(ClassID).contains(Reg))
+      Result.push_back(Reg);
+  return Result;
+}
+Expected<MCRegister> configRegister(unsigned Opcode) {
+  auto Defs = inClass(instructions().get(Opcode).implicit_defs(),
+                      RISCV::SFPCRRegClassID);
+  if (Defs.size() != 1 ||
+      !is_contained(instructions().get(Opcode).implicit_uses(), Defs[0]))
+    return invalid("configuration descriptor lacks its unique read/write CReg");
+  return Defs[0];
+}
+
+struct FixedBinding {
+  unsigned Argument;
+  MCRegister Register;
+  Role ArgumentRole;
+  Access Effect;
+};
+struct RegisterAlias {
+  unsigned Argument;
+  unsigned NativeOperand;
+};
+struct NativeMapping {
+  TensixBoundNativeInstruction Native;
+  SmallVector<std::optional<Role>, 12> RoleOverrides;
+  SmallVector<FixedBinding, 12> Fixed;
+  SmallVector<RegisterAlias, 2> Aliases;
+};
+
+// One mapping drives native emission and the public descriptor projection.
+// ABI-only selectors, omitted fields and vector-field aliases live here;
+// native classes, ties, effects and logical field legality stay
+// descriptor-owned.
+Expected<NativeMapping> mapInstruction(const TensixBoundInstruction &Info,
+                                       ArrayRef<TensixBoundValue> Args) {
+  if (Args.size() != Info.ArgumentCount)
+    return invalid("argument tuple has the wrong size");
+  NativeMapping Map;
+  Map.RoleOverrides.resize(Info.ArgumentCount);
+  if (Info.DstOffset)
+    Map.RoleOverrides[*Info.DstOffset] = Role::DstOffset;
+  auto Select = [&](unsigned Opcode, std::initializer_list<unsigned> Indices) {
+    Map.Native.Opcode = Opcode;
+    for (unsigned Index : Indices)
+      Map.Native.Operands.push_back({Index, 0});
+  };
+  auto Old = [&] { Map.RoleOverrides[1] = Role::OldDestination; };
+  auto Mode = [&](unsigned Index,
+                  std::initializer_list<int64_t> Values) -> Error {
+    if (Args[Index].Kind != ValueKind::Constant ||
+        !is_contained(Values, Args[Index].Constant))
+      return invalid("unsupported mode at operand " + Twine(Index));
+    return Error::success();
+  };
+  auto Zero = [&](unsigned Index) -> Error {
+    if (Args[Index].Kind != ValueKind::Constant || Args[Index].Constant != 0)
+      return invalid("logical field operand " + Twine(Index) +
+                     " must be in [0, 0]");
+    return Error::success();
+  };
+  switch (Info.Pseudo) {
+  case RISCV::PseudoTTBoundSFPLOADI:
+    Select(RISCV::TTSFPLOADI, {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPLOAD:
+    Select(RISCV::TTSFPLOAD, {0, 1, 2, 3, 4});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPSTORE:
+    Select(RISCV::TTSFPSTORE, {0, 1, 2, 3});
+    break;
+  case RISCV::PseudoTTBoundSFPADD:
+    Select(RISCV::TTSFPADD, {0, 1, 2, 3, 4});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPMUL:
+    Select(RISCV::TTSFPMUL, {0, 1, 2, 3, 4});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPMUL24:
+    if (Error E = Mode(4, {0, 1}))
+      return std::move(E);
+    Select(RISCV::TTSFPMUL24, {0, 1, 2, 3, 4});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPMAD:
+    Select(RISCV::TTSFPMAD, {0, 1, 2, 3, 4, 5});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPIADD: {
+    constexpr unsigned Opcodes[] = {RISCV::TTSFPIADDCCLT, RISCV::TTSFPISUBCCLT,
+                                    RISCV::TTSFPIADD,     RISCV::TTSFPISUB,
+                                    RISCV::TTSFPIADDCCGE, RISCV::TTSFPISUBCCGE};
+    if (Error E = Mode(3, {0, 2, 4, 6, 8, 10}))
+      return std::move(E);
+    Select(Opcodes[Args[3].Constant / 2], {0, 1, 2});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPMOV:
+    if (Error E = Mode(3, {0, 1}))
+      return std::move(E);
+    Select(Args[3].Constant == 0 ? RISCV::TTSFPMOV : RISCV::TTSFPMOVNeg,
+           {0, 1, 2});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPMOVAll:
+    Select(RISCV::TTSFPMOVAll, {0, 1});
+    break;
+  case RISCV::PseudoTTBoundSFPMOVPRNGAdvance:
+    Select(RISCV::TTSFPMOVPRNGAdvance, {0, 1});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPARECIP:
+    Select(RISCV::TTSFPARECIP, {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPEXEXP:
+    Select(selectTensixSFPUDescriptor(
+               RISCV::TTSFPEXEXP,
+               Args[3].Kind == ValueKind::Constant ? Args[3].Constant : -1),
+           {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPEXMAN:
+    Select(RISCV::TTSFPEXMAN, {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPABS:
+    Select(RISCV::TTSFPABS, {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPLZ:
+    Select(selectTensixSFPUDescriptor(
+               RISCV::TTSFPLZ,
+               Args[3].Kind == ValueKind::Constant ? Args[3].Constant : -1),
+           {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPCAST:
+    Select(selectTensixSFPUDescriptor(
+               RISCV::TTSFPCAST,
+               Args[3].Kind == ValueKind::Constant ? Args[3].Constant : -1),
+           {0, 1, 2, 3});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPSETEXPI:
+  case RISCV::PseudoTTBoundSFPSETMANI:
+  case RISCV::PseudoTTBoundSFPSETSGNI: {
+    bool Exp = Info.Pseudo == RISCV::PseudoTTBoundSFPSETEXPI;
+    if (Error E = Exp ? Mode(4, {1, 3}) : Mode(4, {1}))
+      return std::move(E);
+    Select(Exp                                             ? RISCV::TTSFPSETEXP
+           : Info.Pseudo == RISCV::PseudoTTBoundSFPSETMANI ? RISCV::TTSFPSETMAN
+                                                           : RISCV::TTSFPSETSGN,
+           {0, 1, 2, 3, 4});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPSETEXPV:
+  case RISCV::PseudoTTBoundSFPSETMANV:
+  case RISCV::PseudoTTBoundSFPSETSGNV: {
+    bool Exp = Info.Pseudo == RISCV::PseudoTTBoundSFPSETEXPV;
+    if (Error E = Exp ? Mode(4, {0, 2}) : Mode(4, {0}))
+      return std::move(E);
+    Select(Exp                                             ? RISCV::TTSFPSETEXP
+           : Info.Pseudo == RISCV::PseudoTTBoundSFPSETMANV ? RISCV::TTSFPSETMAN
+                                                           : RISCV::TTSFPSETSGN,
+           {0, 1, 2});
+    Map.Native.Operands.push_back({std::nullopt, 0});
+    Map.Native.Operands.push_back({4, 0});
+    // The field is the same physical input as the native old destination.
+    // Projecting its descriptor tie requires dst == old == field, with no move.
+    Map.Aliases.push_back({3, 1});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPIADDI:
+  case RISCV::PseudoTTBoundSFPSHFTI:
+    if (Error E = Info.Pseudo == RISCV::PseudoTTBoundSFPIADDI
+                      ? Mode(3, {1, 5, 9})
+                      : Mode(3, {1, 3, 5, 7}))
+      return std::move(E);
+    Select(Info.Pseudo == RISCV::PseudoTTBoundSFPIADDI ? RISCV::TTSFPIADDI
+                                                       : RISCV::TTSFPSHFT,
+           {0, 1, 1, 2, 3});
+    if (Info.Pseudo == RISCV::PseudoTTBoundSFPSHFTI)
+      Old();
+    break;
+  case RISCV::PseudoTTBoundSFPSHFTV:
+    if (Error E = Mode(3, {0, 2}))
+      return std::move(E);
+    Select(RISCV::TTSFPSHFT, {0, 1, 2});
+    Map.Native.Operands.push_back({std::nullopt, 0});
+    Map.Native.Operands.push_back({3, 0});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPAND:
+    Select(RISCV::TTSFPAND, {0, 1, 2});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPOR:
+    Select(RISCV::TTSFPOR, {0, 1, 2});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPXOR:
+    Select(RISCV::TTSFPXOR, {0, 1, 2});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPNOT:
+    Select(RISCV::TTSFPNOT, {0, 1, 1});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPSHFT2:
+    if (Error E = Zero(3))
+      return std::move(E);
+    Select(RISCV::TTSFPSHFT2, {0, 1, 2, 4});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPSHFT2Copy4:
+  case RISCV::PseudoTTBoundSFPSHFT2Rotate4: {
+    if (Info.Pseudo == RISCV::PseudoTTBoundSFPSHFT2Copy4) {
+      if (Error E = Mode(8, {0, 1}))
+        return std::move(E);
+      Select(RISCV::TTSFPSHFT2Copy4, {8});
+    } else {
+      Select(RISCV::TTSFPSHFT2Rotate4, {8});
+    }
+    const auto &Desc = instructions().get(Map.Native.Opcode);
+    auto Inputs = inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID);
+    auto Outputs = inClass(Desc.implicit_defs(), RISCV::SFPRRegClassID);
+    if (Inputs.size() != 4 || Inputs != Outputs)
+      return invalid(
+          "SFPSHFT2 group descriptor lacks four simultaneous accesses");
+    for (unsigned I = 0; I != 4; ++I) {
+      Map.Fixed.push_back(
+          {I, Outputs[I], Role::FixedGroupWrite, Access::Write});
+      Map.Fixed.push_back(
+          {I + 4, Inputs[I], Role::FixedGroupRead, Access::Read});
+    }
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPSTOCHRNDI: {
+    if (Error E = Mode(4, {0, 1, 2, 3, 4, 5, 6, 7}))
+      return std::move(E);
+    Select(RISCV::TTSFPSTOCHRNDI, {0, 1, 2, 3});
+    int64_t Mode = Args[4].Constant;
+    if (Mode == 4 || Mode == 5)
+      Mode |= 8;
+    Map.Native.Operands.push_back({std::nullopt, Mode});
+    Map.Native.Operands.push_back({5, 0});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPSTOCHRNDV:
+    Select(RISCV::TTSFPSTOCHRNDV, {0, 1, 2, 3, 4, 5});
+    Old();
+    break;
+  case RISCV::PseudoTTBoundSFPLUTFP32Six: {
+    if (Error E = Mode(9, {0, 2, 3, 4, 6, 7}))
+      return std::move(E);
+    Select(RISCV::TTSFPLUTFP32Six, {0, 1, 9});
+    auto Inputs = inClass(instructions().get(Map.Native.Opcode).implicit_uses(),
+                          RISCV::SFPRRegClassID);
+    if (Inputs.size() != 7)
+      return invalid("SFPLUTFP32 direct descriptor lacks its fixed inputs");
+    for (auto [I, Reg] : enumerate(Inputs))
+      Map.Fixed.push_back(
+          {unsigned(I + 2), Reg, Role::FixedGroupRead, Access::Read});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPLUTFP32Three: {
+    if (Error E = Mode(16, {10, 14}))
+      return std::move(E);
+    Select(RISCV::TTSFPLUTFP32Three, {});
+    Map.Native.Operands.push_back({std::nullopt, (Args[16].Constant >> 2) & 1});
+    const auto &Desc = instructions().get(Map.Native.Opcode);
+    auto Inputs = inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID);
+    auto Outputs = inClass(Desc.implicit_defs(), RISCV::SFPRRegClassID);
+    if (Inputs.size() != 8 || Inputs != Outputs)
+      return invalid("SFPLUTFP32 indirect descriptor lacks its complete group");
+    for (unsigned I = 0; I != 8; ++I) {
+      Map.Fixed.push_back(
+          {I, Outputs[I], Role::FixedGroupWrite, Access::Write});
+      Map.Fixed.push_back(
+          {I + 8, Inputs[I], Role::FixedGroupRead, Access::Read});
+    }
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPLUT: {
+    Select(RISCV::TTSFPLUT, {0, 1, 6});
+    auto Inputs = inClass(instructions().get(Map.Native.Opcode).implicit_uses(),
+                          RISCV::SFPRRegClassID);
+    if (Inputs.size() != 4)
+      return invalid("LUT descriptor differs from its fixed-group ABI");
+    for (auto [I, Reg] : enumerate(Inputs))
+      Map.Fixed.push_back(
+          {unsigned(I + 2), Reg, Role::FixedGroupRead, Access::Read});
+    Old();
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPSWAP:
+    Select(RISCV::TTSFPSWAP, {0, 1, 2, 3, 4});
+    Map.RoleOverrides[2] = Role::OldDestination;
+    Map.RoleOverrides[3] = Role::OldDestination;
+    break;
+  case RISCV::PseudoTTBoundSFPTRANSP: {
+    Select(RISCV::TTSFPTRANSP, {});
+    const auto &Desc = instructions().get(Map.Native.Opcode);
+    auto Inputs = inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID);
+    auto Defs = inClass(Desc.implicit_defs(), RISCV::SFPRRegClassID);
+    SmallVector<MCRegister, 4> Outputs, Clobbers;
+    for (MCRegister Reg : Defs)
+      (is_contained(Inputs, Reg) ? Outputs : Clobbers).push_back(Reg);
+    if (Inputs.size() != 4 || Outputs.size() != 4 || Clobbers.size() != 4)
+      return invalid("transpose descriptor differs from its fixed-group ABI");
+    for (unsigned I = 0; I != 4; ++I) {
+      Map.Fixed.push_back(
+          {I, Outputs[I], Role::FixedGroupWrite, Access::Write});
+      Map.Fixed.push_back(
+          {I + 4, Clobbers[I], Role::FixedGroupClobber, Access::Clobber});
+      Map.Fixed.push_back(
+          {I + 8, Inputs[I], Role::FixedGroupRead, Access::Read});
+    }
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPSETCC: {
+    constexpr unsigned Opcodes[] = {RISCV::TTSFPSETCCLT, RISCV::TTSFPSETCCNE,
+                                    RISCV::TTSFPSETCCGE, RISCV::TTSFPSETCCEQ};
+    if (Error E = Zero(1))
+      return std::move(E);
+    if (Error E = Mode(2, {0, 2, 4, 6}))
+      return std::move(E);
+    Select(Opcodes[Args[2].Constant / 2], {0});
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPENCC:
+    Select(RISCV::TTSFPENCC, {0, 1});
+    break;
+  case RISCV::PseudoTTBoundSFPGT:
+  case RISCV::PseudoTTBoundSFPLE:
+    Select(Info.Pseudo == RISCV::PseudoTTBoundSFPGT ? RISCV::TTSFPGT
+                                                    : RISCV::TTSFPLE,
+           {0, 1, 2});
+    break;
+  case RISCV::PseudoTTBoundSFPPUSHC:
+  case RISCV::PseudoTTBoundSFPPOPC: {
+    if (Error E = Zero(0))
+      return std::move(E);
+    const bool Push = Info.Pseudo == RISCV::PseudoTTBoundSFPPUSHC;
+    if (Push) {
+      if (Error E = Mode(1, {0, 1}))
+        return std::move(E);
+    } else if (Error E = Mode(1, {0, 1, 3, 4})) {
+      return std::move(E);
+    }
+    const int64_t ModeValue = Args[1].Constant;
+    const unsigned Opcode = Push ? (ModeValue == 1 ? RISCV::TTSFPPUSHCReplaceTop
+                                                   : RISCV::TTSFPPUSHC)
+                                 : (ModeValue == 1   ? RISCV::TTSFPPOPCPeek
+                                    : ModeValue == 3 ? RISCV::TTSFPPOPCAndTop
+                                    : ModeValue == 4 ? RISCV::TTSFPPOPCOrTop
+                                                     : RISCV::TTSFPPOPC);
+    Select(Opcode, {});
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPCONFIGCReg: {
+    if (Args[1].Kind != ValueKind::Constant)
+      return invalid("configuration native selection requires a bound CReg");
+    bool Found = false;
+    for (unsigned Opcode : ConfigOpcodes) {
+      auto CReg = configRegister(Opcode);
+      if (!CReg)
+        return CReg.takeError();
+      if (Args[1].Constant != *registerNumber(*CReg))
+        continue;
+      Select(Opcode, {2, 3});
+      auto Stage = inClass(instructions().get(Opcode).implicit_uses(),
+                           RISCV::SFPRRegClassID);
+      if (Stage.size() != 1)
+        return invalid("configuration descriptor lacks its unique stage input");
+      Map.Fixed.push_back({0, Stage[0], Role::FixedGroupRead, Access::Read});
+      Map.Fixed.push_back({1, *CReg, Role::WriteCReg, Access::ReadWrite});
+      Found = true;
+      break;
+    }
+    if (!Found)
+      return invalid("invalid fixed writable CReg operand");
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPCONFIGLane: {
+    Select(RISCV::TTSFPCONFIGLane, {1, 2});
+    auto Stage = inClass(instructions().get(Map.Native.Opcode).implicit_uses(),
+                         RISCV::SFPRRegClassID);
+    if (Stage.size() != 1)
+      return invalid(
+          "lane configuration descriptor lacks its unique stage input");
+    Map.Fixed.push_back({0, Stage[0], Role::FixedGroupRead, Access::Read});
+    break;
+  }
+  case RISCV::PseudoTTBoundSFPNOP:
+    Select(RISCV::TTSFPNOP, {});
+    break;
+  case RISCV::PseudoTTBoundSFPCOMPC:
+    Select(RISCV::TTSFPCOMPC, {});
+    break;
+  case RISCV::PseudoTTBoundSFPCONFIGReset:
+    Select(RISCV::TTSFPCONFIGReset, {});
+    break;
+  default:
+    return invalid("unknown native instruction mapping");
+  }
+  return Map;
+}
+
+bool sameResource(const TensixSFPUResource &First,
+                  const TensixSFPUResource &Second) {
+  if (const auto *Argument = std::get_if<TensixBoundArgumentRef>(&First)) {
+    const auto *Other = std::get_if<TensixBoundArgumentRef>(&Second);
+    return Other && Argument->Argument == Other->Argument;
+  }
+  if (const auto *Register = std::get_if<TensixFixedRegisterRef>(&First)) {
+    const auto *Other = std::get_if<TensixFixedRegisterRef>(&Second);
+    return Other && Register->Number == Other->Number;
+  }
+  const auto *Other = std::get_if<TensixSFPUState>(&Second);
+  return Other && *Other == std::get<TensixSFPUState>(First);
+}
+
+bool sameConstraints(ArrayRef<TensixBoundRegisterConstraint> First,
+                     ArrayRef<TensixBoundRegisterConstraint> Second) {
+  return First.size() == Second.size() &&
+         equal(First, Second, [](const auto &A, const auto &B) {
+           return A.Kind == B.Kind && A.FirstArgument == B.FirstArgument &&
+                  A.SecondArgument == B.SecondArgument;
+         });
+}
+bool sameEffects(ArrayRef<TensixSFPUArchitecturalEffect> First,
+                 ArrayRef<TensixSFPUArchitecturalEffect> Second) {
+  return First.size() == Second.size() &&
+         equal(First, Second, [](const auto &A, const auto &B) {
+           return sameResource(A.Resource, B.Resource) && A.Access == B.Access;
+         });
+}
+} // namespace
+
+void RISCV::appendTensixSFPUArchitecturalEffect(
+    SmallVectorImpl<TensixSFPUArchitecturalEffect> &Effects,
+    TensixSFPUResource Resource, Access Mode) {
+  auto Found = find_if(Effects, [&](const auto &Effect) {
+    return sameResource(Effect.Resource, Resource);
+  });
+  if (Found == Effects.end()) {
+    Effects.push_back({Resource, Mode});
+    return;
+  }
+  if (Found->Access != Mode)
+    Found->Access = Access::ReadWrite;
+}
+Expected<TensixSFPUResource>
+RISCV::getTensixSFPUArchitecturalResource(MCRegister Register) {
+  if (auto Number = registerNumber(Register))
+    return TensixFixedRegisterRef{*Number};
+  switch (Register.id()) {
+  case RISCV::TT_CC:
+    return TensixSFPUState::CC;
+  case RISCV::TT_CCSTACK:
+    return TensixSFPUState::CCStack;
+  case RISCV::TT_CONFIG:
+    return TensixSFPUState::Configuration;
+  case RISCV::TT_DST:
+    return TensixSFPUState::Dst;
+  case RISCV::TT_ISSUE:
+    return TensixSFPUState::Issue;
+  case RISCV::TT_PRNG:
+    return TensixSFPUState::PRNG;
+  default:
+    return invalid("native descriptor names an unknown architectural effect");
+  }
+}
+
+TensixSFPULaneConfigFields
+RISCV::decodeTensixSFPULaneConfig(uint32_t KnownMask, uint32_t ValueBits) {
+  auto Bit = [&](unsigned Position) -> std::optional<bool> {
+    uint32_t Mask = uint32_t(1) << Position;
+    if (!(KnownMask & Mask))
+      return std::nullopt;
+    return bool(ValueBits & Mask);
+  };
+  TensixSFPULaneConfigFields Result;
+  Result.EnableFP16AInf = Bit(0);
+  Result.DisableBackdoorLoad = Bit(1);
+  Result.EnableDestIndex = Bit(2);
+  Result.CaptureDefaultDestIndex = Bit(3);
+  Result.BlockDestWriteFromSFPU = Bit(4);
+  Result.BlockSFPUReadFromDest = Bit(5);
+  Result.DestReadColumnExchange = Bit(6);
+  Result.DestWriteColumnExchange = Bit(7);
+  Result.ExchangeSourceBAndC = Bit(8);
+  Result.BlockDestMoveEven = Bit(9);
+  Result.BlockDestMoveOdd = Bit(10);
+  for (unsigned Row = 0; Row != Result.RowMask.size(); ++Row)
+    Result.RowMask[Row] = Bit(12 + Row);
+  Result.ReservedKnownBits = KnownMask & 0x30800u;
+  Result.ReservedValueBits = ValueBits & Result.ReservedKnownBits;
+  return Result;
+}
+
+const TensixBoundInstruction *
+RISCV::getTensixBoundInstruction(Intrinsic::ID ID) {
+  auto It =
+      find_if(Instructions, [ID](const auto &Info) { return Info.ID == ID; });
+  return It == std::end(Instructions) ? nullptr : It;
+}
+std::optional<TensixSFPUArchitecture>
+RISCV::getTensixBoundSFPUArchitecture(Intrinsic::ID ID) {
+  const auto *Info = getTensixBoundInstruction(ID);
+  return Info ? std::optional(Info->Architecture) : std::nullopt;
+}
+const TensixBoundInstruction *
+RISCV::getTensixBoundInstructionForPseudo(unsigned Opcode,
+                                          TensixSFPUArchitecture Architecture) {
+  if (Opcode == RISCV::PseudoTTBoundSFPLOADDynamic)
+    Opcode = RISCV::PseudoTTBoundSFPLOAD;
+  if (Opcode == RISCV::PseudoTTBoundSFPSTOREDynamic)
+    Opcode = RISCV::PseudoTTBoundSFPSTORE;
+  auto It = find_if(Instructions, [Opcode, Architecture](const auto &Info) {
+    return Info.Pseudo == Opcode && Info.Architecture == Architecture;
+  });
+  return It == std::end(Instructions) ? nullptr : It;
+}
+
+MCRegister RISCV::getTensixSFPURegister(uint32_t Number) {
+  for (MCRegister Reg : registers().getRegClass(RISCV::SFPRReadRegClassID))
+    if (registerNumber(Reg) == Number)
+      return Reg;
+  llvm_unreachable("verified architectural SFPU register");
+}
+
+Expected<TensixSFPUInstructionSemantics>
+RISCV::getTensixSFPUInstructionSemantics(
+    unsigned Opcode, ArrayRef<std::optional<int64_t>> NativeFields,
+    TensixSFPUArchitecture Architecture) {
+  const auto &Desc = instructions().get(Opcode);
+  if (NativeFields.size() != Desc.getNumOperands())
+    return invalid("semantic fields differ from the actual native descriptor");
+  TensixSFPUInstructionSemantics Result;
+  if (Opcode == RISCV::TTSFPTRANSP) {
+    for (unsigned Register = 0; Register != 4; ++Register)
+      Result.Values.push_back(TensixFixedRegisterRef{Register});
+  } else {
+    for (unsigned Operand = 0; Operand != Desc.getNumOperands(); ++Operand)
+      Result.Values.push_back(TensixSFPUInstructionOperandRef{Operand});
+  }
+  auto DstTransfer = [&](auto Packet, unsigned Offset, unsigned AddressMode,
+                         unsigned Format) {
+    const auto Mode = NativeFields[AddressMode];
+    const auto Storage = NativeFields[Format];
+    if (!(Mode == 0 && Storage == 3) &&
+        !(Architecture == TensixSFPUArchitecture::Blackhole && Mode == 7))
+      return;
+    std::optional<TensixSFPUDstFormat> StorageFormat;
+    if (Storage == 2)
+      StorageFormat = TensixSFPUDstFormat::BFloat16;
+    if (Storage == 3)
+      StorageFormat = TensixSFPUDstFormat::Float32;
+    if (Storage == 4)
+      StorageFormat = TensixSFPUDstFormat::Raw32;
+    if (StorageFormat)
+      Result.DstTransfer = TensixSFPUDstTransferFacts{
+          std::move(Packet), Offset, static_cast<uint8_t>(*Mode),
+          *StorageFormat};
+  };
+  switch (Opcode) {
+  case RISCV::TTSFPLOAD:
+    DstTransfer(TensixSFPUDstLoadTransfer{0, 1}, 2, 3, 4);
+    break;
+  case RISCV::TTSFPLOADFull:
+    DstTransfer(TensixSFPUDstLoadTransfer{0, std::nullopt}, 1, 2, 3);
+    break;
+  case RISCV::TTSFPSTORE:
+    DstTransfer(TensixSFPUDstStoreTransfer{0}, 1, 2, 3);
+    break;
+  default:
+    break;
+  }
+  TensixSFPUTransferFacts Transfer;
+  if (Opcode == RISCV::TTSFPMOVAll) {
+    Transfer = {TensixSFPUTransferKind::Identity,
+                0,
+                0xffffffffu,
+                0xffffffffu,
+                false,
+                false,
+                false,
+                false};
+  } else if (Opcode == RISCV::TTSFPLOADIFull) {
+    if (NativeFields.size() != 3 || !NativeFields[2] ||
+        (*NativeFields[2] != 0 && *NativeFields[2] != 1 &&
+         *NativeFields[2] != 2 && *NativeFields[2] != 4))
+      return invalid("full SFPLOADI requires a complete-word mode");
+    Transfer = {TensixSFPUTransferKind::ImmediateFull,
+                0,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                false,
+                true,
+                true};
+  } else if (Opcode == RISCV::TTSFPLOADI) {
+    if (NativeFields.size() != 4 || !NativeFields[3])
+      return invalid("SFPLOADI transfer requires a constant mode");
+    switch (*NativeFields[3]) {
+    case 0:
+    case 1:
+    case 2:
+    case 4:
+      Transfer = {TensixSFPUTransferKind::ImmediateFull,
+                  0,
+                  0xffffffffu,
+                  0xffffffffu,
+                  true,
+                  true,
+                  true,
+                  true};
+      break;
+    case 8:
+      Transfer = {TensixSFPUTransferKind::ImmediateUpperHalf,
+                  0x0000ffffu,
+                  0xffff0000u,
+                  0xffff0000u,
+                  true,
+                  true,
+                  true,
+                  true};
+      break;
+    case 10:
+      Transfer = {TensixSFPUTransferKind::ImmediateLowerHalf,
+                  0xffff0000u,
+                  0x0000ffffu,
+                  0x0000ffffu,
+                  true,
+                  true,
+                  true,
+                  true};
+      break;
+    default:
+      return invalid("SFPLOADI transfer has an unsupported mode");
+    }
+  } else if (Opcode == RISCV::TTSFPMOV || Opcode == RISCV::TTSFPMOVNeg) {
+    // Masked SFPMOV preserves the old destination in inactive lanes. A copy
+    // propagates source bit-knownness; negation consumes the source
+    // numerically, so its active lanes require all source bits initialized.
+    Transfer = {TensixSFPUTransferKind::Identity,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true};
+    if (Opcode == RISCV::TTSFPMOVNeg) {
+      Transfer.Kind = TensixSFPUTransferKind::LaneWise;
+      Transfer.Inputs.push_back({2, 0xffffffffu});
+    }
+  } else if (((Opcode == RISCV::TTSFPSETSGN || Opcode == RISCV::TTSFPSETEXP ||
+               Opcode == RISCV::TTSFPSETMAN) && NativeFields.size() == 5 &&
+              NativeFields[4] == 1) ||
+             Opcode == RISCV::TTSFPEXMAN) {
+    // Copy unaffected bits independently and project the exact literal bits.
+    Transfer = {TensixSFPUTransferKind::MaskedIdentity,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true};
+    if (!NativeFields[3])
+      return invalid("field substitution requires its actual immediate");
+    const uint32_t Field = *NativeFields[3];
+    uint32_t Value;
+    switch (Opcode) {
+    case RISCV::TTSFPSETEXP:
+      Transfer.ConstantBits = 0x7f800000u;
+      Value = Field << 23;
+      break;
+    case RISCV::TTSFPSETMAN:
+      Transfer.ConstantBits = 0x007fffffu;
+      Value = Field << 11;
+      break;
+    case RISCV::TTSFPSETSGN:
+      Transfer.ConstantBits = 0x80000000u;
+      Value = Field << 31;
+      break;
+    default: // SFPEXMAN sets bit 23 for PAD8 and clears it for PAD9.
+      Transfer.ConstantBits = 0xff800000u;
+      Value = Field == 0 ? 0x00800000u : 0u;
+      break;
+    }
+    Transfer.CopiedBits = ~Transfer.ConstantBits;
+    Transfer.ImmediateValue = TensixSFPUValueBits{Transfer.ConstantBits, Value};
+  } else if ((Opcode == RISCV::TTSFPSETEXP || Opcode == RISCV::TTSFPSETMAN ||
+              Opcode == RISCV::TTSFPSETSGN) &&
+             NativeFields.size() == 5 &&
+             (NativeFields[4] == 0 ||
+              (Opcode == RISCV::TTSFPSETEXP && NativeFields[4] == 2))) {
+    // Active lanes combine VC with a field from the pre-instruction VD.
+    // Only SFPSETEXP mode 0 moves bits from a different position.
+    const uint32_t Field = Opcode == RISCV::TTSFPSETEXP ? 0x7f800000u :
+                           Opcode == RISCV::TTSFPSETMAN ? 0x007fffffu : 0x80000000u;
+    const uint32_t OldBits =
+        Opcode == RISCV::TTSFPSETEXP && NativeFields[4] == 0 ? 0xffu : Field;
+    Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu,
+                0xffffffffu, true, true, true, true, {{1, OldBits}, {2, ~Field}}};
+  } else if (Opcode == RISCV::TTSFPEXEXPPreserveCC) {
+    // Raw and debiased extraction read only the exponent field of C.
+    Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu,
+                0xffffffffu, true, true, true, true, {{2, 0x7f800000u}}};
+  } else if (Opcode == RISCV::TTSFPLZPreserveCC) {
+    if (!NativeFields[3] || (*NativeFields[3] != 0 && *NativeFields[3] != 4))
+      return invalid("flag-preserving SFPLZ requires mode 0 or 4");
+    // Magnitude mode clears raw bit31; it is not signed integer ABS. Only
+    // the numerical source is demanded in active lanes. Old supplies the
+    // inactive destination, and both modes retain the reaching CC flags.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, *NativeFields[3] == 4 ? 0x7fffffffu : 0xffffffffu}}};
+  } else if (Opcode == RISCV::TTSFPLUT || Opcode == RISCV::TTSFPLUTFP32Six) {
+    const bool PackedLUT8 = Opcode == RISCV::TTSFPLUT;
+    if (!NativeFields[2])
+      return invalid("direct LUT requires its table and sign mode");
+    const unsigned Mode = *NativeFields[2];
+    Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu, 0xffffffffu,
+                true, true, true, true, {}};
+    // The fixed inputs are read from one pre-issue snapshot, including when
+    // VD aliases a coefficient or L3. Only the low two bytes encode LUT8.
+    for (MCRegister Reg : inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID)) {
+      unsigned Slot = *registerNumber(Reg);
+      uint32_t Bits = PackedLUT8 ? 0xffffu : 0xffffffffu;
+      if (Slot == 3)
+        Bits = Mode & 4 ? 0xffffffffu : 0x7fffffffu;
+      Transfer.Inputs.push_back({unsigned(Result.Values.size()), Bits});
+      Result.Values.push_back(TensixFixedRegisterRef{Slot});
+    }
+  } else if (Opcode == RISCV::TTSFPCAST ||
+             Opcode == RISCV::TTSFPCASTDeterministic) {
+    Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu, 0xffffffffu,
+                true, true, true, true, {{2, 0xffffffffu}}};
+  } else if (Opcode == RISCV::TTSFPSTOCHRNDV) {
+    // The stochastic +0 exception distinguishes negative zero even in the
+    // unsigned mode. The scale packet contributes only its low five bits.
+    const bool NeedsSign = *NativeFields[4] == 5 || *NativeFields[5] == 1;
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, NeedsSign ? 0xffffffffu : 0x7fffffffu}, {3, 0x1fu}}};
+  } else if (Opcode == RISCV::TTSFPSTOCHRNDI) {
+    // The MC verifier checks the actual descale, native mode and rounding
+    // fields before this query. Modes 12/13 scale a sign-magnitude integer.
+    // The other immediate modes narrow FP32. Nearest and round-to-zero
+    // advance PRNG without using its value for the numerical result.
+    const int64_t Mode = *NativeFields[4];
+    if (Mode < 8 || Mode == 12 || Mode == 13) {
+      // Unsigned FloatInt ignores the sign. Unsigned IntInt stochastic
+      // rounding still distinguishes +0 from -0 at a zero sample.
+      const bool MagnitudeOnly =
+          Mode == 2 || Mode == 6 || (Mode == 12 && *NativeFields[5] != 1);
+      const uint32_t SourceBits = MagnitudeOnly ? 0x7fffffffu : 0xffffffffu;
+      Transfer = {TensixSFPUTransferKind::LaneWise,
+                  0u,
+                  0xffffffffu,
+                  0xffffffffu,
+                  true,
+                  true,
+                  true,
+                  true,
+                  {{2, SourceBits}}};
+    }
+  } else if (Opcode == RISCV::TTSFPABS) {
+    // Both modes consume every source bit in each active lane. Float ABS
+    // preserves negative NaNs; integer INT_MIN retains 0x80000000. Neither
+    // mode proves a constant sign bit or an identity copy. Old is only the
+    // inactive-lane passthrough, independently of source initializedness.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}}};
+  } else if (Opcode == RISCV::TTSFPSHFT2 && NativeFields.size() > 3 &&
+             NativeFields[3] && *NativeFields[3] == 3) {
+    // SUBVEC_SHFLROR1 reads the pre-instruction VC snapshot and rotates
+    // within each group of eight lanes. LaneEnabled selects destinations;
+    // a disabled source lane can still supply another active destination.
+    // Mode 4 remains a legal native instruction without this transfer summary.
+    Transfer = {TensixSFPUTransferKind::LanePermutation,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true};
+    for (unsigned Lane = 0; Lane != 32; ++Lane)
+      Transfer.SourceLanes.push_back((Lane & 7) ? Lane - 1 : Lane + 7);
+  } else if (Opcode == RISCV::TTSFPMUL24) {
+    // Both halves of the unsigned 46-bit product depend only on bits 0..22
+    // of VA and VB. The physical descriptor fixes VC to the zero register C9.
+    Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu, 0xffffffffu,
+                true, true, true, true, {{2, 0x7fffffu}, {3, 0x7fffffu}}};
+  } else if (Opcode == RISCV::TTSFPADD || Opcode == RISCV::TTSFPMUL ||
+             Opcode == RISCV::TTSFPMAD) {
+    // Direct MAD-unit forms read their arithmetic inputs in active lanes.
+    // The old destination is only the inactive-lane passthrough. ADD/MUL
+    // retain their native implicit C10/C9 read effects; MAD has an explicit
+    // third input instead of either implicit constant.
+    // The descriptors receive only direct mode bits 0..1, never indirect
+    // source/destination selection. This proves initialized bits, not a
+    // different floating-point algorithm or rounding contract.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}, {3, 0xffffffffu}}};
+    if (Opcode == RISCV::TTSFPMAD)
+      Transfer.Inputs.push_back({4, 0xffffffffu});
+  } else if (Opcode == RISCV::TTSFPARECIP) {
+    if (!NativeFields[3])
+      return invalid("SFPARECIP transfer requires a constant mode");
+    // Blackhole SFPARECIP writes all VD bits in every enabled lane. VC is
+    // the numerical input in all three modes; conditional reciprocal also
+    // tests VB.i32 < 0. The native bound descriptor ties VB to the old VD,
+    // so that mode demands its sign bit, not an active-lane passthrough.
+    // Inactive lanes still preserve the complete old destination under CC
+    // and ROW_MASK. These are bit masks, not register widths or counts.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}}};
+    if (*NativeFields[3] == 1)
+      Transfer.Inputs.push_back({1, 0x80000000u});
+  } else if (Opcode == RISCV::TTSFPIADD || Opcode == RISCV::TTSFPISUB ||
+             Opcode == RISCV::TTSFPAND || Opcode == RISCV::TTSFPOR ||
+             Opcode == RISCV::TTSFPXOR) {
+    // These vector forms leave CC unchanged. Active lanes consume both the
+    // tied old destination and C numerically, then overwrite all result bits;
+    // inactive lanes preserve the old destination under CC and ROW_MASK.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{1, 0xffffffffu}, {2, 0xffffffffu}}};
+  } else if (Opcode == RISCV::TTSFPSHFT && NativeFields.size() == 5 &&
+             NativeFields[4]) {
+    const unsigned Mode = *NativeFields[4];
+    if (Mode == 0 || Mode == 2) {
+      // Direction is signed, distance is modulo 32. The sign bit also
+      // selects logical or arithmetic right-shift behavior in mode 2.
+      Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu, 0xffffffffu,
+                  true, true, true, true, {{1, 0xffffffffu}, {2, 0x8000001fu}}};
+    } else if ((Mode == 1 || Mode == 3 || Mode == 5 || Mode == 7) && NativeFields[3]) {
+      // Imm12 selects direction; Mod1[2] selects VC in place of old VD.
+      const unsigned Source = (Mode & 4) ? 2 : 1;
+      const int64_t Shift = *NativeFields[3];
+      const unsigned Distance = (Shift < 0 ? -Shift : Shift) & 31;
+      uint32_t Demand = 0xffffffffu;
+      if (Shift < 0) Demand <<= Distance;
+      else Demand >>= Distance;
+      Transfer = {TensixSFPUTransferKind::LaneWise, 0u, 0xffffffffu, 0xffffffffu,
+                  true, true, true, true, {{Source, Demand}}};
+    }
+  } else if (Opcode == RISCV::TTSFPNOT) {
+    // This bound form aliases native old and C to the same ABI argument.
+    // It is one numerical input in active lanes and passthrough in inactive
+    // lanes; knowing the old bits must not bypass the numerical dependency.
+    Transfer = {TensixSFPUTransferKind::LaneWise,
+                0u,
+                0xffffffffu,
+                0xffffffffu,
+                true,
+                true,
+                true,
+                true,
+                {{2, 0xffffffffu}}};
+  }
+  if (Opcode == RISCV::TTSFPLOADI || Opcode == RISCV::TTSFPLOADIFull) {
+    const unsigned ImmediateOperand = Opcode == RISCV::TTSFPLOADI ? 2 : 1;
+    const unsigned ModeOperand = ImmediateOperand + 1;
+    if (!NativeFields[ImmediateOperand] ||
+        *NativeFields[ImmediateOperand] < 0 ||
+        *NativeFields[ImmediateOperand] > 0xffff)
+      return invalid("SFPLOADI value requires an actual unsigned16 immediate");
+    const uint32_t Immediate = *NativeFields[ImmediateOperand];
+    uint32_t Value;
+    switch (*NativeFields[ModeOperand]) {
+    case 0: // BF16 -> FP32, preserving all BF16 bit patterns.
+    case 8: // Same high bits, preserving the old low half separately.
+      Value = Immediate << 16;
+      break;
+    case 1: // FP16-ish -> FP32: unconditional exponent rebias.
+      // tt-isa SFPLOADI is identical on Wormhole and Blackhole. It has no
+      // special handling for zero, subnormal, infinity or NaN encodings.
+      Value = ((Immediate & 0x8000u) << 16) |
+              ((((Immediate >> 10) & 0x1fu) + 112u) << 23) |
+              ((Immediate & 0x3ffu) << 13);
+      break;
+    case 2:  // Zero extension.
+    case 10: // Same low bits, preserving the old high half separately.
+      Value = Immediate;
+      break;
+    case 4: // Two's-complement sign extension, not sign-magnitude.
+      Value = Immediate | ((Immediate & 0x8000u) ? 0xffff0000u : 0u);
+      break;
+    default:
+      llvm_unreachable("received SFPLOADI mode");
+    }
+    Transfer.ImmediateValue = TensixSFPUValueBits{
+        Transfer.GeneratedBits, Value & Transfer.GeneratedBits};
+  }
+  if (Opcode == RISCV::TTSFPSWAP && NativeFields[4] == 1) {
+    // ALL_ROWS_MAX compares the same pre-instruction D/C snapshot for both
+    // outputs. Each inactive destination retains its own tied old packet.
+    // Initialized inputs establish initialized outputs, without inventing
+    // numerical value bits or an identity relation for either result.
+    for (unsigned Destination = 0; Destination != 2; ++Destination) {
+      TensixSFPUTransferFacts Compared{TensixSFPUTransferKind::LaneWise,
+                                       0u,
+                                       0xffffffffu,
+                                       0xffffffffu,
+                                       true,
+                                       true,
+                                       true,
+                                       true,
+                                       {{2, 0xffffffffu}, {3, 0xffffffffu}}};
+      Compared.DestinationArgument = Destination;
+      Compared.OldArgument = Destination + 2;
+      Result.Transfers.push_back(std::move(Compared));
+    }
+  } else if (Opcode == RISCV::TTSFPTRANSP) {
+    // Each LReg is viewed as four rows of eight lanes. Transpose exchanges
+    // the register and row axes within L0..L3, using one pre-instruction
+    // snapshot for all four results. L4..L7 remain declared clobbers, not
+    // numerical results of this bound form.
+    for (unsigned Destination = 0; Destination != 4; ++Destination) {
+      TensixSFPUTransferFacts GroupResult{
+          TensixSFPUTransferKind::RegisterPermutation,
+          0u,
+          0xffffffffu,
+          0xffffffffu,
+          true,
+          true,
+          true,
+          true,
+          {{0, 0xffffffffu},
+           {1, 0xffffffffu},
+           {2, 0xffffffffu},
+           {3, 0xffffffffu}}};
+      GroupResult.DestinationArgument = Destination;
+      GroupResult.OldArgument = Destination;
+      for (unsigned Lane = 0; Lane != 32; ++Lane)
+        GroupResult.LaneSources.push_back(
+            {Lane / 8, Destination * 8 + Lane % 8});
+      Result.Transfers.push_back(std::move(GroupResult));
+    }
+  } else if (Transfer.Kind != TensixSFPUTransferKind::Unsupported) {
+    Transfer.DestinationArgument = 0;
+    if (Opcode == RISCV::TTSFPMOVAll) {
+      Transfer.SourceArgument = 1;
+    } else if (Opcode != RISCV::TTSFPLOADIFull) {
+      Transfer.OldArgument = 1;
+      if (Transfer.Kind == TensixSFPUTransferKind::Identity ||
+          Transfer.Kind == TensixSFPUTransferKind::MaskedIdentity ||
+          Transfer.Kind == TensixSFPUTransferKind::LanePermutation)
+        Transfer.SourceArgument = 2;
+    }
+    Result.Transfers.push_back(std::move(Transfer));
+  }
+  // Derive lane transitions only after validating the actual logical fields.
+  // Effective CC is !Enable || Flags; preserving or toggling Enable must not
+  // be confused with overwriting that effective predicate.
+  if (Opcode == RISCV::TTSFPENCC) {
+    const unsigned Value = *NativeFields[0];
+    const unsigned Mode = *NativeFields[1];
+    using Update = TensixSFPUConditionEnableUpdate;
+    Update Enable = Update::Preserve;
+    if (Mode & 2)
+      Enable = (Value & 1) ? Update::Enable : Update::Disable;
+    else if (Mode & 1)
+      Enable = Update::Invert;
+    Result.LaneControl =
+        TensixSFPUConditionUpdate{Enable, (Mode & 8) ? bool(Value & 2) : true};
+  } else if (Opcode == RISCV::TTSFPCONFIGLane) {
+    if (NativeFields.size() != 2 || !NativeFields[0] || !NativeFields[1] ||
+        *NativeFields[0] < 0 || *NativeFields[0] > 0xffff ||
+        *NativeFields[1] != 8)
+      return invalid("lane assignment requires its actual mask and mode 8");
+    auto Stage = inClass(Desc.implicit_uses(), RISCV::SFPRRegClassID);
+    if (Stage.size() != 1)
+      return invalid("lane assignment lacks its unique native source");
+    unsigned Source = Result.Values.size();
+    Result.Values.push_back(TensixFixedRegisterRef{*registerNumber(Stage[0])});
+    uint32_t Selected = 0;
+    for (unsigned Column = 0; Column != 8; ++Column)
+      Selected |= ((*NativeFields[0] >> (2 * Column)) & 1) << Column;
+    // Wormhole and Blackhole share this mode's low-18-bit assignment. The
+    // first eight source lanes and effective CC predicates are broadcast
+    // vertically; neither ROW_MASK nor numerical initializedness supplies
+    // a value or selects a different source lane here.
+    Result.LaneControl = TensixSFPULaneConfigAssign{Source, 8, Selected, 18};
+  } else if (Opcode == RISCV::TTSFPCONFIGReset) {
+    // Configuration low bits are cleared under the first eight columns' CC
+    // predicates, independently of the current Configuration ROW_MASK field.
+    Result.LaneControl = TensixSFPULaneConfigReset{
+        8, true, true, true, true, true, true, true, true, true};
+  } else if (Opcode == RISCV::TTSFPPUSHC) {
+    Result.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Push};
+  } else if (Opcode == RISCV::TTSFPPUSHCReplaceTop) {
+    Result.LaneControl = TensixSFPUConditionStackUpdate{
+        TensixSFPUConditionStackAction::ReplaceTop};
+  } else if (Opcode == RISCV::TTSFPPOPC) {
+    Result.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Pop};
+  } else if (Opcode == RISCV::TTSFPPOPCPeek) {
+    Result.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::Peek};
+  } else if (Opcode == RISCV::TTSFPPOPCAndTop) {
+    Result.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::AndTop};
+  } else if (Opcode == RISCV::TTSFPPOPCOrTop) {
+    Result.LaneControl =
+        TensixSFPUConditionStackUpdate{TensixSFPUConditionStackAction::OrTop};
+  } else if (Opcode == RISCV::TTSFPCOMPC) {
+    Result.LaneControl = TensixSFPUConditionStackUpdate{
+        TensixSFPUConditionStackAction::Complement};
+  }
+
+  // This is an explicit configuration receiver, independent of numerical
+  // transfer support. Adding a transfer must not silently prove that a new
+  // instruction or mode has no configuration requirements.
+  switch (Opcode) {
+  case RISCV::TTSFPSWAP: {
+    if (NativeFields.size() != 5 || !NativeFields[4] || *NativeFields[4] != 1)
+      break;
+    if (Desc.getNumDefs() != 2)
+      return invalid("swap configuration requires both native destinations");
+    // Ordinary min+max has two writable outputs. ENABLE_DEST_INDEX would
+    // turn the instruction into argmin+argmax, even below L4, and exchanging
+    // B/C inverts the comparison. These semantic controls are independent of
+    // TEN-2932, from which SFPSWAP is exempt.
+    Result.Configuration.emplace();
+    for (unsigned Destination = 0; Destination != 2; ++Destination)
+      for (auto Field : {TensixSFPUConfigurationField::EnableDestIndex,
+                         TensixSFPUConfigurationField::ExchangeSourceBAndC})
+        Result.Configuration->Requirements.push_back(
+            {Destination, Field, {0, 1, 2, 3, 4, 5, 6, 7}});
+    break;
+  }
+  case RISCV::TTSFPSHFT2: {
+    // Only SUBVEC_SHFLROR1 has a complete received contract here. Its actual
+    // destination remains subject to TEN-2932; the source and tied old do not
+    // select the affected register. Other modes need their own proof.
+    if (NativeFields.size() != 4 || !NativeFields[3] || *NativeFields[3] != 3)
+      break;
+    if (Desc.getNumDefs() != 1)
+      return invalid("configuration receiver requires one native destination");
+    Result.Configuration.emplace();
+    Result.Configuration->Requirements.push_back(
+        {0, TensixSFPUConfigurationField::EnableDestIndex, {4, 5, 6, 7}});
+    break;
+  }
+  case RISCV::TTSFPSETEXP:
+  case RISCV::TTSFPSETMAN:
+  case RISCV::TTSFPSETSGN:
+    if (NativeFields.size() != 5 || !NativeFields[4] ||
+        (NativeFields[4] != 0 && NativeFields[4] != 1 &&
+         !(Opcode == RISCV::TTSFPSETEXP && NativeFields[4] == 2)))
+      break;
+    [[fallthrough]];
+  case RISCV::TTSFPMOVAll:
+  case RISCV::TTSFPMOV:
+  case RISCV::TTSFPMOVNeg:
+  case RISCV::TTSFPMOVPRNGAdvance:
+  case RISCV::TTSFPIADD:
+  case RISCV::TTSFPISUB:
+  case RISCV::TTSFPAND:
+  case RISCV::TTSFPOR:
+  case RISCV::TTSFPXOR:
+  case RISCV::TTSFPADD:
+  case RISCV::TTSFPEXMAN:
+  case RISCV::TTSFPEXEXPPreserveCC:
+  case RISCV::TTSFPLUT:
+  case RISCV::TTSFPLUTFP32Six:
+  case RISCV::TTSFPSHFT:
+  case RISCV::TTSFPCAST:
+  case RISCV::TTSFPCASTDeterministic:
+  case RISCV::TTSFPSTOCHRNDI:
+  case RISCV::TTSFPSTOCHRNDV:
+  case RISCV::TTSFPMUL:
+  case RISCV::TTSFPMUL24:
+  case RISCV::TTSFPMAD:
+  case RISCV::TTSFPABS:
+  case RISCV::TTSFPLZPreserveCC:
+  case RISCV::TTSFPARECIP:
+  case RISCV::TTSFPNOT: {
+    // TEN-2932 affects the actual write, not its source or tied-old input.
+    // These selected descriptors have one write at bound ABI argument zero.
+    if (Desc.getNumDefs() != 1)
+      return invalid("configuration receiver requires one native destination");
+    Result.Configuration.emplace();
+    Result.Configuration->Requirements.push_back(
+        {0, TensixSFPUConfigurationField::EnableDestIndex, {4, 5, 6, 7}});
+    break;
+  }
+  case RISCV::TTSFPLOADI:
+    // SFPLOADI is exempt from TEN-2932, but only these received modes have a
+    // complete configuration contract in this bounded subset.
+    switch (*NativeFields[3]) {
+    case 0:
+    case 1:
+    case 2:
+    case 4:
+    case 8:
+    case 10:
+      Result.Configuration.emplace();
+      break;
+    default:
+      break;
+    }
+    break;
+  case RISCV::TTSFPLOADIFull:
+    Result.Configuration.emplace();
+    break;
+  case RISCV::TTSFPTRANSP:
+    // SFPTRANSP is exempt from TEN-2932. This native form has VD=0, so it
+    // also bypasses the configurable backdoor-load condition. Its actual CC
+    // and configuration reads remain architectural effects and lane inputs.
+    Result.Configuration.emplace();
+    break;
+  case RISCV::TTSFPLOADFull:
+  case RISCV::TTSFPLOAD:
+  case RISCV::TTSFPSTORE:
+    // SFPLOAD is exempt from TEN-2932; SFPSTORE reads its LReg operand and
+    // writes Dst. Neither has an EnableDestIndex restriction on that operand.
+    Result.Configuration.emplace();
+    break;
+  case RISCV::TTSFPSETCCLT:
+  case RISCV::TTSFPSETCCNE:
+  case RISCV::TTSFPSETCCGE:
+  case RISCV::TTSFPSETCCEQ: {
+    using Pred = TensixSFPUConditionPredicate;
+    Pred Predicate = Pred::Zero;
+    if (Opcode == RISCV::TTSFPSETCCLT)
+      Predicate = Pred::Negative;
+    else if (Opcode == RISCV::TTSFPSETCCNE)
+      Predicate = Pred::NonZero;
+    else if (Opcode == RISCV::TTSFPSETCCGE)
+      Predicate = Pred::NonNegative;
+    // Operand zero is the actual VC read, projected into the owning query
+    // below. These compare forms encode VD=0 and have no numerical write.
+    // ROW_MASK still affects the reached flags independently of admission.
+    Result.LaneControl = TensixSFPUConditionCompare{0, Predicate};
+    Result.Configuration.emplace();
+    break;
+  }
+  case RISCV::TTSFPENCC:
+  case RISCV::TTSFPGT:
+  case RISCV::TTSFPLE:
+  case RISCV::TTSFPCONFIGReset:
+  case RISCV::TTSFPCONFIGLane:
+  case RISCV::TTSFPNOP:
+    Result.Configuration.emplace();
+    break;
+  case RISCV::TTSFPPUSHC:
+  case RISCV::TTSFPPUSHCReplaceTop:
+  case RISCV::TTSFPPOPC:
+  case RISCV::TTSFPPOPCPeek:
+  case RISCV::TTSFPPOPCAndTop:
+  case RISCV::TTSFPPOPCOrTop:
+  case RISCV::TTSFPCOMPC:
+    // These selected forms encode VD=0, outside the configurable
+    // backdoor-load path. They have no numerical destination or lane-config
+    // prerequisite; stack depth and reaching CC remain independent facts.
+    Result.Configuration.emplace();
+    break;
+  default:
+    break;
+  }
+  return Result;
+}
+
+Expected<TensixBoundSFPUContract>
+RISCV::getTensixBoundSFPUContract(Intrinsic::ID ID,
+                                  ArrayRef<TensixBoundValue> Args) {
+  const bool Configure = ID == Intrinsic::tt_wh_sfpu_macro_configure_addi ||
+                         ID == Intrinsic::tt_bh_sfpu_macro_configure_addi;
+  const bool Launch = ID == Intrinsic::tt_wh_sfpu_load_macro_addi ||
+                      ID == Intrinsic::tt_bh_sfpu_load_macro_addi;
+  if (Configure || Launch) {
+    auto Fits = [&](unsigned I, unsigned Bits) {
+      return Args[I].Kind == ValueKind::Constant &&
+             isUIntN(Bits, Args[I].Constant);
+    };
+    if (Args.size() != (Configure ? 2u : 3u))
+      return invalid("SFPLOADMACRO argument tuple has the wrong size");
+    if (!Fits(Configure ? 0 : 2, 2))
+      return invalid("SFPLOADMACRO macro index must be in [0, 3]");
+
+    TensixBoundSFPUContract Contract;
+    Contract.ID = ID;
+    Contract.Roles.assign(Args.size(), Role::LogicalImmediate);
+    Contract.Configuration.emplace();
+    Contract.Effects = {{TensixSFPUState::CC, Access::Read},
+                        {TensixSFPUState::Issue, Access::ReadWrite}};
+    if (Configure) {
+      if (!Fits(1, 16))
+        return invalid("SFPLOADMACRO ADDI immediate must fit BF16 bits");
+      Contract.MacroConfiguration = {unsigned(Args[0].Constant),
+                                     uint16_t(Args[1].Constant), 0};
+      Contract.Effects.push_back(
+          {TensixSFPUState::Configuration, Access::ReadWrite});
+      Contract.Effects.push_back({TensixFixedRegisterRef{0}, Access::Clobber});
+      return Contract;
+    }
+
+    if (!Fits(0, 2))
+      return invalid("SFPLOADMACRO requires physical LReg[0..3]");
+    if (!Fits(1, 10) || (Args[1].Constant & 1))
+      return invalid("SFPLOADMACRO FP32 offset must be an even constant in "
+                     "[0, 1022]");
+    Contract.Roles[0] = Role::WriteLReg;
+    Contract.Roles[1] = Role::DstOffset;
+    Contract.Registers.push_back(
+        {0, Role::WriteLReg, {0, 1, 2, 3}, std::nullopt,
+         TensixSFPURegisterFootprint::StateDependent});
+    Contract.Effects.push_back({TensixBoundArgumentRef{0}, Access::Write});
+    Contract.Effects.push_back({TensixSFPUState::Configuration, Access::Read});
+    Contract.Effects.push_back({TensixSFPUState::Dst, Access::ReadWrite});
+    Contract.DstTransfer =
+        TensixSFPUDstTransferFacts{
+            TensixSFPUDstReadModifyWriteTransfer{0, unsigned(Args[2].Constant)},
+            1, 0, TensixSFPUDstFormat::Float32};
+    return Contract;
+  }
+  const auto *Info = getTensixBoundInstruction(ID);
+  if (!Info)
+    return invalid("unknown intrinsic");
+  if (Args.size() != Info->ArgumentCount)
+    return invalid("argument tuple has the wrong size");
+
+  // An unbound CONFIG destination is a symbolic parameter over all actual
+  // descriptors. Check their complete projected structure before returning a
+  // candidate set; no representative CReg becomes a provisional assignment.
+  if (Info->Pseudo == RISCV::PseudoTTBoundSFPCONFIGCReg &&
+      Args[1].Kind == ValueKind::UnboundRegister) {
+    std::optional<TensixBoundSFPUContract> Common;
+    SmallVector<uint32_t, 16> Candidates;
+    for (unsigned Opcode : ConfigOpcodes) {
+      auto Register = configRegister(Opcode);
+      if (!Register)
+        return Register.takeError();
+      uint32_t Number = *registerNumber(*Register);
+      SmallVector<TensixBoundValue, 4> Bound(Args);
+      Bound[1] = {ValueKind::Constant, Number};
+      auto Current = getTensixBoundSFPUContract(ID, Bound);
+      if (!Current)
+        return Current.takeError();
+      auto Destination = find_if(Current->Registers, [](const auto &Reg) {
+        return Reg.Argument == 1;
+      });
+      if (Destination == Current->Registers.end() ||
+          Destination->AllowedRegisters != SmallVector<uint32_t, 16>{Number} ||
+          Destination->FixedRegister != Number)
+        return invalid("configuration CReg descriptor has an unknown shape");
+      Destination->AllowedRegisters.clear();
+      Destination->FixedRegister.reset();
+      if (!Common) {
+        Common = std::move(*Current);
+      } else {
+        bool SameRegisters =
+            Common->Registers.size() == Current->Registers.size() &&
+            equal(Common->Registers, Current->Registers,
+                  [](const auto &A, const auto &B) {
+                    return A.Argument == B.Argument && A.Role == B.Role &&
+                           A.AllowedRegisters == B.AllowedRegisters &&
+                           A.FixedRegister == B.FixedRegister &&
+                           A.Footprint == B.Footprint;
+                  });
+        if (Common->Roles != Current->Roles || !SameRegisters ||
+            !sameConstraints(Common->Constraints, Current->Constraints) ||
+            !sameEffects(Common->Effects, Current->Effects))
+          return invalid(
+              "configuration descriptors have incompatible contracts");
+      }
+      Candidates.push_back(Number);
+    }
+    if (!Common)
+      return invalid("configuration has no native descriptor");
+    auto Destination = find_if(
+        Common->Registers, [](const auto &Reg) { return Reg.Argument == 1; });
+    Destination->AllowedRegisters = std::move(Candidates);
+    return std::move(*Common);
+  }
+
+  auto Mapping = mapInstruction(*Info, Args);
+  if (!Mapping)
+    return Mapping.takeError();
+  const auto &Native = Mapping->Native;
+  const auto &Desc = instructions().get(Native.Opcode);
+  if (Native.Operands.size() != Desc.getNumOperands())
+    return invalid("native operand projection differs from its descriptor");
+  TensixBoundSFPUContract Contract;
+  Contract.ID = ID;
+  Contract.Roles.assign(Args.size(), Role::LogicalImmediate);
+  // SFPMOV mode 2 copies all u32 lane contents independently of LaneEnabled.
+  // Other selected forms still require their live CC/configuration and bit
+  // coverage analysis, including CONFIG broadcasts and partial LOADI modes.
+  const auto Footprint = Native.Opcode == RISCV::TTSFPMOVAll
+                             ? TensixSFPURegisterFootprint::WholeRegister
+                             : TensixSFPURegisterFootprint::StateDependent;
+
+  auto FindRegister = [&](unsigned Argument) -> TensixBoundRegisterArgument * {
+    auto It = find_if(Contract.Registers, [Argument](const auto &Reg) {
+      return Reg.Argument == Argument;
+    });
+    return It == Contract.Registers.end() ? nullptr : &*It;
+  };
+  auto AddRegister =
+      [&](unsigned Argument, Role ArgumentRole, ArrayRef<uint32_t> Allowed,
+          std::optional<uint32_t> Fixed = std::nullopt) -> Error {
+    if (Argument >= Args.size() || Allowed.empty())
+      return invalid("unknown native register operand contract");
+    if (auto *Existing = FindRegister(Argument)) {
+      erase_if(Existing->AllowedRegisters,
+               [&](uint32_t Reg) { return !is_contained(Allowed, Reg); });
+      if (Existing->AllowedRegisters.empty() ||
+          (Fixed && Existing->FixedRegister &&
+           Fixed != Existing->FixedRegister))
+        return invalid("native operand has incompatible register classes");
+      if (Fixed)
+        Existing->FixedRegister = Fixed;
+      // Multiple native uses may narrow SFPRRead to SFPR (in-place forms).
+      if (ArgumentRole == Role::ReadLReg &&
+          Existing->Role == Role::ReadRegister)
+        Existing->Role = ArgumentRole;
+      return Error::success();
+    }
+    Contract.Registers.push_back({Argument, ArgumentRole,
+                                  SmallVector<uint32_t, 16>(Allowed), Fixed,
+                                  Footprint});
+    return Error::success();
+  };
+  auto ProjectOperand = [&](unsigned Argument, unsigned Operand) -> Error {
+    const auto &OperandInfo = Desc.operands()[Operand];
+    if (OperandInfo.RegClass < 0)
+      return invalid("register projection refers to a logical field");
+    SmallVector<uint32_t, 16> Allowed;
+    bool HasCReg = false;
+    for (MCRegister Reg : registers().getRegClass(OperandInfo.RegClass)) {
+      auto Number = registerNumber(Reg);
+      if (!Number)
+        return invalid("native SFPU operand has a non-SFPU register class");
+      Allowed.push_back(*Number);
+      HasCReg |= registers().getRegClass(RISCV::SFPCRRegClassID).contains(Reg);
+    }
+    bool Write = Operand < Desc.getNumDefs();
+    Role ArgumentRole = Write     ? Role::WriteLReg
+                        : HasCReg ? Role::ReadRegister
+                                  : Role::ReadLReg;
+    if (Mapping->RoleOverrides[Argument])
+      ArgumentRole = *Mapping->RoleOverrides[Argument];
+    if (Error E = AddRegister(Argument, ArgumentRole, Allowed))
+      return E;
+    appendTensixSFPUArchitecturalEffect(Contract.Effects,
+                                        TensixBoundArgumentRef{Argument},
+                                        Write ? Access::Write : Access::Read);
+    return Error::success();
+  };
+  for (auto [I, Operand] : enumerate(Native.Operands)) {
+    if (Desc.operands()[I].RegClass < 0)
+      continue;
+    if (!Operand.Argument)
+      return invalid("native register lacks an explicit ABI argument");
+    if (Error E = ProjectOperand(*Operand.Argument, I))
+      return std::move(E);
+  }
+  for (const RegisterAlias &Alias : Mapping->Aliases)
+    if (Error E = ProjectOperand(Alias.Argument, Alias.NativeOperand))
+      return std::move(E);
+  for (const FixedBinding &Binding : Mapping->Fixed) {
+    auto Number = registerNumber(Binding.Register);
+    if (!Number)
+      return invalid("fixed group has an unknown register");
+    if (Error E = AddRegister(Binding.Argument, Binding.ArgumentRole, {*Number},
+                              *Number))
+      return std::move(E);
+  }
+  sort(Contract.Registers,
+       [](const auto &A, const auto &B) { return A.Argument < B.Argument; });
+  for (const auto &Register : Contract.Registers)
+    Contract.Roles[Register.Argument] = Register.Role;
+  for (auto [I, Override] : enumerate(Mapping->RoleOverrides))
+    if (Override)
+      Contract.Roles[I] = *Override;
+
+  auto ArgumentsForOperand = [&](unsigned Operand) {
+    SmallVector<unsigned, 2> Result;
+    if (Native.Operands[Operand].Argument)
+      Result.push_back(*Native.Operands[Operand].Argument);
+    for (const RegisterAlias &Alias : Mapping->Aliases)
+      if (Alias.NativeOperand == Operand)
+        Result.push_back(Alias.Argument);
+    return Result;
+  };
+  auto Constraint = [&](TensixBoundConstraintKind Kind, unsigned First,
+                        unsigned Second) {
+    if (First == Second)
+      return;
+    if (Kind == TensixBoundConstraintKind::SameLocation && Second < First)
+      std::swap(First, Second);
+    if (!any_of(Contract.Constraints, [&](const auto &Existing) {
+          return Existing.Kind == Kind && Existing.FirstArgument == First &&
+                 Existing.SecondArgument == Second;
+        }))
+      Contract.Constraints.push_back({Kind, First, Second});
+  };
+  for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
+    if (Desc.operands()[I].RegClass < 0)
+      continue;
+    auto Arguments = ArgumentsForOperand(I);
+    for (unsigned Other : Arguments)
+      Constraint(TensixBoundConstraintKind::SameLocation, Arguments[0], Other);
+    int Tied = Desc.getOperandConstraint(I, MCOI::TIED_TO);
+    if (Tied >= 0)
+      for (unsigned First : Arguments)
+        for (unsigned Second : ArgumentsForOperand(Tied))
+          Constraint(TensixBoundConstraintKind::SameLocation, First, Second);
+    if (Desc.getOperandConstraint(I, MCOI::EARLY_CLOBBER) < 0)
+      continue;
+    for (unsigned J = 0; J != Desc.getNumOperands(); ++J) {
+      if (J == I || Desc.operands()[J].RegClass < 0 || int(J) == Tied ||
+          Desc.getOperandConstraint(J, MCOI::TIED_TO) == int(I))
+        continue;
+      for (unsigned First : Arguments)
+        for (unsigned Second : ArgumentsForOperand(J))
+          Constraint(TensixBoundConstraintKind::EarlyClobber, First, Second);
+    }
+  }
+
+  // A descriptor effect mapped to an explicit fixed-group ABI argument stays
+  // attached to that argument. Remaining hardware effects retain their fixed
+  // register/state identities; no fake source contents are manufactured.
+  auto ImplicitEffect = [&](MCRegister Register, bool Write) -> Error {
+    bool Mapped = false;
+    for (const FixedBinding &Binding : Mapping->Fixed) {
+      if (Binding.Register != Register)
+        continue;
+      bool Matches = Write ? Binding.Effect != Access::Read
+                           : Binding.Effect == Access::Read ||
+                                 Binding.Effect == Access::ReadWrite;
+      if (!Matches)
+        continue;
+      appendTensixSFPUArchitecturalEffect(
+          Contract.Effects, TensixBoundArgumentRef{Binding.Argument},
+          Write ? (Binding.Effect == Access::Clobber ? Access::Clobber
+                                                     : Access::Write)
+                : Access::Read);
+      Mapped = true;
+    }
+    if (Mapped)
+      return Error::success();
+    if (registers().getRegClass(RISCV::SFPRRegClassID).contains(Register))
+      return invalid(
+          "native LReg effect lacks an explicit fixed-group argument");
+    auto Resource = getTensixSFPUArchitecturalResource(Register);
+    if (!Resource)
+      return Resource.takeError();
+    appendTensixSFPUArchitecturalEffect(Contract.Effects, *Resource,
+                                        Write ? Access::Write : Access::Read);
+    return Error::success();
+  };
+  for (MCPhysReg Reg : Desc.implicit_uses())
+    if (Error E = ImplicitEffect(Reg, false))
+      return std::move(E);
+  for (MCPhysReg Reg : Desc.implicit_defs())
+    if (Error E = ImplicitEffect(Reg, true))
+      return std::move(E);
+
+  for (auto [I, Argument] : enumerate(Args)) {
+    const auto *Register = FindRegister(I);
+    if (Register) {
+      if (Argument.Kind == ValueKind::UnboundRegister)
+        continue;
+      if (Argument.Kind != ValueKind::Constant)
+        return invalid(
+            "physical operands and logical immediates must be constant");
+      if (Argument.Constant < 0 || Argument.Constant > UINT32_MAX ||
+          !is_contained(Register->AllowedRegisters,
+                        uint32_t(Argument.Constant))) {
+        if (Register->FixedRegister)
+          return invalid("fixed register group does not match the instruction");
+        return invalid(Register->Role == Role::WriteLReg
+                           ? "invalid writable LReg operand"
+                           : "invalid read register operand class");
+      }
+      continue;
+    }
+    if (Argument.Kind == ValueKind::Constant)
+      continue;
+    if (Argument.Kind != ValueKind::DynamicScalar ||
+        Contract.Roles[I] != Role::DstOffset)
+      return invalid(
+          "physical operands and logical immediates must be constant");
+  }
+  for (const auto &Relation : Contract.Constraints) {
+    const auto &First = Args[Relation.FirstArgument];
+    const auto &Second = Args[Relation.SecondArgument];
+    if (First.Kind == ValueKind::UnboundRegister ||
+        Second.Kind == ValueKind::UnboundRegister)
+      continue;
+    bool Same = First.Constant == Second.Constant;
+    if (Relation.Kind == TensixBoundConstraintKind::SameLocation) {
+      if (!Same)
+        return invalid("destructive tie requires identical physical registers");
+    } else {
+      auto Overlap =
+          tensixSFPURegistersOverlap(First.Constant, Second.Constant);
+      if (!Overlap)
+        return Overlap.takeError();
+      if (*Overlap)
+        return invalid("early-clobber or distinct operands overlap");
+    }
+  }
+
+  MCInst Fields;
+  SmallVector<std::optional<int64_t>, 12> NativeFields;
+  Fields.setOpcode(Native.Opcode);
+  for (auto [I, Operand] : enumerate(Native.Operands)) {
+    if (Desc.operands()[I].RegClass >= 0) {
+      // Absent register slot, not a selected physical or virtual placeholder.
+      Fields.addOperand(MCOperand());
+      NativeFields.push_back(std::nullopt);
+      continue;
+    }
+    int64_t Value = Operand.Constant;
+    if (Operand.Argument) {
+      const auto &Argument = Args[*Operand.Argument];
+      // This query checks the static tuple only. Dynamic offset definedness
+      // and range remain independent ingress/program obligations.
+      Value = Argument.Kind == ValueKind::DynamicScalar ? 0 : Argument.Constant;
+    }
+    Fields.addOperand(MCOperand::createImm(Value));
+    NativeFields.push_back(Operand.Argument && Args[*Operand.Argument].Kind ==
+                                                   ValueKind::DynamicScalar
+                               ? std::nullopt
+                               : std::optional<int64_t>(Value));
+  }
+  if (Error E = Info->Architecture == TensixSFPUArchitecture::Wormhole
+                    ? verifyTensixWormholeInstruction(Fields, instructions())
+                    : verifyTensixMCInstructionFields(Fields, instructions()))
+    return std::move(E);
+  auto Semantics = getTensixSFPUInstructionSemantics(
+      Native.Opcode, NativeFields, Info->Architecture);
+  if (!Semantics)
+    return Semantics.takeError();
+  auto Argument = [&](unsigned Value, bool Write) -> Expected<unsigned> {
+    if (Value >= Semantics->Values.size())
+      return invalid("native semantic value is out of range");
+    if (const auto *Explicit = std::get_if<TensixSFPUInstructionOperandRef>(
+            &Semantics->Values[Value])) {
+      if (Explicit->Operand >= Native.Operands.size() ||
+          !Native.Operands[Explicit->Operand].Argument)
+        return invalid("native semantic value has no actual bound argument");
+      return *Native.Operands[Explicit->Operand].Argument;
+    }
+    const auto Fixed =
+        std::get<TensixFixedRegisterRef>(Semantics->Values[Value]);
+    for (const auto &Binding : Mapping->Fixed)
+      if (registerNumber(Binding.Register) == Fixed.Number &&
+          (Write ? Binding.Effect == Access::Write ||
+                       Binding.Effect == Access::ReadWrite
+                 : Binding.Effect == Access::Read ||
+                       Binding.Effect == Access::ReadWrite))
+        return Binding.Argument;
+    return invalid("native fixed transfer has no actual bound group argument");
+  };
+  for (auto Transfer : Semantics->Transfers) {
+    auto Destination = Argument(Transfer.DestinationArgument, true);
+    if (!Destination)
+      return Destination.takeError();
+    Transfer.DestinationArgument = *Destination;
+    auto Read = [&](std::optional<unsigned> &Value) -> Error {
+      if (!Value)
+        return Error::success();
+      auto Mapped = Argument(*Value, false);
+      if (!Mapped)
+        return Mapped.takeError();
+      Value = *Mapped;
+      return Error::success();
+    };
+    if (Error E = Read(Transfer.SourceArgument))
+      return std::move(E);
+    if (Error E = Read(Transfer.OldArgument))
+      return std::move(E);
+    for (auto &Input : Transfer.Inputs) {
+      auto Mapped = Argument(Input.Argument, false);
+      if (!Mapped)
+        return Mapped.takeError();
+      Input.Argument = *Mapped;
+    }
+    for (auto &Source : Transfer.LaneSources) {
+      auto Mapped = Argument(Source.Argument, false);
+      if (!Mapped)
+        return Mapped.takeError();
+      Source.Argument = *Mapped;
+    }
+    Contract.Transfers.push_back(std::move(Transfer));
+  }
+  if (Semantics->DstTransfer) {
+    auto Transfer = *Semantics->DstTransfer;
+    // Scalar coordinates retain their actual ABI identity independently of
+    // the packet value map, including when the actual offset is dynamic.
+    unsigned Offset = Transfer.OffsetArgument;
+    if (Offset >= Native.Operands.size() || !Native.Operands[Offset].Argument)
+      return invalid("native Dst offset has no actual bound argument");
+    unsigned OffsetArgument = *Native.Operands[Offset].Argument;
+    if (OffsetArgument >= Contract.Roles.size() ||
+        Contract.Roles[OffsetArgument] != Role::DstOffset)
+      return invalid("native Dst offset is not a bound scalar coordinate");
+    Transfer.OffsetArgument = OffsetArgument;
+    auto Packet = [&](unsigned &Value, bool Write) -> Error {
+      auto Mapped = Argument(Value, Write);
+      if (!Mapped)
+        return Mapped.takeError();
+      Value = *Mapped;
+      return Error::success();
+    };
+    if (auto *Load = std::get_if<TensixSFPUDstLoadTransfer>(&Transfer.Packet)) {
+      if (Error E = Packet(Load->DestinationValue, true))
+        return std::move(E);
+      if (Load->OldValue)
+        if (Error E = Packet(*Load->OldValue, false))
+          return std::move(E);
+    } else {
+      auto &Store = std::get<TensixSFPUDstStoreTransfer>(Transfer.Packet);
+      if (Error E = Packet(Store.SourceValue, false))
+        return std::move(E);
+    }
+    Contract.DstTransfer = std::move(Transfer);
+  }
+  Contract.LaneControl = Semantics->LaneControl;
+  unsigned *LaneSource = nullptr;
+  if (auto *Assign =
+          std::get_if<TensixSFPULaneConfigAssign>(&Contract.LaneControl))
+    LaneSource = &Assign->SourceValue;
+  else if (auto *Compare =
+               std::get_if<TensixSFPUConditionCompare>(&Contract.LaneControl))
+    LaneSource = &Compare->SourceValue;
+  if (LaneSource) {
+    auto Mapped = Argument(*LaneSource, false);
+    if (!Mapped)
+      return Mapped.takeError();
+    *LaneSource = *Mapped;
+  }
+  if (Semantics->Configuration) {
+    Contract.Configuration = *Semantics->Configuration;
+    for (auto &Requirement : Contract.Configuration->Requirements) {
+      auto Mapped = Argument(Requirement.Argument, true);
+      if (!Mapped)
+        return Mapped.takeError();
+      Requirement.Argument = *Mapped;
+    }
+  }
+  return Contract;
+}
+
+Error RISCV::verifyTensixBoundSFPUOperands(
+    Intrinsic::ID ID, ArrayRef<TensixBoundValue> Arguments) {
+  for (const auto &Argument : Arguments)
+    if (Argument.Kind == ValueKind::UnboundRegister)
+      return invalid(
+          "physical operands and logical immediates must be constant");
+  auto Contract = getTensixBoundSFPUContract(ID, Arguments);
+  if (!Contract)
+    return Contract.takeError();
+  return Error::success();
+}
+
+unsigned RISCV::selectTensixSFPUDescriptor(unsigned Opcode, int64_t Modifier) {
+  if (Opcode == RISCV::TTSFPCAST &&
+      (Modifier == 0 || Modifier == 2 || Modifier == 3))
+    return RISCV::TTSFPCASTDeterministic;
+  if (Opcode == RISCV::TTSFPEXEXP && (Modifier == 0 || Modifier == 1))
+    return RISCV::TTSFPEXEXPPreserveCC;
+  if (Opcode == RISCV::TTSFPLZ && (Modifier == 0 || Modifier == 4))
+    return RISCV::TTSFPLZPreserveCC;
+  return Opcode;
+}
+
+Expected<TensixBoundNativeInstruction>
+RISCV::getTensixBoundNativeInstruction(Intrinsic::ID ID,
+                                       ArrayRef<TensixBoundValue> Arguments) {
+  const auto *Info = getTensixBoundInstruction(ID);
+  if (!Info)
+    return invalid("intrinsic has no single native instruction projection");
+  if (Error E = verifyTensixBoundSFPUOperands(ID, Arguments))
+    return std::move(E);
+  auto Mapping = mapInstruction(*Info, Arguments);
+  if (!Mapping)
+    return Mapping.takeError();
+  return std::move(Mapping->Native);
+}
+
+Expected<bool> RISCV::tensixSFPURegistersOverlap(uint32_t First,
+                                                 uint32_t Second) {
+  const auto &MRI = registers();
+  MCRegister FirstRegister, SecondRegister;
+  for (MCRegister Reg : MRI.getRegClass(RISCV::SFPRReadRegClassID)) {
+    if (registerNumber(Reg) == First)
+      FirstRegister = Reg;
+    if (registerNumber(Reg) == Second)
+      SecondRegister = Reg;
+  }
+  if (!FirstRegister || !SecondRegister)
+    return invalid("invalid architectural register number");
+  return MRI.regsOverlap(FirstRegister, SecondRegister);
+}
+
+Expected<TensixSFPURegisterGeometry>
+RISCV::getTensixSFPURegisterGeometry(uint32_t Number) {
+  const auto &MRI = registers();
+  MCRegister Register;
+  for (MCRegister Reg : MRI.getRegClass(RISCV::SFPRReadRegClassID))
+    if (registerNumber(Reg) == Number)
+      Register = Reg;
+  if (!Register)
+    return invalid("invalid architectural register number");
+  std::optional<TensixSFPURegisterGeometry> Geometry;
+  for (const auto &Entry : RISCVTensixRegisterGeometryTable) {
+    const auto &Class = MRI.getRegClass(Entry.ClassID);
+    if (!Class.contains(Register))
+      continue;
+    if (!Entry.NumLanes || !Entry.BitsPerLane ||
+        uint64_t(Entry.NumLanes) * Entry.BitsPerLane != Class.getSizeInBits())
+      return invalid("native register class has unsupported geometry");
+    TensixSFPURegisterGeometry Current{Entry.NumLanes, Entry.BitsPerLane};
+    if (Geometry && (Geometry->NumLanes != Current.NumLanes ||
+                     Geometry->BitsPerLane != Current.BitsPerLane))
+      return invalid("native register classes have incompatible geometry");
+    Geometry = Current;
+  }
+  if (!Geometry)
+    return invalid("native register geometry is unavailable");
+  return *Geometry;
+}
+
+Expected<TensixSFPURegisterContents>
+RISCV::getTensixSFPURegisterContents(uint32_t Number) {
+  auto Geometry = getTensixSFPURegisterGeometry(Number);
+  if (!Geometry)
+    return Geometry.takeError();
+  MCRegister Register = getTensixSFPURegister(Number);
+  auto Entry =
+      find_if(RISCVTensixRegisterContentsTable, [&](const auto &Entry) {
+        return Entry.RegisterID == Register.id();
+      });
+  if (Entry == std::end(RISCVTensixRegisterContentsTable))
+    return invalid("native register contents are unavailable");
+  return Entry->ImmutableInitialized
+             ? TensixSFPURegisterContents::ImmutableInitialized
+             : TensixSFPURegisterContents::Unknown;
+}

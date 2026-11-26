@@ -195,15 +195,24 @@ unsigned RISCVSubtarget::getLoadLatency() const {
   return CLOpts.sched_load_latency.value_or(getSchedModel().LoadLatency);
 }
 
+Error RISCVSubtarget::verifyRVVVectorBounds(unsigned Min, unsigned Max) const {
+  if (Min != -1U && Min != 0 && Min < ZvlLen)
+    return createStringError("riscv-v-vector-bits-min specified is lower "
+                             "than the Zvl*b limitation");
+  if (Max != 0 && Max < ZvlLen)
+    return createStringError("riscv-v-vector-bits-max specified is lower "
+                             "than the Zvl*b limitation");
+  return Error::success();
+}
+
 unsigned RISCVSubtarget::getMaxRVVVectorSizeInBits() const {
   assert(hasVInstructions() &&
          "Tried to get vector length without Zve or V extension support!");
 
   // ZvlLen specifies the minimum required vlen. The upper bound provided by
   // riscv-v-vector-bits-max should be no less than it.
-  if (RVVVectorBitsMax != 0 && RVVVectorBitsMax < ZvlLen)
-    report_fatal_error("riscv-v-vector-bits-max specified is lower "
-                       "than the Zvl*b limitation");
+  if (Error E = verifyRVVVectorBounds(0, RVVVectorBitsMax))
+    report_fatal_error(Twine(toString(std::move(E))));
 
   return RVVVectorBitsMax;
 }
@@ -217,9 +226,8 @@ unsigned RISCVSubtarget::getMinRVVVectorSizeInBits() const {
 
   // ZvlLen specifies the minimum required vlen. The lower bound provided by
   // riscv-v-vector-bits-min should be no less than it.
-  if (RVVVectorBitsMin != 0 && RVVVectorBitsMin < ZvlLen)
-    report_fatal_error("riscv-v-vector-bits-min specified is lower "
-                       "than the Zvl*b limitation");
+  if (Error E = verifyRVVVectorBounds(RVVVectorBitsMin, 0))
+    report_fatal_error(Twine(toString(std::move(E))));
 
   return RVVVectorBitsMin;
 }
@@ -248,8 +256,8 @@ void RISCVSubtarget::mirFileLoaded(MachineFunction &MF) const {
     MFI.computeMaxCallFrameSize(MF);
 }
 
-  /// Enable use of alias analysis during code generation (during MI
-  /// scheduling, DAGCombine, etc.).
+/// Enable use of alias analysis during code generation (during MI
+/// scheduling, DAGCombine, etc.).
 bool RISCVSubtarget::useAA() const { return CLOpts.use_aa; }
 
 unsigned RISCVSubtarget::getMinimumJumpTableEntries() const {

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RISCVRegisterInfo.h"
+#include "RISCVMachineFunctionInfo.h"
 #include "RISCV.h"
 #include "RISCVSubtarget.h"
 #include "llvm/ADT/SmallSet.h"
@@ -166,6 +167,14 @@ BitVector RISCVRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   const RISCVFrameLowering *TFI = getFrameLowering(MF);
   BitVector Reserved(getNumRegs());
   auto &Subtarget = MF.getSubtarget<RISCVSubtarget>();
+  for (MCPhysReg Reg : RISCV::SFPRRegClass)
+    markSuperRegs(Reserved, Reg);
+  for (MCPhysReg Reg : RISCV::SFPCRRegClass)
+    markSuperRegs(Reserved, Reg);
+  for (MCPhysReg Reg : RISCV::SFPStageRegClass)
+    markSuperRegs(Reserved, Reg);
+  for (MCPhysReg Reg : RISCV::SFPStateRegClass)
+    markSuperRegs(Reserved, Reg);
 
   // Mark any GPRs requested to be reserved as such.
   const std::bitset<32> &UserReservedXRegs = Subtarget.getUserReservedXRegs();

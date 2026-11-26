@@ -16,19 +16,25 @@
 #include "MCTargetDesc/RISCVMCTargetDesc.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringTable.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Target/RISCV/RISCVTensix.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 #include "llvm/TargetParser/RISCVTargetParser.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
 
 namespace llvm {
 
+class MCContext;
 class MCSubtargetInfo;
+class MCInst;
+class MCInstrInfo;
+class MCRegisterInfo;
 
 namespace RISCVOp {
 enum OperandType : unsigned {
@@ -963,6 +969,10 @@ inline const PseudoInfo *getBaseInfo(unsigned BaseInstr, uint8_t VLMul,
 } // namespace RISCVVInversePseudosTable
 
 namespace RISCV {
+
+Expected<bool> verifyTensixTargetFeatures(const Triple &TT, StringRef CPU,
+                                         StringRef Features);
+Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &Features);
 struct VLSEGPseudo {
   uint16_t NF : 4;
   uint16_t Masked : 1;
@@ -1036,6 +1046,81 @@ struct NDSVLNPseudo {
   uint16_t Pseudo;
 };
 
+struct TensixEncoding {
+  unsigned Opcode;
+  uint8_t RawOpcode;
+  uint8_t OpcodeShift;
+  uint8_t ConfigShift;
+  uint8_t ConfigCount;
+  uint8_t ValueBits;
+  uint8_t ModeOperandIndex;
+  uint16_t AllowedModes;
+  bool WormholeSupported;
+};
+
+struct TensixWormholeField {
+  unsigned Opcode;
+  uint8_t Index;
+  uint32_t MinValue;
+  uint32_t MaxValue;
+};
+
+struct TensixWormholeFormField {
+  unsigned Opcode;
+  uint8_t Form;
+  uint8_t Index;
+  bool Fixed;
+  uint32_t Value;
+};
+
+struct TensixMachineInfo {
+  unsigned Opcode;
+  unsigned PortOpcode;
+  unsigned MopOpcode;
+  unsigned IntrinsicID;
+  bool WritesDst;
+  uint8_t RawOpcode;
+  uint16_t WormholeDynamicFields;
+  bool WormholeMopSupported;
+};
+
+// Bit layout of an ordinary instruction-port word, derived from the MC encoder.
+// Base holds the opcode with all logical fields zero; Shifts[I] is the lowest
+// bit of logical field I.
+struct TensixPortLayout {
+  uint32_t Base = 0;
+  SmallVector<uint8_t, 16> Shifts;
+};
+
+enum class TensixInstructionPort : uint8_t {
+  Local = 0,
+  BriscToTrisc1 = 1,
+  BriscToTrisc2 = 2,
+};
+
+uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port);
+// Ordinary (non-REPLAY/MOP) instruction-port issue receives a precomputed word.
+bool isTensixFieldPortOpcode(unsigned MachineOpcode);
+// Index of the immediate port operand of a Tensix instruction-port pseudo.
+unsigned getTensixPortOperandIndex(const MCInstrDesc &Desc);
+Expected<TensixPortLayout> getTensixPortLayout(unsigned MachineOpcode,
+                                               const MCInstrInfo &MCII,
+                                               const MCSubtargetInfo &STI,
+                                               MCContext &Context);
+// Validate only logical fields. Register slots may be absent for symbolic
+// bound-contract queries; this is not complete MC instruction admission.
+Error verifyTensixMCInstructionFields(const MCInst &MI,
+                                      const MCInstrInfo &MCII);
+// WH preflight and MC admission consume the same private TableGen facts.
+bool isTensixWormholeIntrinsic(Intrinsic::ID ID);
+Error verifyTensixWormholeInstruction(const MCInst &MI,
+                                      const MCInstrInfo &MCII);
+Expected<FeatureBitset> getTensixTargetFeatureBits(const Triple &TT,
+                                                 StringRef CPU,
+                                                 StringRef Features);
+Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
+                                const MCRegisterInfo &MRI, bool Wormhole);
+
 #define GET_RISCVVSSEGTable_DECL
 #define GET_RISCVVLSEGTable_DECL
 #define GET_RISCVVLXSEGTable_DECL
@@ -1045,6 +1130,12 @@ struct NDSVLNPseudo {
 #define GET_RISCVVLXTable_DECL
 #define GET_RISCVVSXTable_DECL
 #define GET_RISCVNDSVLNTable_DECL
+#define GET_RISCVTensixEncodingTable_DECL
+#define GET_RISCVTensixInstructionTable_DECL
+#define GET_RISCVTensixMachineTable_DECL
+#define GET_RISCVTensixFieldTable_DECL
+#define GET_RISCVTensixWormholeFieldTable_DECL
+#define GET_RISCVTensixWormholeFormFieldTable_DECL
 #include "RISCVGenSearchableTables.inc"
 
 inline bool isValidYBNDSWImm(int64_t Imm) {

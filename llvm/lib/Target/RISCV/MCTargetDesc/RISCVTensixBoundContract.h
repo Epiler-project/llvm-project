@@ -1,0 +1,83 @@
+//===-- RISCVTensixBoundContract.h ------------------------------*- C++ -*-===//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#ifndef LLVM_LIB_TARGET_RISCV_MCTARGETDESC_RISCVTENSIXBOUNDCONTRACT_H
+#define LLVM_LIB_TARGET_RISCV_MCTARGETDESC_RISCVTENSIXBOUNDCONTRACT_H
+
+#include "llvm/MC/MCRegister.h"
+#include "llvm/Target/RISCV/RISCVTensix.h"
+#include <memory>
+
+namespace llvm {
+class MCInstrInfo;
+class MCRegisterInfo;
+
+namespace RISCV {
+// Reuse the target's generated descriptors without global target registration.
+std::unique_ptr<MCInstrInfo> createTensixBoundMCInstrInfo();
+std::unique_ptr<MCRegisterInfo> createTensixBoundMCRegisterInfo();
+
+// Intrinsic/ingress identity and native projection are shared with lowering.
+// These private IDs and operand positions never cross the public query ABI.
+struct TensixBoundInstruction {
+  Intrinsic::ID ID;
+  TensixSFPUArchitecture Architecture;
+  unsigned Pseudo;
+  unsigned ArgumentCount;
+  std::optional<unsigned> DstOffset = std::nullopt;
+};
+const TensixBoundInstruction *getTensixBoundInstruction(Intrinsic::ID ID);
+const TensixBoundInstruction *
+getTensixBoundInstructionForPseudo(unsigned Opcode,
+                                   TensixSFPUArchitecture Architecture);
+
+struct TensixBoundNativeOperand {
+  std::optional<unsigned> Argument;
+  int64_t Constant = 0;
+};
+struct TensixBoundNativeInstruction {
+  unsigned Opcode;
+  SmallVector<TensixBoundNativeOperand, 6> Operands;
+};
+// Complete validation precedes this projection. A dynamic offset remains an
+// argument and requires only ordinary GPR scratch in the machine receiver.
+Expected<TensixBoundNativeInstruction>
+getTensixBoundNativeInstruction(Intrinsic::ID ID,
+                                ArrayRef<TensixBoundValue> Arguments);
+// Select the exact native effects descriptor from encoded fields. Unknown or
+// invalid modifiers stay on the canonical descriptor's validation path.
+unsigned selectTensixSFPUDescriptor(unsigned Opcode, int64_t Modifier);
+// Native semantics are evaluated once, after each actual ABI has validated
+// its native fields. Value indices name explicit MC operands or genuine fixed
+// group registers. Each ABI reprojects those identities through its real map.
+struct TensixSFPUInstructionOperandRef {
+  unsigned Operand;
+};
+using TensixSFPUInstructionValue =
+    std::variant<TensixSFPUInstructionOperandRef, TensixFixedRegisterRef>;
+struct TensixSFPUInstructionSemantics {
+  SmallVector<TensixSFPUInstructionValue, 12> Values;
+  SmallVector<TensixSFPUTransferFacts, 4> Transfers;
+  TensixSFPULaneControl LaneControl;
+  std::optional<TensixSFPUConfigurationFacts> Configuration;
+  // Packet indices address Values; OffsetArgument names the actual native
+  // scalar operand. Each ABI maps the two namespaces independently.
+  std::optional<TensixSFPUDstTransferFacts> DstTransfer;
+};
+Expected<TensixSFPUInstructionSemantics>
+getTensixSFPUInstructionSemantics(unsigned Opcode,
+                                  ArrayRef<std::optional<int64_t>> NativeFields,
+                                  TensixSFPUArchitecture Architecture);
+
+MCRegister getTensixSFPURegister(uint32_t Number);
+// Pure architectural descriptor projection shared by bound and contents ABI.
+// Neither helper chooses registers or constructs a bound operand tuple.
+Expected<TensixSFPUResource>
+getTensixSFPUArchitecturalResource(MCRegister Register);
+void appendTensixSFPUArchitecturalEffect(
+    SmallVectorImpl<TensixSFPUArchitecturalEffect> &Effects,
+    TensixSFPUResource Resource, TensixSFPUAccess Access);
+} // namespace RISCV
+} // namespace llvm
+
+#endif

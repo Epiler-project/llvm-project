@@ -122,6 +122,27 @@ static DecodeStatus DecodeSingleRegister(MCInst &Inst, uint32_t RegNo,
   return MCDisassembler::Success;
 }
 
+template <unsigned RegClassID>
+static DecodeStatus DecodeTensixRegisterClass(MCInst &Inst, uint32_t RegNo,
+                                              uint64_t Address,
+                                              const MCDisassembler *Decoder) {
+  const MCRegisterInfo &MRI = *Decoder->getContext().getRegisterInfo();
+  for (MCPhysReg Reg : MRI.getRegClass(RegClassID)) {
+    if (MRI.getEncodingValue(Reg) != RegNo)
+      continue;
+    Inst.addOperand(MCOperand::createReg(Reg));
+    return MCDisassembler::Success;
+  }
+  return MCDisassembler::Fail;
+}
+
+constexpr auto DecodeTensixLReg =
+    DecodeTensixRegisterClass<RISCV::SFPRRegClassID>;
+[[maybe_unused]] constexpr auto DecodeTensixCReg =
+    DecodeTensixRegisterClass<RISCV::SFPCRRegClassID>;
+constexpr auto DecodeTensixReadReg =
+    DecodeTensixRegisterClass<RISCV::SFPRReadRegClassID>;
+
 template <unsigned PhysReg, unsigned Encoding>
 static DecodeStatus DecodeSingleRegister(MCInst &Inst,
                                          const MCDisassembler *Decoder) {
@@ -722,6 +743,38 @@ DecodeStatus RISCVDisassembler::getInstruction(MCInst &MI, uint64_t &Size,
                                                uint64_t Address,
                                                raw_ostream &CS) const {
   CommentStream = &CS;
+  if (Bytes.empty()) {
+    Size = 0;
+    return MCDisassembler::Fail;
+  }
+  if ((STI.hasFeature(RISCV::FeatureVendorXTTTensixBH) ||
+       STI.hasFeature(RISCV::FeatureVendorXTTTensixWH)) &&
+      (Bytes[0] & 0b11) != 0b11) {
+    // Tensix direct issue repurposes compressed space for full 32-bit words.
+    // Never consume half of an unknown or truncated Tensix instruction.
+    Size = Bytes.size() >= 4 ? 4 : 0;
+    if (!Size)
+      return MCDisassembler::Fail;
+    uint32_t Insn = support::endian::read32le(Bytes.data());
+    const uint8_t *TensixTable =
+        STI.hasFeature(RISCV::FeatureVendorXTTTensixWH)
+            ? DecoderTableTensix_TensixWormholeEncoding32
+            : DecoderTableTensix32;
+    DecodeStatus Result = MCDisassembler::Fail;
+    if (STI.hasFeature(RISCV::FeatureVendorXTTTensixWH))
+      Result = decodeInstruction(DecoderTableTensixWormholeUnpacr32, MI,
+                                 Insn, Address, this, STI);
+    if (Result == MCDisassembler::Fail)
+      Result = decodeInstruction(TensixTable, MI, Insn, Address, this, STI);
+    if (Result != MCDisassembler::Fail)
+      if (Error E = RISCV::verifyTensixMCInstruction(
+              MI, *MCII, *getContext().getRegisterInfo(),
+              STI.hasFeature(RISCV::FeatureVendorXTTTensixWH))) {
+        consumeError(std::move(E));
+        return MCDisassembler::Fail;
+      }
+    return Result;
+  }
   // It's a 16 bit instruction if bit 0 and 1 are not 0b11.
   if ((Bytes[0] & 0b11) != 0b11)
     return getInstruction16(MI, Size, Bytes, Address, CS);

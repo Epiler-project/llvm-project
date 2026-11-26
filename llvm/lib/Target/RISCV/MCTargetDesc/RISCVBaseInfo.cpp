@@ -13,9 +13,17 @@
 
 #include "RISCVBaseInfo.h"
 #include "RISCVMCAsmInfo.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/IntrinsicsTT.h"
+#include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/Support/Endian.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -47,7 +55,399 @@ namespace RISCV {
 #define GET_RISCVVLXTable_IMPL
 #define GET_RISCVVSXTable_IMPL
 #define GET_RISCVNDSVLNTable_IMPL
+#define GET_RISCVTensixEncodingTable_IMPL
+#define GET_RISCVTensixInstructionTable_IMPL
+#define GET_RISCVTensixMachineTable_IMPL
+#define GET_RISCVTensixFieldTable_IMPL
+#define GET_RISCVTensixWormholeFieldTable_IMPL
+#define GET_RISCVTensixWormholeFormFieldTable_IMPL
 #include "RISCVGenSearchableTables.inc"
+
+uint32_t getTensixInstructionPortAddress(TensixInstructionPort Port) {
+  switch (Port) {
+  case TensixInstructionPort::Local:
+    return 0xffe40000;
+  case TensixInstructionPort::BriscToTrisc1:
+    return 0xffe50000;
+  case TensixInstructionPort::BriscToTrisc2:
+    return 0xffe60000;
+  }
+  llvm_unreachable("unknown Tensix instruction port");
+}
+
+bool isTensixFieldPortOpcode(unsigned MachineOpcode) {
+  return MachineOpcode == TTREPLAY || MachineOpcode == TTMOP ||
+         MachineOpcode == TTMOP_CFG;
+}
+
+unsigned getTensixPortOperandIndex(const MCInstrDesc &Desc) {
+  return Desc.getNumDefs();
+}
+
+Error verifyTensixFeatureBits(const Triple &TT, const FeatureBitset &FeatureBits) {
+  bool Blackhole = FeatureBits[RISCV::FeatureVendorXTTTensixBH];
+  bool Wormhole = FeatureBits[RISCV::FeatureVendorXTTTensixWH];
+  if (Blackhole && Wormhole)
+    return createStringError("XTTTensixBH and XTTTensixWH are mutually exclusive");
+  if (Blackhole || Wormhole) {
+    StringRef Feature = Wormhole ? "XTTTensixWH" : "XTTTensixBH";
+    if (TT.getArch() != Triple::riscv32 || !TT.isLittleEndian())
+      return createStringError(Feature + " requires RV32 little-endian");
+    if (FeatureBits[RISCV::FeatureStdExtC] ||
+        FeatureBits[RISCV::FeatureStdExtZca] ||
+        FeatureBits[RISCV::FeatureStdExtZcb] ||
+        FeatureBits[RISCV::FeatureStdExtZcd] ||
+        FeatureBits[RISCV::FeatureStdExtZce] ||
+        FeatureBits[RISCV::FeatureStdExtZcf] ||
+        FeatureBits[RISCV::FeatureStdExtZclsd] ||
+        FeatureBits[RISCV::FeatureStdExtZcmop] ||
+        FeatureBits[RISCV::FeatureStdExtZcmp] ||
+        FeatureBits[RISCV::FeatureStdExtZcmt])
+      return createStringError(Feature + " is incompatible with C/Zc extensions");
+    if (FeatureBits[RISCV::FeatureStdExtV] ||
+        FeatureBits[RISCV::FeatureStdExtZve32x] ||
+        FeatureBits[RISCV::FeatureStdExtZve32f] ||
+        FeatureBits[RISCV::FeatureStdExtZve64x] ||
+        FeatureBits[RISCV::FeatureStdExtZve64f] ||
+        FeatureBits[RISCV::FeatureStdExtZve64d])
+      return createStringError(
+          Feature + " is incompatible with V/Zve extensions");
+  }
+  return Error::success();
+}
+
+const TensixInstructionInfo *getTensixInstructionByName(StringRef Name) {
+  return lookupTensixInstructionByName(Name.upper());
+}
+
+StringRef TensixInstructionInfo::getName() const {
+  return getTensixInstructionInfoStr(Name);
+}
+
+StringRef TensixInstructionField::getName() const {
+  return getTensixInstructionFieldStr(Name);
+}
+
+const TensixInstructionInfo *
+getTensixInstructionByIntrinsic(Intrinsic::ID ID) {
+  if (const auto *Info = lookupTensixInstruction(ID))
+    return Info;
+  if (const auto *Info = lookupTensixInstructionByPort(ID))
+    return Info;
+  return lookupTensixInstructionByMop(ID);
+}
+
+const TensixInstructionField *
+getTensixInstructionField(const TensixInstructionInfo &Info, unsigned Index) {
+  if (Index >= Info.NumFields)
+    return nullptr;
+  return lookupTensixInstructionField(Info.IntrinsicID, Index);
+}
+
+bool isTensixWormholeIntrinsic(Intrinsic::ID ID) {
+  const auto *Info = getTensixInstructionByIntrinsic(ID);
+  if (!Info)
+    return false;
+  const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
+  const auto *Encoding = getTensixEncoding(Machine->Opcode);
+  return Encoding && Encoding->WormholeSupported &&
+         (ID == Info->IntrinsicID ||
+          (ID == Info->MopIntrinsicID && Machine->WormholeMopSupported) ||
+          (ID == Info->PortIntrinsicID && Machine->WormholeDynamicFields));
+}
+
+bool isTensixBlackholeMutexIntrinsic(Intrinsic::ID ID) {
+  return ID == Intrinsic::tt_atgetm || ID == Intrinsic::tt_atrelm;
+}
+
+Error verifyTensixBlackholeMutexIndex(uint32_t Index) {
+  if (Index == 1 || Index > 4)
+    return createStringError("Blackhole mutex index must be 0, 2, 3, or 4");
+  return Error::success();
+}
+
+std::optional<uint32_t> getTensixWormholeDynamicFieldMinimum(Intrinsic::ID ID,
+                                                             unsigned Index) {
+  const auto *Info = getTensixInstructionByIntrinsic(ID);
+  if (!Info || ID != Info->PortIntrinsicID || Index >= Info->NumFields)
+    return std::nullopt;
+  const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
+  if (!(Machine->WormholeDynamicFields & (1u << Index)))
+    return std::nullopt;
+  return getTensixWormholeField(Machine->Opcode, Index)->MinValue;
+}
+
+Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
+                                            ArrayRef<uint32_t> Fields) {
+  if (!isTensixWormholeIntrinsic(ID))
+    return createStringError("Tensix instruction is not supported on Wormhole");
+  const auto *Info = getTensixInstructionByIntrinsic(ID);
+  const auto *Machine = getTensixMachineInfoByIntrinsic(Info->IntrinsicID);
+  if (Fields.size() != Info->NumFields)
+    return createStringError("incorrect number of Tensix instruction operands");
+  for (unsigned I = 0; I != Info->NumFields; ++I) {
+    const auto *Field = getTensixWormholeField(Machine->Opcode, I);
+    if (Fields[I] < Field->MinValue || Fields[I] > Field->MaxValue)
+      return createStringError("Wormhole " + Info->getName() + " field " +
+                               getTensixInstructionField(*Info, I)->getName() +
+                               " must be in [" + Twine(Field->MinValue) + ", " +
+                               Twine(Field->MaxValue) + "]");
+  }
+  if (ID == Intrinsic::tt_zeroacc_port && Fields[4] != 1)
+    return createStringError(
+        "Wormhole ZEROACC instruction-port emission requires 16-row mode");
+  if (Info->IntrinsicID == Intrinsic::tt_zeroacc && Fields[4] == 1 &&
+      Fields[3] &&
+      Fields[0] > (getTensixWormholeField(Machine->Opcode, 0)->MaxValue >> 1))
+    return createStringError(
+        "Wormhole ZEROACC 16-row FP32 face must be in [0, 31]");
+  if (ID == Intrinsic::tt_replay) {
+    // Independent field bounds cannot establish that this contiguous range
+    // stays inside the bank. Its capacity comes from the same native TableGen
+    // count bound, rather than another encoding or architecture table.
+    const auto *Count = getTensixWormholeField(Machine->Opcode, 2);
+    if (Fields[2] + Fields[3] > Count->MaxValue)
+      return createStringError(
+          "Tensix replay range must fit 32 instruction slots");
+  }
+  if (!getTensixWormholeFormField(Machine->Opcode, 0, 0))
+    return Error::success();
+  for (unsigned F = 0; getTensixWormholeFormField(Machine->Opcode, F, 0); ++F) {
+    bool Matches = true;
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      const auto *Field = getTensixWormholeFormField(Machine->Opcode, F, I);
+      assert(Field && "incomplete TableGen logical-form relation");
+      Matches &= !Field->Fixed || Fields[I] == Field->Value;
+    }
+    if (Matches)
+      return Error::success();
+  }
+  return createStringError("Wormhole " + Info->getName() +
+                           " does not match an admitted logical form");
+}
+
+Error verifyTensixWormholeInstruction(const MCInst &MI,
+                                      const MCInstrInfo &MCII) {
+  const auto *Encoding = getTensixEncoding(MI.getOpcode());
+  if (!Encoding)
+    return Error::success();
+  if (!Encoding->WormholeSupported)
+    return createStringError("Tensix instruction is not supported on Wormhole");
+  const auto *Machine = getTensixMachineInfo(MI.getOpcode());
+  if (MI.getNumOperands() != MCII.get(MI.getOpcode()).getNumOperands())
+    return createStringError("incorrect number of Tensix instruction operands");
+  if (!Machine) {
+    // SFPU operands are real registers, unlike ordinary logical issue fields.
+    // Shared native descriptors own field widths and supported modes; WH-only
+    // bounds below are contributed by those same TableGen instructions.
+    if (Error E = verifyTensixMCInstructionFields(MI, MCII))
+      return E;
+    for (unsigned I = 0; I != MI.getNumOperands(); ++I) {
+      const auto *Field = getTensixWormholeField(MI.getOpcode(), I);
+      if (!Field)
+        continue;
+      const MCOperand &Operand = MI.getOperand(I);
+      if (!Operand.isImm() || Operand.getImm() < Field->MinValue ||
+          uint64_t(Operand.getImm()) > Field->MaxValue)
+        return createStringError(
+            "Wormhole " + MCII.getName(MI.getOpcode()).drop_front(2) +
+            " operand " + Twine(I) + " must be in [" + Twine(Field->MinValue) +
+            ", " + Twine(Field->MaxValue) + "]");
+    }
+    return Error::success();
+  }
+  SmallVector<uint32_t, 16> Fields;
+  for (const auto &Operand : MI) {
+    if (!Operand.isImm() || Operand.getImm() < 0 ||
+        uint64_t(Operand.getImm()) > UINT32_MAX)
+      return createStringError("Wormhole requires static unsigned i32 fields");
+    Fields.push_back(static_cast<uint32_t>(Operand.getImm()));
+  }
+  return verifyTensixWormholeInstructionFields(
+      static_cast<Intrinsic::ID>(Machine->IntrinsicID), Fields);
+}
+
+Error verifyTensixMCInstructionFields(const MCInst &MI,
+                                      const MCInstrInfo &MCII) {
+  const TensixEncoding *Encoding = getTensixEncoding(MI.getOpcode());
+  if (!Encoding)
+    return Error::success();
+
+  const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
+  if (MI.getNumOperands() != Desc.getNumOperands())
+    return createStringError("incorrect number of Tensix instruction operands");
+  if (const auto *Machine = getTensixMachineInfo(MI.getOpcode())) {
+    const auto *Info = lookupTensixInstruction(Machine->IntrinsicID);
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      const auto *Field = getTensixInstructionField(*Info, I);
+      const MCOperand &Op = MI.getOperand(I);
+      if (!Op.isImm() || Op.getImm() < 0 ||
+          uint64_t(Op.getImm()) > Field->MaxValue)
+        return createStringError(Twine(Info->getName()) + " field " + Field->getName() +
+                                 " must be in [0, " +
+                                 Twine(Field->MaxValue) + "]");
+    }
+    if (isTensixBlackholeMutexIntrinsic(Info->IntrinsicID))
+      return verifyTensixBlackholeMutexIndex(MI.getOperand(0).getImm());
+    return Error::success();
+  }
+  for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
+    const MCOperand &Op = MI.getOperand(I);
+    const MCOperandInfo &Info = Desc.operands()[I];
+    if (Info.RegClass >= 0)
+      continue;
+    if (!Op.isImm())
+      return createStringError(
+          "Tensix instruction requires immediate operands");
+    unsigned Bits;
+    switch (Info.OperandType) {
+    case RISCVOp::OPERAND_UIMM1:
+      Bits = 1;
+      break;
+    case RISCVOp::OPERAND_UIMM2:
+      Bits = 2;
+      break;
+    case RISCVOp::OPERAND_UIMM3:
+      Bits = 3;
+      break;
+    case RISCVOp::OPERAND_UIMM4:
+      Bits = 4;
+      break;
+    case RISCVOp::OPERAND_UIMM8:
+      Bits = 8;
+      break;
+    case RISCVOp::OPERAND_UIMM9:
+      Bits = 9;
+      break;
+    case RISCVOp::OPERAND_UIMM10:
+      Bits = 10;
+      break;
+    case RISCVOp::OPERAND_UIMM12:
+      Bits = 12;
+      break;
+    case RISCVOp::OPERAND_UIMM16:
+      Bits = 16;
+      break;
+    case RISCVOp::OPERAND_SIMM12:
+      if (!isInt<12>(Op.getImm()))
+        return createStringError("Tensix immediate operand must fit in 12 signed bits");
+      continue;
+    default:
+      return createStringError("unsupported Tensix immediate operand contract");
+    }
+    if (!isUIntN(Bits, Op.getImm()))
+      return createStringError("Tensix immediate operand must fit in " +
+                               Twine(Bits) + " unsigned bits");
+  }
+
+  // These codegen-only views describe every actual old/result. Their widened
+  // leaf classes do not by themselves enforce the hardware +4 relationship.
+  if (Encoding->ConfigCount &&
+      uint64_t(MI.getOperand(0).getImm()) >= Encoding->ConfigCount)
+    return createStringError("SETC16 configuration index must be in [0, 67]");
+
+  if (Encoding->AllowedModes) {
+    if (Encoding->ModeOperandIndex >= MI.getNumOperands() ||
+        !MI.getOperand(Encoding->ModeOperandIndex).isImm())
+      return createStringError("invalid Tensix mode operand contract");
+    uint64_t Mode = MI.getOperand(Encoding->ModeOperandIndex).getImm();
+    if (Mode >= 16 || !(Encoding->AllowedModes & (uint16_t(1) << Mode))) {
+      std::string Message;
+      raw_string_ostream OS(Message);
+      OS << MCII.getName(MI.getOpcode()).drop_front(2)
+         << ((MI.getOpcode() == RISCV::TTSFPLOAD ||
+              MI.getOpcode() == RISCV::TTSFPLOADFull ||
+              MI.getOpcode() == RISCV::TTSFPSTORE)
+                 ? " format"
+                 : " mode")
+         << " must be one of {";
+      bool First = true;
+      for (unsigned M = 0; M != 16; ++M)
+        if (Encoding->AllowedModes & (uint16_t(1) << M)) {
+          if (!First)
+            OS << ", ";
+          OS << M;
+          First = false;
+        }
+      OS << '}';
+      return createStringError(Message);
+    }
+  }
+  switch (MI.getOpcode()) {
+  case RISCV::TTSFPCONFIGC11:
+  case RISCV::TTSFPCONFIGC12:
+  case RISCV::TTSFPCONFIGC13:
+  case RISCV::TTSFPCONFIGC14:
+  case RISCV::TTSFPCONFIGLane: {
+    uint64_t Mask = MI.getOperand(0).getImm();
+    unsigned Mode = MI.getOperand(1).getImm();
+    if (Mode == 0 && Mask != 0)
+      return createStringError("SFPCONFIG mode 0 requires a zero mask");
+    // LaneConfig mode 8 consults only the even selector bits; odd bits
+    // are ignored by both Wormhole and Blackhole hardware.
+    if (Mode == 8 && MI.getOpcode() != RISCV::TTSFPCONFIGLane &&
+        (Mask & ~uint64_t(0x5555)) != 0)
+      return createStringError(
+          "SFPCONFIG mode 8 mask must select even lane bits");
+    break;
+  }
+  case RISCV::TTSFPSETEXP:
+  case RISCV::TTSFPSETMAN:
+  case RISCV::TTSFPSETSGN: {
+    unsigned Mode = MI.getOperand(4).getImm();
+    int64_t Value = MI.getOperand(3).getImm();
+    unsigned Max = MI.getOpcode() == RISCV::TTSFPSETEXP ? 255
+                 : MI.getOpcode() == RISCV::TTSFPSETMAN ? 4095 : 1;
+    if (!(Mode & 1))
+      Max = 0;
+    if (uint64_t(Value) > Max)
+      return createStringError("Tensix field immediate must be in [0, " +
+                               Twine(Max) + "] for this mode");
+    break;
+  }
+  case RISCV::TTSFPSHFT:
+    if (!(MI.getOperand(4).getImm() & 1) && MI.getOperand(3).getImm() != 0)
+      return createStringError("Tensix vector shift requires zero immediate field");
+    break;
+  case RISCV::TTSFPSTOCHRNDI: {
+    unsigned Mode = MI.getOperand(4).getImm();
+    uint64_t Descale = MI.getOperand(3).getImm();
+    if (Descale > (Mode == 12 || Mode == 13 ? 31u : 0u))
+      return createStringError("Tensix floating conversion requires zero descale; integer descale must fit five bits");
+    [[fallthrough]];
+  }
+  case RISCV::TTSFPSTOCHRNDV:
+    if (MI.getOperand(5).getImm() > 2)
+      return createStringError("Tensix stochastic rounding mode must be in [0, 2]");
+    break;
+  default:
+    break;
+  }
+  return Error::success();
+}
+
+Error verifyTensixMCInstruction(const MCInst &MI, const MCInstrInfo &MCII,
+                                const MCRegisterInfo &MRI, bool Wormhole) {
+  if (Error E = Wormhole ? verifyTensixWormholeInstruction(MI, MCII)
+                         : verifyTensixMCInstructionFields(MI, MCII))
+    return E;
+  if (!getTensixEncoding(MI.getOpcode()))
+    return Error::success();
+  const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
+  for (unsigned I = 0; I != Desc.getNumOperands(); ++I) {
+    const MCOperandInfo &Info = Desc.operands()[I];
+    if (Info.RegClass < 0)
+      continue;
+    const MCOperand &Op = MI.getOperand(I);
+    if (!Op.isReg() || !MRI.getRegClass(Info.RegClass).contains(Op.getReg()))
+      return createStringError("invalid register for Tensix instruction operand");
+    int Tied = Desc.getOperandConstraint(I, MCOI::TIED_TO);
+    if (Tied >= 0 && (!MI.getOperand(Tied).isReg() ||
+                      MI.getOperand(Tied).getReg() != Op.getReg()))
+      return createStringError("Tensix destination and passthrough must be tied");
+  }
+  return Error::success();
+}
 } // namespace RISCV
 
 namespace RISCVABI {
@@ -151,6 +551,8 @@ MCRegister getSCSPReg() { return RISCV::X3; }
 namespace RISCVFeatures {
 
 void validate(const Triple &TT, const FeatureBitset &FeatureBits) {
+  if (Error E = RISCV::verifyTensixFeatureBits(TT, FeatureBits))
+    reportFatalUsageError(Twine(toString(std::move(E))));
   if (TT.isArch64Bit() && !FeatureBits[RISCV::Feature64Bit])
     reportFatalUsageError("RV64 target requires an RV64 CPU");
   if (!TT.isArch64Bit() && !FeatureBits[RISCV::Feature32Bit])
