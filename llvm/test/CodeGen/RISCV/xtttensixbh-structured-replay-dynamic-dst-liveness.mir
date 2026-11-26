@@ -1,0 +1,36 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-replay-template-prepare %s -o %t
+# RUN: FileCheck %s < %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-replay-template-prepare %s -o %t.twice
+# RUN: diff %t %t.twice
+#
+# Record-only retains the scalar address capture and scratch definitions while
+# removing false numerical effects. The later execute acquires actual current
+# physical-register uses/defs, and prior dead/kill flags must be cleared.
+# Preparation is idempotent, including the volatile MMIO store annotation.
+# CHECK-LABEL: name: dynamic_record
+# CHECK: $tt_l0 = TTSFPMOVAll $tt_l1,
+# CHECK: early-clobber $x5, early-clobber $x6 = PseudoTTReplayTemplateDstWord 701,
+# CHECK-SAME: $x10, 0, 4, implicit-def $tt_issue, implicit $tt_issue
+# CHECK-SAME: :: (volatile store (s32))
+# CHECK: PseudoTTReplayTemplateExecute 701,
+# CHECK-SAME: implicit $tt_l0
+# CHECK-SAME: implicit-def $tt_l0
+# CHECK-NOT: PseudoTTSFPLOAD
+--- |
+  define void @dynamic_record() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: dynamic_record
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    dead $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 701, 0, 1, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOAD killed $tt_l0, $x10, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 701, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 701, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

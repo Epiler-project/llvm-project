@@ -478,6 +478,7 @@ public:
     default:
       llvm_unreachable("Unknown reduction kind.");
     }
+    llvm_unreachable("Unknown reduction kind.");
   }
 
   unsigned getMaxInterleaveFactor(ElementCount VF,

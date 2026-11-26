@@ -27,6 +27,7 @@
 #include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/IR/IntrinsicsS390.h"
 #include "llvm/IR/IntrinsicsSPIRV.h"
+#include "llvm/IR/IntrinsicsTT.h"
 #include "llvm/IR/IntrinsicsVE.h"
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/IntrinsicsXCore.h"

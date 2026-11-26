@@ -1,0 +1,213 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/safe.mir -o %t/safe.out.mir
+# RUN: FileCheck %s --check-prefix=SAFE --implicit-check-not=TTSFPNOP < %t/safe.out.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/unsafe.mir -o %t/repaired.mir
+# RUN: FileCheck %s --check-prefix=REPAIRED < %t/repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/repaired.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/blackhole.mir -o - | FileCheck %s --check-prefix=BLACKHOLE
+#
+# Wormhole STALLWAIT C14 waits for this thread's SFPU pipeline, and B8
+# prevents a following SFPU instruction from starting before that condition
+# clears. LLVM's operand order is condition, block. The minimal masks and a
+# superset both cover an ordinary MAD consumer, including a loop backedge and
+# a join whose two producer paths have each installed the wait.
+#
+# This is not an SFPU issue-cycle shortcut: missing masks, scalar MMIO,
+# TTNOP, instruction-port issue and MOP slot programming do not establish this
+# exact wait. Blackhole retains its existing hazard behavior.
+# ISA: WormholeB0/TensixTile/TensixCoprocessor/STALLWAIT.md, C14 and B8.
+#
+# SAFE-LABEL: name: minimal_wait
+# SAFE: $tt_l0 = TTSFPADD
+# SAFE-NEXT: TTSTALLWAIT 16384, 256,
+# SAFE-NEXT: $tt_l0 = TTSFPADD
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: wait_backedge
+# SAFE: bb.1:
+# SAFE: $tt_l0 = TTSFPADD
+# SAFE-NEXT: TTSTALLWAIT 16384, 511,
+# SAFE-NEXT: TTNOP
+# SAFE-NEXT: $x10 = ADDI $x10, -1
+# SAFE-NEXT: BNE $x10, $x0, %bb.1
+# SAFE-NEXT: PseudoBR %bb.2
+# SAFE-LABEL: name: waited_join
+# SAFE: bb.1:
+# SAFE: $tt_l0 = TTSFPADD
+# SAFE-NEXT: TTSTALLWAIT 32767, 511,
+# SAFE-NEXT: PseudoBR %bb.3
+# SAFE: bb.2:
+# SAFE: $tt_l0 = TTSFPADD
+# SAFE-NEXT: TTSTALLWAIT 16384, 256,
+# SAFE-NEXT: PseudoBR %bb.3
+# SAFE: bb.3:
+# SAFE-NEXT: $tt_l0 = TTSFPADD
+# SAFE-NEXT: PseudoRET
+#
+# REPAIRED-LABEL: name: incomplete_or_opaque_wait
+# REPAIRED: TTSTALLWAIT 0, 256,
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: TTSTALLWAIT 16384, 0,
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: TTSTALLWAIT 8192, 511,
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: TTSTALLWAIT 16384, 255,
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: TTNOP
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: SW $x5, $x6, 0
+# REPAIRED-NEXT: $x7 = LW $x6, 0
+# REPAIRED-NEXT: PseudoTTReadResponse $x7
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: PseudoTTSTALLWAITPort 0, $x5, $x6,
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED: PseudoTTSTALLWAITMop 2, 16384, 256,
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# REPAIRED-LABEL: name: partially_waited_join
+# REPAIRED: bb.3:
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l0 = TTSFPIADD
+# BLACKHOLE-LABEL: name: blackhole_unchanged
+# BLACKHOLE: TTSTALLWAIT 16384, 256,
+# BLACKHOLE-NEXT: TTSFPNOP
+# BLACKHOLE-NEXT: $tt_l0 = TTSFPIADD
+
+#--- safe.mir
+--- |
+  define void @minimal_wait() "tensix-executor"="trisc1" { ret void }
+  define void @wait_backedge() "tensix-executor"="trisc1" { ret void }
+  define void @waited_join() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: minimal_wait
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 256, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: wait_backedge
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 511, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $x10 = ADDI $x10, -1
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    PseudoRET
+...
+---
+name: waited_join
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 32767, 511, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 256, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- unsafe.mir
+--- |
+  define void @incomplete_or_opaque_wait() "tensix-executor"="trisc1" { ret void }
+  define void @partially_waited_join() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: incomplete_or_opaque_wait
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 0, 256, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 8192, 511, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTNOP implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    SW $x5, $x6, 0
+    $x7 = LW $x6, 0
+    PseudoTTReadResponse $x7
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTSTALLWAITPort 0, $x5, $x6, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x5, $x6 = PseudoTTSTALLWAITMop 2, 16384, 256, implicit $tt_config, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: partially_waited_join
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 256, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 255, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- blackhole.mir
+--- |
+  define void @blackhole_unchanged() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: blackhole_unchanged
+tracksRegLiveness: false
+body: |
+  bb.0:
+    $tt_l0 = TTSFPADD $tt_l0, $tt_l0, $tt_l1, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSTALLWAIT 16384, 256, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_l1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

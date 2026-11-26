@@ -37,10 +37,19 @@
 ; CHECK-NEXT:       Safe Stack instrumentation pass
 ; CHECK-NEXT:       Insert stack protectors
 ; CHECK-NEXT:       Module Verifier
+; CHECK-NEXT:       Dominator Tree Construction
+; CHECK-NEXT:       Natural Loop Information
+; CHECK-NEXT:       Scalar Evolution Analysis
+; CHECK-NEXT:       Verify Tensix SFPU IR
+; CHECK-NEXT:       RISC-V Tensix issue-word fold
 ; CHECK-NEXT:       Assignment Tracking Analysis
 ; CHECK-NEXT:       RISC-V DAG->DAG Pattern Instruction Selection
 ; CHECK-NEXT:       Finalize ISel and expand pseudo-instructions
+; CHECK-NEXT:       Prepare structured Tensix replay effects
+; CHECK-NEXT:       Normalize authored bound Tensix SFPU recordings
 ; CHECK-NEXT:       Local Stack Slot Allocation
+; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
+; CHECK-NEXT:       Verify Tensix SFPU physical ingress before register allocation
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Pre-RA
 ; CHECK-NEXT:       RISC-V Insert Read/Write CSR Pass
 ; CHECK-NEXT:       RISC-V Insert Write VXRM Pass
@@ -64,7 +73,11 @@
 ; CHECK-NEXT:       Insert fentry calls
 ; CHECK-NEXT:       Insert XRay ops
 ; CHECK-NEXT:       Implement the 'patchable-function' attribute
+; CHECK-NEXT:       Remove redundant Tensix SFPU copies and condition enables
 ; CHECK-NEXT:       RISC-V Indirect Branch Tracking
+; CHECK-NEXT:       Finalize structured Tensix replay words and placement
+; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
+; CHECK-NEXT:       Select existing repeated Tensix sequences for replay
 ; CHECK-NEXT:       Branch relaxation pass
 ; CHECK-NEXT:       RISC-V Make Compressible
 ; CHECK-NEXT:       Contiguously Lay Out Funclets
@@ -79,6 +92,8 @@
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Pre-Emit
 ; CHECK-NEXT:       RISC-V Pseudo Instruction Expansion - Atomics
 ; CHECK-NEXT:       Unpack machine instruction bundles
+; CHECK-NEXT:       Repair and verify Tensix SFPU machine hazards
+; CHECK-NEXT:       Verify bound Tensix SFPU physical machine operands
 ; CHECK-NEXT:       Lazy Machine Block Frequency Analysis
 ; CHECK-NEXT:       Machine Optimization Remark Emitter
 ; CHECK-NEXT:       RISC-V Assembly Printer

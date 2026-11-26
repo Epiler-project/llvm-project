@@ -1,0 +1,198 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/safe.mir -o - | FileCheck %s --check-prefix=SAFE
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/unsafe.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/unsafe.mir -o %t/repaired.mir
+# RUN: FileCheck %s --check-prefix=REPAIRED < %t/repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -run-pass=riscv-tensix-hazards %t/repaired.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixwh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/repaired.mir -o - | FileCheck %s --check-prefix=REPAIRED
+#
+# WH SFPSHFT2 mode2 needs a software next-SFPU gap: readers of L0-L3,
+# writers of L1-L3 and the listed ALU families may not execute next cycle.
+# Existing cooldown is conservatively stronger and survives scalar CFG edges.
+# copy4 modes0/1 and transpose are one-cycle operations. Real implicit uses
+# also make an incoming WH MAD result require a gap for each complete group.
+# SAFE-LABEL: name: one_cycle_groups
+# SAFE: TTSFPSHFT2Copy4 0,
+# SAFE-NEXT: TTSFPSHFT2Copy4 1,
+# SAFE-NEXT: TTSFPTRANSP
+# SAFE-NEXT: $tt_l7 = TTSFPXOR
+# SAFE-NEXT: PseudoRET
+# SAFE-LABEL: name: rotate_with_gap
+# SAFE: TTSFPSHFT2Rotate4
+# SAFE-NEXT: TTSFPNOP
+# SAFE-NEXT: TTSFPSTORE
+# SAFE-NEXT: PseudoRET
+# INVALID: in function rotate_read void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function rotate_write void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function rotate_unrelated_alu void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function mad_copy void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function mad_rotate void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function mad_transpose void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function rotate_backedge void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# REPAIRED-LABEL: name: rotate_read
+# REPAIRED: TTSFPSHFT2Rotate4
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSTORE
+# REPAIRED-LABEL: name: rotate_write
+# REPAIRED: TTSFPSHFT2Rotate4
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l1 = TTSFPLOADI
+# REPAIRED-LABEL: name: rotate_unrelated_alu
+# REPAIRED: TTSFPSHFT2Rotate4
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: $tt_l7 = TTSFPXOR
+# REPAIRED-LABEL: name: mad_copy
+# REPAIRED: $tt_l3 = TTSFPADD
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSHFT2Copy4
+# REPAIRED-LABEL: name: mad_rotate
+# REPAIRED: $tt_l3 = TTSFPADD
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSHFT2Rotate4
+# REPAIRED-LABEL: name: mad_transpose
+# REPAIRED: $tt_l3 = TTSFPADD
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPTRANSP
+# REPAIRED-LABEL: name: rotate_backedge
+# REPAIRED: bb.1:
+# REPAIRED-NEXT: successors:
+# REPAIRED: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSHFT2Rotate4
+# REPAIRED-NEXT: $x10 = ADDI $x10, -1
+# REPAIRED-NEXT: BNE $x10, $x0, %bb.1
+# REPAIRED-NEXT: PseudoBR %bb.2
+# REPAIRED: bb.2:
+# REPAIRED: TTSFPNOP
+# REPAIRED-NEXT: TTSFPSTORE
+# REPAIRED-NEXT: PseudoRET
+
+#--- safe.mir
+--- |
+  define void @one_cycle_groups() "tensix-executor"="trisc1" { ret void }
+  define void @rotate_with_gap() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: one_cycle_groups
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPSHFT2Copy4 0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPSHFT2Copy4 1, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPTRANSP implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_l4, implicit $tt_l5, implicit $tt_l6, implicit $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    $tt_l7 = TTSFPXOR $tt_l7, $tt_l6, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: rotate_with_gap
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPSHFT2Rotate4 $tt_l0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSTORE $tt_l0, 2, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- unsafe.mir
+--- |
+  define void @rotate_read() "tensix-executor"="trisc1" { ret void }
+  define void @rotate_write() "tensix-executor"="trisc1" { ret void }
+  define void @rotate_unrelated_alu() "tensix-executor"="trisc1" { ret void }
+  define void @mad_copy() "tensix-executor"="trisc1" { ret void }
+  define void @mad_rotate() "tensix-executor"="trisc1" { ret void }
+  define void @mad_transpose() "tensix-executor"="trisc1" { ret void }
+  define void @rotate_backedge() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: rotate_read
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPSHFT2Rotate4 $tt_l0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPSTORE $tt_l0, 2, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: rotate_write
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPSHFT2Rotate4 $tt_l0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    $tt_l1 = TTSFPLOADI $tt_l1, 17, 10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: rotate_unrelated_alu
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPSHFT2Rotate4 $tt_l0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    $tt_l7 = TTSFPXOR $tt_l7, $tt_l6, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mad_copy
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l3 = TTSFPADD $tt_l3, $tt_l3, $tt_l4, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSHFT2Copy4 1, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mad_rotate
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l3 = TTSFPADD $tt_l3, $tt_l3, $tt_l4, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPSHFT2Rotate4 $tt_l0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: mad_transpose
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l3 = TTSFPADD $tt_l3, $tt_l3, $tt_l4, 0, implicit $tt_c10, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPTRANSP implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_l4, implicit-def $tt_l5, implicit-def $tt_l6, implicit-def $tt_l7, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_l4, implicit $tt_l5, implicit $tt_l6, implicit $tt_l7, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: rotate_backedge
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BEQ $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.1, %bb.2
+    TTSFPSHFT2Rotate4 $tt_l0, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_l2, implicit-def $tt_l3, implicit-def $tt_issue, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue
+    $x10 = ADDI $x10, -1
+    BNE $x10, $x0, %bb.1
+    PseudoBR %bb.2
+  bb.2:
+    TTSFPSTORE $tt_l0, 2, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

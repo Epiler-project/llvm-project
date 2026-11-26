@@ -16,6 +16,7 @@
 #include "RISCVMachineScheduler.h"
 #include "RISCVTargetObjectFile.h"
 #include "RISCVTargetTransformInfo.h"
+#include "RISCVTensixExplicitReplay.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/GlobalISel/CSEInfo.h"
@@ -34,13 +35,51 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Option/LibraryOptions.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar.h"
 #include <optional>
 using namespace llvm;
 
+static cl::opt<bool> EnableTensixLatencyScheduling(
+    "riscv-tensix-enable-latency-scheduling", cl::init(true), cl::Hidden,
+    cl::desc("Schedule independent Tensix SFPU copies to cover issue latency"));
+
+namespace {
+bool isRISCVTargetMachine(const TargetMachine &TM) {
+  const Target *T = &TM.getTarget();
+  return T == &getTheRISCV32Target() || T == &getTheRISCV64Target() ||
+         T == &getTheRISCV32beTarget() || T == &getTheRISCV64beTarget();
+}
+} // namespace
+
+RISCV::TensixOptimizationOptions
+RISCVTargetMachine::getTensixOptimizationOptions() const {
+  if (TensixOptimizations)
+    return *TensixOptimizations;
+  return {EnableTensixLatencyScheduling};
+}
+
+Error llvm::RISCV::setTensixOptimizationOptions(
+    TargetMachine &TM, TensixOptimizationOptions Options) {
+  if (!isRISCVTargetMachine(TM))
+    return createStringError("Tensix optimization options require a RISC-V "
+                             "target machine");
+  static_cast<RISCVTargetMachine &>(TM).setTensixOptimizationOptions(Options);
+  return Error::success();
+}
+
+Expected<RISCV::TensixOptimizationOptions>
+llvm::RISCV::getTensixOptimizationOptions(const TargetMachine &TM) {
+  if (!isRISCVTargetMachine(TM))
+    return createStringError("Tensix optimization options require a RISC-V "
+                             "target machine");
+  return static_cast<const RISCVTargetMachine &>(TM)
+      .getTensixOptimizationOptions();
+}
 extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
   RegisterTargetMachine<RISCVTargetMachine> Y(getTheRISCV64Target());
@@ -49,6 +88,14 @@ extern "C" LLVM_ABI LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
   static opt::RegisterLibraryOptions<RISCVOptions> O;
   auto *PR = PassRegistry::getPassRegistry();
   initializeGlobalISel(*PR);
+  initializeRISCVTensixIRVerificationPass(*PR);
+  initializeRISCVTensixIssueWordFoldPass(*PR);
+  initializeRISCVTensixBoundVerificationPass(*PR);
+  initializeRISCVTensixHazardsPass(*PR);
+  initializeRISCVTensixExplicitReplayPass(*PR);
+  initializeRISCVTensixExplicitReplayBundleUnpackPass(*PR);
+  initializeRISCVTensixExplicitReplayTemplatePreparePass(*PR);
+  initializeRISCVTensixExplicitReplayTemplateFinalizePass(*PR);
   initializeRISCVO0PreLegalizerCombinerLegacyPass(*PR);
   initializeRISCVPreLegalizerCombinerLegacyPass(*PR);
   initializeRISCVPostLegalizerCombinerLegacyPass(*PR);
@@ -334,6 +381,11 @@ class RISCVPassConfig : public TargetPassConfig {
 public:
   RISCVPassConfig(RISCVTargetMachine &TM, PassManagerBase &PM)
       : TargetPassConfig(TM, PM), CLOpts(TM.getCLOpts()) {
+    // Bound custom inserters have materialized physical operands. Normalize
+    // record-only words before machine SSA passes can treat them as executed.
+    insertPass(&FinalizeISelID,
+               createRISCVTensixExplicitReplayTemplatePreparePass());
+    insertPass(&FinalizeISelID, createRISCVTensixExplicitReplayPass());
     if (TM.getOptLevel() != CodeGenOptLevel::None)
       substitutePass(&PostRASchedulerID, &PostMachineSchedulerID);
     setEnableSinkAndFold(CLOpts.enable_sink_fold);
@@ -460,12 +512,15 @@ void RISCVPassConfig::addCodeGenPrepare() {
 }
 
 bool RISCVPassConfig::addInstSelector() {
+  addPass(createRISCVTensixIRVerificationPass());
+  addPass(createRISCVTensixIssueWordFoldPass());
   addPass(createRISCVISelDagLegacyPass(getRISCVTargetMachine(), getOptLevel()));
 
   return false;
 }
 
 bool RISCVPassConfig::addIRTranslator() {
+  addPass(createRISCVTensixIRVerificationPass(false));
   addPass(new IRTranslatorLegacy(getOptLevel()));
   return false;
 }
@@ -522,6 +577,9 @@ void RISCVPassConfig::addPreEmitPass() {
   // basic block alignment. It must be done before Branch Relaxation to
   // prevent the adjusted offset exceeding the branch range.
   addPass(createRISCVIndirectBranchTrackingLegacyPass());
+  addPass(createRISCVTensixExplicitReplayTemplateFinalizePass());
+  addPass(createRISCVTensixExplicitReplayPass());
+  addPass(createRISCVTensixHazardsPass(true));
   addPass(&BranchRelaxationPassID);
   addPass(createRISCVMakeCompressibleLegacyPass());
 }
@@ -545,13 +603,14 @@ void RISCVPassConfig::addPreEmitPass2() {
   // progress in the LR/SC block.
   addPass(createRISCVExpandPseudoAtomicsLegacyPass());
 
-  // KCFI indirect call checks are lowered to a bundle.
-  addPass(createUnpackMachineBundlesLegacy([&](const MachineFunction &MF) {
-    return MF.getFunction().getParent()->getModuleFlag("kcfi");
-  }));
+  // Unpack KCFI call checks while preserving verified native recording
+  // windows, including functions which contain both kinds of bundle.
+  addPass(createRISCVTensixExplicitReplayBundleUnpackPass());
 
   if (CLOpts.enable_cfi_instr_inserter)
     addPass(createCFIInstrInserterLegacy());
+  addPass(createRISCVTensixHazardsPass(false));
+  addPass(createRISCVTensixBoundVerificationPass());
 }
 
 void RISCVPassConfig::addMachineSSAOptimization() {
@@ -579,6 +638,7 @@ void RISCVPassConfig::addMachineSSAOptimization() {
 }
 
 void RISCVPassConfig::addPreRegAlloc() {
+  addPass(createRISCVTensixBoundVerificationPass());
   addPass(createRISCVExpandPseudoPreRALegacyPass());
   if (TM->getOptLevel() != CodeGenOptLevel::None) {
     addPass(createRISCVMergeBaseOffsetLegacyPass());
@@ -593,9 +653,9 @@ void RISCVPassConfig::addPreRegAlloc() {
 
 void RISCVPassConfig::addFastRegAlloc() {
   addPass(&InitUndefID);
+  addPass(&ProcessImplicitDefsID);
   TargetPassConfig::addFastRegAlloc();
 }
-
 
 void RISCVPassConfig::addPostRegAlloc() {
   if (TM->getOptLevel() != CodeGenOptLevel::None && CLOpts.enable_copyelim)

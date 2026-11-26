@@ -1,0 +1,80 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-bound-verify %s -o %t.once.mir
+# RUN: FileCheck %s --input-file=%t.once.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-template-prepare,riscv-tensix-bound-verify %t.once.mir -o %t.twice.mir
+# RUN: FileCheck %s --input-file=%t.twice.mir
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.missing-read.mir missing-read
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.missing-read.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.extra-read.mir extra-read
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.extra-read.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.duplicate-read.mir duplicate-read
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.duplicate-read.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.missing-def.mir missing-def
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.missing-def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.duplicate-def.mir duplicate-def
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.duplicate-def.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECTS
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.record-effects.mir record-effects
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.record-effects.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=RECORD
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.unprepared.mir unprepared
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.unprepared.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=PREPARED
+# RUN: %python %S/Inputs/tensix-structured-replay-mutations.py %t.once.mir %t.orphan.mir orphan
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-bound-verify %t.orphan.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=ORPHAN
+# EFFECTS: structured replay execution effects differ from its body
+# RECORD: record-only word must have only issue ordering effects
+# PREPARED: record-only template was not normalized before machine optimization
+# ORPHAN: symbolic replay word has no recording owner
+#
+# Preparing the same symbolic template twice must preserve its body and exact
+# execution effects. Recording without execution must also preserve a physical
+# value defined before the body: installing words does not overwrite L0.
+# CHECK-LABEL: name: record_without_execute
+# CHECK: {{^    }}$tt_l0 = TTSFPMOVAll $tt_c10,
+# CHECK-NEXT: PseudoTTReplayTemplateBegin 301, 0, 0, 0,
+# CHECK-NEXT: PseudoTTReplayTemplateWord 301,
+# CHECK-NOT: $tt_l0
+# CHECK-NEXT: PseudoTTReplayTemplateEnd 301,
+# CHECK-NEXT: $tt_l2 = TTSFPMOVAll $tt_l0,
+# CHECK-NEXT: PseudoRET
+# CHECK-LABEL: name: execution_reads_current_value
+# CHECK: PseudoTTReplayTemplateBegin 302, 0, 0, 0,
+# CHECK-NEXT: PseudoTTReplayTemplateWord 302,
+# CHECK-NOT: $tt_l1
+# CHECK-NEXT: PseudoTTReplayTemplateEnd 302,
+# CHECK-NEXT: {{^    }}$tt_l1 = TTSFPMOVAll $tt_c9,
+# CHECK-NEXT: PseudoTTReplayTemplateExecute 302,
+# CHECK-SAME: implicit $tt_l1
+# CHECK-SAME: implicit-def $tt_l0
+# CHECK-NEXT: PseudoRET
+--- |
+  define void @record_without_execute() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @execution_reads_current_value() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: record_without_execute
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    dead $tt_l0 = TTSFPMOVAll $tt_c10, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateBegin 301, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 301, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l2 = TTSFPMOVAll $tt_l0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: execution_reads_current_value
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTReplayTemplateBegin 302, 0, 0, 0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMOVAll $tt_l1, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateEnd 302, implicit $tt_issue, implicit-def $tt_issue
+    dead $tt_l1 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayTemplateExecute 302, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

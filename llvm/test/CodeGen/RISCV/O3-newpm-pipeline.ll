@@ -49,6 +49,8 @@
 ; CHECK-NEXT:   stack-protector
 ; CHECK-NEXT: riscv-asm-printer-begin
 ; CHECK-NEXT: function
+; CHECK-NEXT:   RISCVTensixNewPMGate
+; CHECK-NEXT:   RISCVTensixIssueWordFoldPass
 ; CHECK-NEXT:   machine-function
 ; CHECK-NEXT:     riscv-isel
 ; CHECK-NEXT:     finalize-isel

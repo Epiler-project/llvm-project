@@ -1,0 +1,48 @@
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-replay-bundle-unpack %s -o - | FileCheck %s
+#
+# This pass-only fixture puts both bundle kinds in the same function. A
+# function-level exemption for native Replay would leave KCFI bundled; generic
+# unpacking would destroy the recording. The KCFI CHECK and tail-call operands
+# follow kcfi-mir.ll. This isolates unpacking rather than granting bound SFPU
+# program admission or any target-state preservation across indirect calls.
+#
+# CHECK-LABEL: name: mixed_bundles
+# CHECK: BUNDLE {{.*}}{
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 1, 1, 2, 5,
+# CHECK-NEXT: $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+# CHECK-NEXT: $tt_l1 = TTSFPMOVAll internal $tt_l0, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+# CHECK-NEXT: PseudoTTReplayRecordEnd implicit internal $tt_issue, implicit-def $tt_issue
+# CHECK-NEXT: }
+# CHECK-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 2, 5,
+# CHECK-NOT: BUNDLE
+# CHECK: KCFI_CHECK $x10, 12345678,
+# CHECK-NEXT: PseudoTAILIndirect $x10, csr_ilp32_lp64, implicit $x2
+# CHECK-NOT: BUNDLE
+
+--- |
+  define void @mixed_bundles(ptr %target) "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  !llvm.module.flags = !{!0}
+  !0 = !{i32 4, !"kcfi", i32 1}
+...
+---
+name: mixed_bundles
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    liveins: $x10, $x2
+
+    BUNDLE implicit $tt_config, implicit $tt_issue, implicit $tt_c9, implicit-def $tt_issue, implicit-def $tt_l0, implicit-def $tt_l1 :: (volatile load store (s32)) {
+      PseudoTTExplicitSFPUReplay 1, 1, 2, 5, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue :: (volatile load store (s32))
+      $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+      $tt_l1 = TTSFPMOVAll internal $tt_l0, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+      PseudoTTReplayRecordEnd implicit internal $tt_issue, implicit-def $tt_issue
+    }
+    PseudoTTExplicitSFPUReplay 0, 0, 2, 5, implicit $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_l0, implicit-def $tt_l1, implicit-def $tt_issue :: (volatile load store (s32))
+    BUNDLE implicit-def $x6, implicit-def $x7, implicit-def $x28, implicit-def $x29, implicit-def $x30, implicit-def $x31, implicit $x10, implicit $x2 {
+      KCFI_CHECK $x10, 12345678, implicit-def $x6, implicit-def $x7, implicit-def $x28, implicit-def $x29, implicit-def $x30, implicit-def $x31
+      PseudoTAILIndirect $x10, csr_ilp32_lp64, implicit $x2
+    }
+...

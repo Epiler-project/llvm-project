@@ -16,6 +16,7 @@
 #include "RISCV.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "RISCVTensixMacro.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -29,6 +30,11 @@
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInstBuilder.h"
@@ -487,6 +493,39 @@ void RISCVInstrInfo::copyPhysRegVector(
   }
 }
 
+static StringRef getTensixCopyError(const MachineFunction &,
+                                    const TargetRegisterInfo &,
+                                    Register DstReg, Register SrcReg) {
+  if (RISCV::SFPRReadRegClass.contains(DstReg) ||
+      RISCV::SFPRReadRegClass.contains(SrcReg))
+    return "Tensix SFPU cannot synthesize a register copy";
+  return {};
+}
+
+bool RISCVInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
+  if (expandTensixMacroPseudo(MI, STI))
+    return true;
+  if (!MI.isCopy() || MI.allDefsAreDead() || MI.getOperand(1).isUndef() ||
+      MI.getOperand(0).getReg() == MI.getOperand(1).getReg())
+    return false;
+  auto &MF = *MI.getMF();
+  StringRef Error = getTensixCopyError(MF, *STI.getRegisterInfo(),
+                                       MI.getOperand(0).getReg(),
+                                       MI.getOperand(1).getReg());
+  if (Error.empty())
+    return false;
+
+  // The generic COPY expander erases the instruction after copyPhysReg,
+  // whose void interface cannot return failure. Retain the real def/use on
+  // this failed allocation so subsequent verification remains well-formed;
+  // the target printer rejects the failed function without emitting it.
+  MF.getProperties().setFailedRegAlloc();
+  MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+  MF.getFunction().getContext().diagnose(
+      DiagnosticInfoUnsupported(MF.getFunction(), Error));
+  return true;
+}
+
 void RISCVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MBBI,
                                  const DebugLoc &DL, Register DstReg,
@@ -494,6 +533,17 @@ void RISCVInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                  bool RenamableDest, bool RenamableSrc) const {
   const RISCVRegisterInfo *TRI = STI.getRegisterInfo();
   RegState KillFlag = getKillRegState(KillSrc);
+  auto &MF = *MBB.getParent();
+  StringRef Error = getTensixCopyError(MF, *TRI, DstReg, SrcReg);
+  if (!Error.empty()) {
+    if (DstReg == SrcReg)
+      return;
+    MF.getProperties().setFailedRegAlloc();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(
+        DiagnosticInfoUnsupported(MF.getFunction(), Error));
+    return;
+  }
 
   if (RISCV::GPRRegClass.contains(DstReg, SrcReg)) {
     BuildMI(MBB, MBBI, DL, get(RISCV::ADDI), DstReg)
@@ -656,6 +706,13 @@ void RISCVInstrInfo::storeRegToStackSlot(MachineBasicBlock &MBB,
                                          const TargetRegisterClass *RC,
                                          Register VReg,
                                          MachineInstr::MIFlag Flags) const {
+  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
+    auto &MF = *MBB.getParent();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(), "Tensix SFPU registers cannot spill or reload"));
+    return;
+  }
   MachineFunction *MF = MBB.getParent();
   MachineFrameInfo &MFI = MF->getFrameInfo();
   Align Alignment = MFI.getObjectAlign(FI);
@@ -746,6 +803,13 @@ void RISCVInstrInfo::loadRegFromStackSlot(MachineBasicBlock &MBB,
                                           const TargetRegisterClass *RC,
                                           Register VReg, unsigned SubReg,
                                           MachineInstr::MIFlag Flags) const {
+  if (RISCV::SFPRReadRegClass.hasSubClassEq(RC)) {
+    auto &MF = *MBB.getParent();
+    MF.getInfo<RISCVMachineFunctionInfo>()->setTensixCodegenFailed();
+    MF.getFunction().getContext().diagnose(DiagnosticInfoUnsupported(
+        MF.getFunction(), "Tensix SFPU registers cannot spill or reload"));
+    return;
+  }
   MachineFunction *MF = MBB.getParent();
   MachineFrameInfo &MFI = MF->getFrameInfo();
   Align Alignment = MFI.getObjectAlign(FI);
@@ -3361,9 +3425,12 @@ bool RISCVInstrInfo::verifyInstruction(const MachineInstr &MI,
       return false;
     }
     if (Op.isReg() && Op.getReg().isValid()) {
-      const MachineRegisterInfo &MRI = MI.getParent()->getParent()->getRegInfo();
-      auto *RC = MRI.getRegClass(Op.getReg());
-      if (!RISCV::GPRNoX0RegClass.hasSubClassEq(RC)) {
+      Register Reg = Op.getReg();
+      bool IsGPRNoX0 = Reg.isPhysical()
+                           ? RISCV::GPRNoX0RegClass.contains(Reg)
+                           : RISCV::GPRNoX0RegClass.hasSubClassEq(
+                                 MI.getParent()->getParent()->getRegInfo().getRegClass(Reg));
+      if (!IsGPRNoX0) {
         ErrInfo = "Invalid register class for VL operand";
         return false;
       }

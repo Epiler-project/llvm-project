@@ -1,0 +1,130 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/input.mir -o %t/once.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-explicit-replay,riscv-tensix-bound-verify %t/once.mir -o %t/twice.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -start-before=riscv-tensix-hazards %t/once.mir -o %t/output.s
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -start-before=riscv-tensix-hazards -filetype=obj %t/once.mir -o %t/output.o
+# RUN: %python %t/check.py %t/once.mir %t/twice.mir %t/output.s
+# RUN: llvm-readobj --symbols %t/output.o | FileCheck %s --check-prefix=SIZE
+# RUN: FileCheck %s --check-prefix=BUNDLE --input-file=%t/once.mir
+# RUN: FileCheck %s --check-prefix=BUNDLE --input-file=%t/twice.mir
+#
+# Raw MIR isolates the physical recording window from any new seq intrinsic.
+# Existing normalization and both machine verifiers must accept this input;
+# the content/word-count oracle runs before the missing-BUNDLE assertion.
+# Recording executes L0 <- C9 and L1 <- L0 immediately. A later execution
+# repeats those words against the current physical registers. The second
+# MOVAll and the issue token chain have genuine reads internal to the window.
+# Neither BUNDLE nor record.end emits a word. The function is exactly four
+# Tensix issue words plus one uncompressed scalar return (20 bytes).
+#
+# The two normalization runs must preserve the same native fields/effects.
+# Keep the existing rejection of unrelated bundles: this test admits only the
+# complete explicit recording, not arbitrary bundled SFPU instructions.
+#
+# SIZE:      Name: explicit_bundle
+# SIZE:      Size: 20
+# SIZE:      Type: Function
+#
+# BUNDLE-LABEL: name: explicit_bundle
+# BUNDLE:      BUNDLE {{.*}}{
+# BUNDLE-NEXT:   PseudoTTExplicitSFPUReplay 1, 1, 2, 5,
+# BUNDLE-NEXT:   $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+# BUNDLE-NEXT:   $tt_l1 = TTSFPMOVAll internal $tt_l0, implicit $tt_config, implicit internal $tt_issue, implicit-def $tt_issue
+# BUNDLE-NEXT:   PseudoTTReplayRecordEnd implicit internal $tt_issue, implicit-def $tt_issue
+# BUNDLE-NEXT: }
+# BUNDLE-NEXT: PseudoTTExplicitSFPUReplay 0, 0, 2, 5,
+# BUNDLE-NEXT: PseudoRET
+
+#--- input.mir
+--- |
+  define void @explicit_bundle() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: explicit_bundle
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTREPLAY 1, 1, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    $tt_l0 = TTSFPMOVAll $tt_c9, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l1 = TTSFPMOVAll $tt_l0, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    TTREPLAY 0, 0, 2, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue :: (volatile load store (s32))
+    PseudoRET
+...
+
+#--- check.py
+import collections
+import pathlib
+import re
+import sys
+
+
+def machine(path):
+    text = pathlib.Path(path).read_text()
+    match = re.search(r"^name:\s+explicit_bundle\s*$.*?^body:\s+\|\n(.*?)^\.\.\.",
+                      text, re.MULTILINE | re.DOTALL)
+    assert match, "missing explicit_bundle machine body"
+    lines = [line.strip() for line in match[1].splitlines() if line.strip()]
+    bundles = [line for line in lines if line.startswith("BUNDLE ")]
+    assert len(bundles) <= 1, "unexpected extra recording bundle"
+    instructions = [line for line in lines
+                    if not line.startswith(("bb.", "BUNDLE ")) and line != "}"]
+    assert len(instructions) == 6, instructions
+    record, first, second, end, execute, ret = instructions
+    assert record.startswith("PseudoTTExplicitSFPUReplay 1, 1, 2, 5,"), record
+    assert first.startswith("$tt_l0 = TTSFPMOVAll $tt_c9,"), first
+    assert re.match(r"\$tt_l1 = TTSFPMOVAll (?:internal )?\$tt_l0,", second), second
+    assert end.startswith("PseudoTTReplayRecordEnd "), end
+    assert execute.startswith("PseudoTTExplicitSFPUReplay 0, 0, 2, 5,"), execute
+    assert ret == "PseudoRET", ret
+    for header in (record, execute):
+        assert ":: (volatile load store (s32))" in header, header
+    assert not any("PseudoTTSFPURecordWord" in line for line in lines)
+
+    def effects(line):
+        instruction = line.partition(" :: ")[0]
+        uses, defs = [], []
+        if " = " in instruction:
+            lhs, instruction = instruction.split(" = ", 1)
+            defs += re.findall(r"\$(tt_\w+)", lhs)
+        for operand in instruction.split(","):
+            registers = re.findall(r"\$(tt_\w+)", operand)
+            (defs if "implicit-def" in operand else uses).extend(registers)
+        return collections.Counter(uses), collections.Counter(defs)
+
+    if bundles:
+        header = bundles[0]
+        assert effects(header) == (
+            collections.Counter(["tt_config", "tt_issue", "tt_c9"]),
+            collections.Counter(["tt_issue", "tt_l0", "tt_l1"])), header
+        assert ":: (volatile load store (s32))" in header, header
+        assert not re.search(r"\b(?:internal|dead|killed|undef)\b", header), header
+
+    expected = [
+        (["tt_config", "tt_issue"], ["tt_issue"]),
+        (["tt_c9", "tt_config", "tt_issue"], ["tt_l0", "tt_issue"]),
+        (["tt_l0", "tt_config", "tt_issue"], ["tt_l1", "tt_issue"]),
+        (["tt_issue"], ["tt_issue"]),
+        (["tt_c9", "tt_config", "tt_issue"], ["tt_l0", "tt_l1", "tt_issue"]),
+        ([], []),
+    ]
+    actual = [effects(line) for line in instructions]
+    assert actual == [(collections.Counter(uses), collections.Counter(defs))
+                      for uses, defs in expected], actual
+    return instructions
+
+
+once = machine(sys.argv[1])
+twice = machine(sys.argv[2])
+assert once == twice, "repeated normalization changed the recording"
+assembly = pathlib.Path(sys.argv[3]).read_text()
+body = re.search(r"^explicit_bundle:.*?^\.Lfunc_end\d+:", assembly,
+                 re.MULTILINE | re.DOTALL)
+assert body, "missing explicit_bundle assembly"
+words = [int(word, 16) for word in re.findall(r"\.word\s+(0x[0-9a-fA-F]+)", body[0])]
+assert words == [0x1005008C, 0xF0002409, 0xF0000049, 0x10050080], words
+assert len(re.findall(r"^\s*ret\s*$", body[0], re.MULTILINE)) == 1, body[0]
+print("exact native content/effects, normalization stability, and four issue words verified")

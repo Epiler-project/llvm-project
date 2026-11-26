@@ -1,0 +1,38 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-explicit-replay %s -o /dev/null 2>&1 | FileCheck %s
+# CHECK: SFPU replay execution has differing or unknown templates on incoming paths
+#
+# Two records use the same physical offset register, but each captures a
+# different runtime value. They cannot become the same recorded word at a CFG
+# merge merely because GPR allocation reused x10. Keep the exact record site.
+--- |
+  define void @captured_field_join() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: captured_field_join
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BEQ $x11, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    $x10 = ADDI $x0, 32
+    TTREPLAY 1, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOAD $tt_l0, $x10, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    $x10 = ADDI $x0, 40
+    TTREPLAY 1, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $tt_l0, early-clobber $x5, early-clobber $x6 = PseudoTTSFPLOAD $tt_l0, $x10, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoTTReplayRecordEnd implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    TTREPLAY 0, 0, 1, 5, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...

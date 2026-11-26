@@ -1,0 +1,53 @@
+; RUN: split-file %s %t
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/tie.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT-MISSING-COPY
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/group.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=REJECT-IMPLICIT-GROUP
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/number.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=NUMBER
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/call.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CALL
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/offset.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=OFFSET
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -O0 %t/executor.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=EXECUTOR
+; REJECT-MISSING-COPY: tie
+; REJECT-IMPLICIT-GROUP: fixed
+; NUMBER: writable LReg
+; CALL: call has no verified SFPU preservation ABI
+; OFFSET: bound Dst offset must be defined and non-poison
+; EXECUTOR: bound SFPU execution requires a TRISC executor
+
+;--- tie.ll
+declare void @llvm.tt.bh.sfpu.mul(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+define void @tie() "tensix-executor"="trisc1" {
+  call void @llvm.tt.bh.sfpu.mul(i32 2, i32 1, i32 0, i32 1, i32 0)
+  ret void
+}
+;--- group.ll
+declare void @llvm.tt.bh.sfpu.lut(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
+define void @group() "tensix-executor"="trisc1" {
+  call void @llvm.tt.bh.sfpu.lut(i32 4, i32 4, i32 0, i32 1, i32 7, i32 3, i32 0)
+  ret void
+}
+;--- number.ll
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+define void @number() "tensix-executor"="trisc1" {
+  call void @llvm.tt.bh.sfpu.mov.all(i32 8, i32 9)
+  ret void
+}
+;--- call.ll
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+declare void @unknown()
+define void @call() "tensix-executor"="trisc1" {
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
+  call void @unknown()
+  ret void
+}
+;--- offset.ll
+declare void @llvm.tt.bh.sfpu.load(i32 immarg, i32 immarg, i32, i32 immarg, i32 immarg)
+define void @offset(i10 %address) "tensix-executor"="trisc1" {
+  %index = zext i10 %address to i32
+  call void @llvm.tt.bh.sfpu.load(i32 0, i32 0, i32 %index, i32 0, i32 3)
+  ret void
+}
+;--- executor.ll
+declare void @llvm.tt.bh.sfpu.mov.all(i32 immarg, i32 immarg)
+define void @executor() "tensix-executor"="brisc" {
+  call void @llvm.tt.bh.sfpu.mov.all(i32 0, i32 9)
+  ret void
+}

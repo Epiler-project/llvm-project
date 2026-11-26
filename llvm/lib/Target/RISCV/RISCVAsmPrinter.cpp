@@ -22,10 +22,13 @@
 #include "RISCVConstantPoolValue.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVRegisterInfo.h"
+#include "RISCVTensixBoundLowering.h"
+#include "RISCVTensixExplicitReplay.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/AsmPrinterAnalysis.h"
@@ -35,7 +38,9 @@
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
+#include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCObjectFileInfo.h"
@@ -45,6 +50,8 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CHERICapabilityFormat.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Endian.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/RISCVISAInfo.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
@@ -276,6 +283,26 @@ void RISCVAsmPrinter::LowerSTATEPOINT(MCStreamer &OutStreamer, StackMaps &SM,
 
 bool RISCVAsmPrinter::EmitToStreamer(MCStreamer &S, const MCInst &Inst,
                                      const MCSubtargetInfo &SubtargetInfo) {
+  if (RISCV::getTensixEncoding(Inst.getOpcode()) && S.hasRawTextSupport()) {
+    // The SDK assembler need not know our private extension. LLVM MC remains
+    // the byte authority for both the object and textual-assembly paths.
+    std::unique_ptr<MCCodeEmitter> Encoder(
+        createRISCVMCCodeEmitter(*TM.getMCInstrInfo(), OutContext));
+    SmallVector<char, 4> Bytes;
+    SmallVector<MCFixup, 0> Fixups;
+    Encoder->encodeInstruction(Inst, Bytes, Fixups, SubtargetInfo);
+    if (Bytes.size() != 4 || !Fixups.empty()) {
+      OutContext.reportError(Inst.getLoc(),
+                             "failed to encode a fixed Tensix instruction");
+      return false;
+    }
+    // Keep this a typed MC event so wrapping streamers can observe and verify
+    // emission without parsing opaque assembly text. The writer chooses its
+    // normal four-byte data directive after MC has fixed the encoded value.
+    S.emitIntValueInHexWithPadding(
+        support::endian::read32le(Bytes.data()), 4);
+    return false;
+  }
   MCInst CInst;
   bool Res = RISCVRVC::compress(CInst, Inst, SubtargetInfo);
   if (Res)
@@ -389,6 +416,21 @@ void RISCVAsmPrinter::emitNTLHint(const MachineInstr *MI) {
 }
 
 void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
+  if (MI->isBundle()) {
+    auto Window = getTensixIssueBundle(*MI);
+    if (!Window) {
+      OutContext.reportError(SMLoc(), toString(Window.takeError()));
+      return;
+    }
+    // Generic AsmPrinter visits the aggregate BUNDLE once. Its verified
+    // children retain their native order and existing emission semantics;
+    // record.end emits no word, and the aggregate itself is never emitted.
+    for (const MachineInstr *Member : Window->Members)
+      if (!Member->isDebugInstr())
+        emitInstruction(Member);
+    return;
+  }
+
   RISCV_MC::verifyInstructionPredicates(MI->getOpcode(), STI->getFeatureBits());
 
   emitNTLHint(MI);
@@ -399,7 +441,379 @@ void RISCVAsmPrinter::emitInstruction(const MachineInstr *MI) {
     return;
   }
 
+  if (MI->getOpcode() == RISCV::PseudoTTExplicitSFPUReplay) {
+    MCInst Replay;
+    Replay.setOpcode(RISCV::TTREPLAY);
+    for (unsigned I = 0; I != 4; ++I)
+      Replay.addOperand(MCOperand::createImm(MI->getOperand(I).getImm()));
+    EmitToStreamer(*OutStreamer, Replay);
+    return;
+  }
+
+  if (MI->getOpcode() == RISCV::PseudoTTSFPURecordWord) {
+    auto Word = getTensixRecordedWord(*MI, *MI->getMF());
+    if (!Word) {
+      OutContext.reportError(SMLoc(), toString(Word.takeError()));
+      return;
+    }
+    MCInst Recorded;
+    Recorded.setOpcode(Word->Opcode);
+    for (const auto &Operand : Word->Operands)
+      Recorded.addOperand(
+          Operand.OperandKind == TensixRecordedOperand::Kind::Register
+              ? MCOperand::createReg(MCRegister(Operand.Value))
+              : MCOperand::createImm(Operand.Value));
+    EmitToStreamer(*OutStreamer, Recorded);
+    return;
+  }
+
+  if (MI->getOpcode() == RISCV::PseudoTTReplayRecordEnd)
+    return;
+
+  if (MI->getOpcode() == RISCV::PseudoTTMOPControlWrite ||
+      MI->getOpcode() == RISCV::PseudoTTMOPControlWriteImm) {
+    bool Immediate = MI->getOpcode() == RISCV::PseudoTTMOPControlWriteImm;
+    MCRegister Address = MI->getOperand(Immediate ? 1 : 0).getReg();
+    unsigned Cell = MI->getOperand(Immediate ? 2 : 1).getImm();
+    MCRegister Value = MI->getOperand(Immediate ? 0 : 2).getReg();
+    if (Cell > 1 || Address == RISCV::X0 || Address == Value ||
+        (Immediate && Value == RISCV::X0)) {
+      OutContext.reportError(SMLoc(),
+                             "invalid Tensix MOP control cell or scratch");
+      return;
+    }
+    if (Immediate) {
+      uint32_t Bits = MI->getOperand(3).getImm();
+      if (!Bits)
+        Value = RISCV::X0;
+      else {
+        EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+            .addReg(Value).addImm(((uint64_t(Bits) + 0x800) >> 12) & 0xfffff));
+        if (Bits & 0xfff)
+          EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
+              .addReg(Value).addReg(Value).addImm(SignExtend64<12>(Bits)));
+      }
+    }
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+        .addReg(Address).addImm(0xffb80000u >> 12));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SW)
+        .addReg(Value).addReg(Address).addImm(Cell * 4));
+    return;
+  }
+
+  const auto *Mop = RISCV::getTensixMachineInfoByMop(MI->getOpcode());
+  if (Mop || MI->getOpcode() == RISCV::PseudoTTMOPClear) {
+    MCRegister Word = MI->getOperand(0).getReg();
+    MCRegister Address = MI->getOperand(1).getReg();
+    unsigned Slot = MI->getOperand(2).getImm();
+    if (Word == Address || Word == RISCV::X0 || Address == RISCV::X0 ||
+        Slot < 2 || Slot > 8) {
+      OutContext.reportError(SMLoc(), "invalid Tensix MOP slot or scratch registers");
+      return;
+    }
+    // A disabled MOP slot contains the architectural NOP. Raw zero is not
+    // recognized as NOP by the sequencer, including its LoopOp1 selector.
+    MCInstBuilder Static(Mop ? Mop->Opcode : unsigned(RISCV::TTNOP));
+    if (Mop) {
+      const auto *Info = RISCV::getTensixInstructionByIntrinsic(
+          static_cast<Intrinsic::ID>(Mop->IntrinsicID));
+      for (unsigned I = 0; I != Info->NumFields; ++I)
+        Static.addImm(MI->getOperand(3 + I).getImm());
+    }
+    SmallVector<char, 4> Bytes;
+    SmallVector<MCFixup, 0> Fixups;
+    std::unique_ptr<MCCodeEmitter> Encoder(
+        createRISCVMCCodeEmitter(*TM.getMCInstrInfo(), OutContext));
+    Encoder->encodeInstruction(Static, Bytes, Fixups, *STI);
+    if (Bytes.size() != 4 || !Fixups.empty()) {
+      OutContext.reportError(SMLoc(), "failed to encode a Tensix MOP instruction");
+      return;
+    }
+    uint32_t Raw = rotr(support::endian::read32le(Bytes.data()), 2);
+    if (Raw) {
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+          .addReg(Word).addImm(((uint64_t(Raw) + 0x800) >> 12) & 0xfffff));
+      if (Raw & 0xfff)
+        EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
+            .addReg(Word).addReg(Word).addImm(SignExtend64<12>(Raw)));
+    } else {
+      Word = RISCV::X0;
+    }
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+        .addReg(Address).addImm(0xffb80000u >> 12));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SW)
+        .addReg(Word).addReg(Address).addImm(Slot * 4));
+    return;
+  }
+
+  if (const auto *Machine = RISCV::getTensixMachineInfoByPort(MI->getOpcode());
+      Machine && !RISCV::isTensixFieldPortOpcode(Machine->Opcode)) {
+    // The issue-word fold already encoded the complete word; the port
+    // address is an ordinary scalar operand.
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SW)
+                                     .addReg(MI->getOperand(1).getReg())
+                                     .addReg(MI->getOperand(2).getReg())
+                                     .addImm(0));
+    return;
+  }
+
+  if (const auto *Machine = RISCV::getTensixMachineInfoByPort(MI->getOpcode())) {
+    const auto *Info = RISCV::getTensixInstructionByIntrinsic(
+        static_cast<Intrinsic::ID>(Machine->IntrinsicID));
+    MCRegister Word = MI->getOperand(0).getReg();
+    MCRegister Address = MI->getOperand(1).getReg();
+    MCRegister Field = MI->getOperand(2).getReg();
+    if (Word == Address || Word == Field || Address == Field ||
+        Word == RISCV::X0 || Address == RISCV::X0 || Field == RISCV::X0) {
+      OutContext.reportError(SMLoc(), "Tensix port scratch registers must be distinct and nonzero");
+      return;
+    }
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      if (MI->getOperand(4 + I).isImm())
+        continue;
+      MCRegister Value = MI->getOperand(4 + I).getReg();
+      if (Value == Word || Value == Address || Value == Field) {
+        OutContext.reportError(SMLoc(), "Tensix port scratch must preserve logical fields");
+        return;
+      }
+    }
+    unsigned Port = MI->getOperand(3).getImm();
+    if (Port > unsigned(RISCV::TensixInstructionPort::BriscToTrisc2)) {
+      OutContext.reportError(SMLoc(), "unknown Tensix instruction port");
+      return;
+    }
+    std::unique_ptr<MCCodeEmitter> Encoder(
+        createRISCVMCCodeEmitter(*TM.getMCInstrInfo(), OutContext));
+    // REPLAY control stays immediate all the way through final stream checks.
+    // Its instruction-port variant still uses the exact same MC authority.
+    if (Machine->Opcode == RISCV::TTREPLAY) {
+      MCInstBuilder Static(Machine->Opcode);
+      for (unsigned I = 0; I != Info->NumFields; ++I)
+        Static.addImm(MI->getOperand(4 + I).getImm());
+      SmallVector<char, 4> Bytes;
+      SmallVector<MCFixup, 0> Fixups;
+      Encoder->encodeInstruction(Static, Bytes, Fixups, *STI);
+      if (Bytes.size() != 4 || !Fixups.empty()) {
+        OutContext.reportError(SMLoc(), "failed to encode a Tensix REPLAY port instruction");
+        return;
+      }
+      uint32_t Raw = rotr(support::endian::read32le(Bytes.data()), 2);
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+          .addReg(Word).addImm(((uint64_t(Raw) + 0x800) >> 12) & 0xfffff));
+      if (Raw & 0xfff)
+        EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
+            .addReg(Word).addReg(Word).addImm(SignExtend64<12>(Raw)));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+          .addReg(Address).addImm(RISCV::getTensixInstructionPortAddress(
+              static_cast<RISCV::TensixInstructionPort>(Port)) >> 12));
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SW)
+          .addReg(Word).addReg(Address).addImm(0));
+      return;
+    }
+    auto Encode = [&](int FieldNumber) -> std::optional<uint32_t> {
+      MCInstBuilder Static(Machine->Opcode);
+      for (unsigned I = 0; I != Info->NumFields; ++I)
+        Static.addImm(int(I) == FieldNumber ? 1 : 0);
+      SmallVector<char, 4> Bytes;
+      SmallVector<MCFixup, 0> Fixups;
+      Encoder->encodeInstruction(Static, Bytes, Fixups, *STI);
+      if (Bytes.size() != 4 || !Fixups.empty()) {
+        OutContext.reportError(SMLoc(), "failed to encode a Tensix port instruction");
+        return std::nullopt;
+      }
+      return rotr(support::endian::read32le(Bytes.data()), 2);
+    };
+    auto Base = Encode(-1);
+    if (!Base)
+      return;
+    // Ordinary instructions have a byte opcode and zero-reserved fields. The
+    // MC encoding owns both the opcode and every logical field's position.
+    if ((*Base & 0xfff) != 0) {
+      OutContext.reportError(SMLoc(), "Tensix port base must be representable by LUI");
+      return;
+    }
+    SmallVector<unsigned, 16> Shifts;
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      auto One = Encode(I);
+      if (!One)
+        return;
+      uint32_t Position = *One ^ *Base;
+      if (!isPowerOf2_32(Position)) {
+        OutContext.reportError(SMLoc(), "Tensix logical field has no single bit position");
+        return;
+      }
+      Shifts.push_back(countr_zero(Position));
+    }
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+                                     .addReg(Word).addImm(*Base >> 12));
+    for (unsigned I = 0; I != Info->NumFields; ++I) {
+      MCRegister Value = MI->getOperand(4 + I).getReg();
+      // The architectural zero register contributes no bits at any shift.
+      // Omit only scalar encoding work: the final instruction-port store and
+      // its word are unchanged, including an instruction with all-zero fields.
+      if (Value == RISCV::X0)
+        continue;
+      if (Shifts[I]) {
+        EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SLLI)
+                                         .addReg(Field).addReg(Value)
+                                         .addImm(Shifts[I]));
+        Value = Field;
+      }
+      EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::OR)
+                                       .addReg(Word).addReg(Word).addReg(Value));
+    }
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::LUI)
+        .addReg(Address)
+        .addImm(RISCV::getTensixInstructionPortAddress(
+                    static_cast<RISCV::TensixInstructionPort>(Port)) >> 12));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::SW)
+                                     .addReg(Word).addReg(Address).addImm(0));
+    return;
+  }
+
   switch (MI->getOpcode()) {
+  case RISCV::PseudoTTSFPLOAD:
+  case RISCV::PseudoTTSFPLOADFull:
+  case RISCV::PseudoTTSFPSTORE:
+  case RISCV::PseudoTTSFPUDstRecordWord: {
+    bool Full = MI->getOpcode() == RISCV::PseudoTTSFPLOADFull;
+    if (Full) {
+      if (Error E = verifyTensixMachineEffects(*MI)) {
+        OutContext.reportError(SMLoc(), toString(std::move(E)));
+        return;
+      }
+      if (Error E = verifyTensixMachineOperands(*MI, MI->getMF()->getRegInfo(),
+                                                *STI->getRegisterInfo())) {
+        OutContext.reportError(SMLoc(), toString(std::move(E)));
+        return;
+      }
+    }
+    bool Payload = MI->getOpcode() == RISCV::PseudoTTSFPUDstRecordWord;
+    if (Payload) {
+      auto Recorded = getTensixRecordedWord(*MI, *MI->getMF());
+      if (!Recorded) {
+        OutContext.reportError(SMLoc(), toString(Recorded.takeError()));
+        return;
+      }
+    }
+    bool IsLoad =
+        Payload ? MI->getOperand(2).getImm() == RISCV::TTSFPLOAD
+                : Full || MI->getOpcode() == RISCV::PseudoTTSFPLOAD;
+    MCRegister Reg = Payload ? MCRegister(unsigned(MI->getOperand(3).getImm()))
+                            : MCRegister(MI->getOperand(IsLoad ? 0 : 2).getReg());
+    unsigned WordIndex = !Payload && IsLoad ? 1 : 0;
+    MCRegister Word = MI->getOperand(WordIndex).getReg();
+    MCRegister Address = MI->getOperand(WordIndex + 1).getReg();
+    unsigned OffsetIndex = Payload ? 5 : Full ? 3 : IsLoad ? 4 : 3;
+    MCRegister Offset = MI->getOperand(OffsetIndex).getReg();
+    if (Word == Address || Word == Offset || Address == Offset ||
+        Word == RISCV::X0 || Address == RISCV::X0) {
+      OutContext.reportError(SMLoc(), "Tensix Dst port scratch registers must "
+                                      "be distinct nonzero registers "
+                                      "and preserve the offset");
+      return;
+    }
+
+    MCInstBuilder Static(Full     ? RISCV::TTSFPLOADFull
+                         : IsLoad ? RISCV::TTSFPLOAD
+                                  : RISCV::TTSFPSTORE);
+    Static.addReg(Reg);
+    if (IsLoad && !Full) {
+      Static.addReg(Payload ? MCRegister(unsigned(MI->getOperand(4).getImm()))
+                            : MCRegister(MI->getOperand(3).getReg()));
+    }
+    Static.addImm(0)
+        .addImm(MI->getOperand(OffsetIndex + 1).getImm())
+        .addImm(MI->getOperand(OffsetIndex + 2).getImm());
+    if (Full) {
+      Error Fields = STI->hasVendorXTTTensixWH()
+                         ? RISCV::verifyTensixWormholeInstruction(
+                               Static, *TM.getMCInstrInfo())
+                         : RISCV::verifyTensixMCInstructionFields(
+                               Static, *TM.getMCInstrInfo());
+      if (Fields) {
+        OutContext.reportError(SMLoc(), toString(std::move(Fields)));
+        return;
+      }
+    }
+    std::unique_ptr<MCCodeEmitter> Encoder(
+        createRISCVMCCodeEmitter(*TM.getMCInstrInfo(), OutContext));
+    SmallVector<char, 4> Bytes;
+    SmallVector<MCFixup, 0> Fixups;
+    Encoder->encodeInstruction(Static, Bytes, Fixups, *STI);
+    if (Bytes.size() != 4 || !Fixups.empty()) {
+      OutContext.reportError(SMLoc(),
+                             "failed to encode a Tensix Dst port instruction");
+      return;
+    }
+
+    // The static MC record is the only field-layout authority. The instruction
+    // port consumes the unrotated word, with the proven scalar offset intact.
+    uint32_t RawBase = rotr(support::endian::read32le(Bytes.data()), 2);
+    if (!isShiftedUInt<20, 12>(RawBase)) {
+      OutContext.reportError(
+          SMLoc(), "Tensix Dst port base must be representable by LUI");
+      return;
+    }
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::LUI).addReg(Word).addImm(RawBase >> 12));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::OR).addReg(Word).addReg(Word).addReg(Offset));
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::LUI)
+                       .addReg(Address)
+                       .addImm(RISCV::getTensixInstructionPortAddress(
+                                   RISCV::TensixInstructionPort::Local) >>
+                               12));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::SW).addReg(Word).addReg(Address).addImm(0));
+    return;
+  }
+  case RISCV::PseudoTTCoprocessorWait: {
+    if (Error E = verifyTensixCoprocessorWait(*MI, *STI)) {
+      OutContext.reportError(SMLoc(), toString(std::move(E)));
+      return;
+    }
+    Register Address = MI->getOperand(0).getReg();
+    Register Response = MI->getOperand(1).getReg();
+    if (!Address.isPhysical() || !Response.isPhysical()) {
+      OutContext.reportError(SMLoc(),
+                             "coprocessor wait requires allocated GPR scratch");
+      return;
+    }
+    // DoneCheck discards the store's data. The store orders prior issue,
+    // the load waits for execution, and its immediate ALU consumer blocks
+    // subsequent independent memory actions and avoids the PCBuf load bug.
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::LUI).addReg(Address).addImm(0xffe80));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::SW).addReg(RISCV::X0).addReg(Address).addImm(4));
+    EmitToStreamer(
+        *OutStreamer,
+        MCInstBuilder(RISCV::LW).addReg(Response).addReg(Address).addImm(4));
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::ADDI)
+                                     .addReg(RISCV::X0)
+                                     .addReg(Response)
+                                     .addImm(0));
+    return;
+  }
+  case RISCV::PseudoTTReadResponse:
+    EmitToStreamer(*OutStreamer,
+                   MCInstBuilder(RISCV::ADDI)
+                       .addReg(RISCV::X0)
+                       .addReg(MI->getOperand(0).getReg())
+                       .addImm(0));
+    return;
+  case RISCV::PseudoTTDependentUse:
+    EmitToStreamer(*OutStreamer, MCInstBuilder(RISCV::AND)
+                                     .addReg(RISCV::X0)
+                                     .addReg(RISCV::X0)
+                                     .addReg(MI->getOperand(0).getReg()));
+    return;
   case RISCV::PseudoTAILX7: {
     // Lower to PseudoTAILReg with X7 as the register operand.
     MCOperand SymOp;
@@ -583,6 +997,9 @@ void RISCVAsmPrinter::emitTargetFeaturePop(const MCSubtargetInfo &STI,
 }
 
 bool RISCVAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
+  if (MF.getInfo<RISCVMachineFunctionInfo>()->hasTensixCodegenFailed() ||
+      MF.getProperties().hasFailedRegAlloc())
+    return false;
   STI = &MF.getSubtarget<RISCVSubtarget>();
 
   bool EmittedOptionArch = emitTargetFeaturePush(*STI);

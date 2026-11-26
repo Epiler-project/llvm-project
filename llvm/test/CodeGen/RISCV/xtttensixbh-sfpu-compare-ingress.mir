@@ -1,0 +1,75 @@
+# RUN: split-file %s %t
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=finalize-isel,riscv-tensix-bound-verify %t/valid.mir -o - | FileCheck %s --check-prefix=VALID
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/hidden-write.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=finalize-isel %t/hidden-stack.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECT
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs=false -run-pass=riscv-tensix-bound-verify %t/native-write.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=EFFECT
+#
+# Aliased physical reads are legal. Neither a private pseudo nor native MIR
+# may append an undeclared numerical destination or a CC-stack mutation.
+# VALID-LABEL: name: compare_ingress
+# VALID: TTSFPGT $tt_l0, $tt_l0, 1,
+# VALID-NEXT: TTSFPLE $tt_l7, $tt_c15, 1,
+# VALID-NEXT: PseudoRET
+# VALID-NOT: PseudoTTBound
+# EFFECT: physical effects differ from the native descriptor
+
+#--- valid.mir
+--- |
+  define void @compare_ingress() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: compare_ingress
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTBoundSFPGT 0, 0, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoTTBoundSFPLE 7, 15, 1, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- hidden-write.mir
+--- |
+  define void @hidden_write() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: hidden_write
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTBoundSFPGT 0, 1, 1, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_l0
+    PseudoRET
+...
+
+#--- hidden-stack.mir
+--- |
+  define void @hidden_stack() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: hidden_stack
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    PseudoTTBoundSFPLE 0, 1, 1, implicit $tt_issue, implicit-def $tt_issue, implicit-def $tt_ccstack
+    PseudoRET
+...
+
+#--- native-write.mir
+--- |
+  define void @native_write() "tensix-executor"="trisc1" { ret void }
+...
+---
+name: native_write
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    TTSFPLE $tt_l0, $tt_l1, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue, implicit-def $tt_l0
+    PseudoRET
+...

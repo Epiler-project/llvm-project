@@ -78,6 +78,14 @@ add_llvm_target(RISCVCodeGen
   RISCVTargetMachine.cpp
   RISCVTargetObjectFile.cpp
   RISCVTargetTransformInfo.cpp
+  RISCVTensixMacro.cpp
+  RISCVTensixHazards.cpp
+  RISCVTensixIRVerification.cpp
+  RISCVTensixIssueWordFold.cpp
+  RISCVTensixNativeLowering.cpp
+  RISCVTensixBoundLowering.cpp
+  RISCVTensixBoundVerification.cpp
+  RISCVTensixExplicitReplay.cpp
   RISCVVectorMaskDAGMutation.cpp
   RISCVVectorPeephole.cpp
   RISCVVLOptimizer.cpp

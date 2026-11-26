@@ -19,6 +19,7 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Target/LastSubtargetCache.h"
+#include "llvm/Target/RISCV/RISCVTensix.h"
 #include <optional>
 #include <utility>
 
@@ -27,6 +28,7 @@ class RISCVTargetMachine : public CodeGenTargetMachineImpl {
   const RISCVOptions &CLOpts;
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
   mutable StringMap<std::unique_ptr<RISCVSubtarget>> SubtargetMap;
+  std::optional<RISCV::TensixOptimizationOptions> TensixOptimizations;
 
   /// The attributes that select a subtarget.
   struct SubtargetAttrs {
@@ -49,6 +51,11 @@ public:
                      bool JIT);
 
   const RISCVOptions &getCLOpts() const { return CLOpts; }
+
+  void setTensixOptimizationOptions(RISCV::TensixOptimizationOptions Options) {
+    TensixOptimizations = Options;
+  }
+  RISCV::TensixOptimizationOptions getTensixOptimizationOptions() const;
   const RISCVSubtarget *getSubtargetImpl(const Function &F) const override;
   // DO NOT IMPLEMENT: There is no such thing as a valid default subtarget,
   // subtargets are per-function entities based on the target-specific

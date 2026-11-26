@@ -15,6 +15,7 @@
 #define LLVM_LIB_TARGET_RISCV_RISCV_H
 
 #include "MCTargetDesc/RISCVBaseInfo.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
 #include "llvm/IR/Analysis.h"
@@ -29,6 +30,31 @@ class PassRegistry;
 class RISCVRegisterBankInfo;
 class RISCVSubtarget;
 class RISCVTargetMachine;
+
+class RISCVTensixNewPMGate : public RequiredPassInfoMixin<RISCVTensixNewPMGate> {
+  const RISCVTargetMachine *TM;
+public:
+  explicit RISCVTensixNewPMGate(const RISCVTargetMachine *TM) : TM(TM) {}
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+};
+class RISCVTensixIssueWordFoldPass
+    : public RequiredPassInfoMixin<RISCVTensixIssueWordFoldPass> {
+  const RISCVTargetMachine *TM;
+public:
+  explicit RISCVTensixIssueWordFoldPass(const RISCVTargetMachine *TM)
+      : TM(TM) {}
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM);
+};
+FunctionPass *createRISCVTensixIssueWordFoldPass();
+void initializeRISCVTensixIssueWordFoldPass(PassRegistry &);
+FunctionPass *createRISCVTensixIRVerificationPass(bool Supported = true);
+void initializeRISCVTensixIRVerificationPass(PassRegistry &);
+FunctionPass *createRISCVTensixBoundVerificationPass();
+void initializeRISCVTensixBoundVerificationPass(PassRegistry &);
+FunctionPass *createRISCVTensixHazardsPass(bool Repair);
+void initializeRISCVTensixHazardsPass(PassRegistry &);
+FunctionPass *createRISCVTensixExplicitReplayPass();
+void initializeRISCVTensixExplicitReplayPass(PassRegistry &);
 
 class RISCVCodeGenPreparePass
     : public OptionalPassInfoMixin<RISCVCodeGenPreparePass> {

@@ -1,0 +1,81 @@
+# RUN: split-file %s %t
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t/lut.mir -o /dev/null 2>&1 | FileCheck %s --check-prefix=HAZARD
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t/lut.mir -o %t/repaired.mir
+# RUN: FileCheck %s --check-prefix=REPAIRED < %t/repaired.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-bound-verify,riscv-tensix-hazards %t/repaired.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -verify-machineinstrs -run-pass=riscv-tensix-bound-verify,riscv-tensix-hazards %t/cycle.mir -o - | FileCheck %s --check-prefix=CYCLE
+#
+# Both encoded fields are reads: a pending LUT result requires a gap at
+# either VD or VC. GT/LE themselves consume one SFPU issue cycle; an unrelated
+# comparison clears the previous MAD pending cycle before an IADD consumer.
+# They cannot be treated as scalar/no-issue instructions by the hazard owner.
+# HAZARD: unresolved Tensix SFPU MAD to IADD destination hazard
+# REPAIRED-LABEL: name: compare_lut_lhs
+# REPAIRED: $tt_l4 = TTSFPLUT
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPGT $tt_l4, $tt_l5, 1,
+# REPAIRED-NEXT: PseudoRET
+# REPAIRED-LABEL: name: compare_lut_rhs
+# REPAIRED: $tt_l4 = TTSFPLUT
+# REPAIRED-NEXT: TTSFPNOP
+# REPAIRED-NEXT: TTSFPLE $tt_l5, $tt_l4, 1,
+# REPAIRED-NEXT: PseudoRET
+# CYCLE-LABEL: name: comparison_is_sfpu_cycle
+# CYCLE: $tt_l0 = TTSFPMAD
+# CYCLE-NEXT: TTSFPGT $tt_l4, $tt_l5, 1,
+# CYCLE-NEXT: $tt_l0 = TTSFPIADD
+# CYCLE-NEXT: $tt_l0 = TTSFPMAD
+# CYCLE-NEXT: TTSFPLE $tt_l4, $tt_l5, 1,
+# CYCLE-NEXT: $tt_l0 = TTSFPIADD
+# CYCLE-NEXT: PseudoRET
+
+#--- lut.mir
+--- |
+  define void @compare_lut_lhs() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @compare_lut_rhs() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: compare_lut_lhs
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l4 = TTSFPLUT $tt_l4, 4, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPGT $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+---
+name: compare_lut_rhs
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l4 = TTSFPLUT $tt_l4, 4, implicit $tt_l0, implicit $tt_l1, implicit $tt_l2, implicit $tt_l3, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPLE $tt_l5, $tt_l4, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    PseudoRET
+...
+
+#--- cycle.mir
+--- |
+  define void @comparison_is_sfpu_cycle() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: comparison_is_sfpu_cycle
+tracksRegLiveness: false
+machineFunctionInfo:
+  usesTensixSFPU: true
+  usesBoundTensixSFPU: true
+body: |
+  bb.0:
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPGT $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    TTSFPLE $tt_l4, $tt_l5, 1, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_cc, implicit-def $tt_issue
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...

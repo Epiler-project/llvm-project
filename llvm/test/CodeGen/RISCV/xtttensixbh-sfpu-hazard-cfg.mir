@@ -1,0 +1,171 @@
+# RUN: not llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %s -o %t.mir
+# RUN: FileCheck %s < %t.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.mir -o /dev/null
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -start-before=riscv-tensix-hazards -stop-after=riscv-tensix-hazards %t.mir -o %t.again.mir
+# RUN: FileCheck %s < %t.again.mir
+# RUN: llc -mtriple=riscv32 -mattr=+xtttensixbh -run-pass=riscv-tensix-hazards %t.again.mir -o /dev/null
+
+# An incoming safe edge cannot erase a pending hazard from another edge, and
+# scalar instructions or a branch do not consume an SFPU gap. The backedge
+# cases require a fixed point: the producer is later than its consumer in
+# block order. Repair must preserve the CFG and be accepted independently.
+# INVALID: in function diamond_hazard void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function backedge_hazard void (): unresolved Tensix SFPU MAD to IADD destination hazard
+# INVALID: in function diamond_dst_hazard void (): unresolved Tensix matrix Dst write to SFPLOAD hazard
+# INVALID: in function backedge_dst_hazard void (): unresolved Tensix matrix Dst write to SFPLOAD hazard
+
+--- |
+  define void @diamond_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @backedge_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @diamond_dst_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+  define void @backedge_dst_hazard() "target-features"="+xtttensixbh" "tensix-executor"="trisc1" { ret void }
+...
+---
+name: diamond_hazard
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    $x5 = ADDI $x0, 1
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: diamond_hazard
+# CHECK: bb.0:
+# CHECK: BNE $x10, $x0, %bb.2
+# CHECK-NEXT: PseudoBR %bb.1
+# CHECK: bb.1:
+# CHECK: $tt_l0 = TTSFPMAD
+# CHECK-NEXT: PseudoBR %bb.3
+# CHECK: bb.2:
+# CHECK: TTSFPNOP
+# CHECK-NEXT: PseudoBR %bb.3
+# CHECK: bb.3:
+# CHECK-NEXT: $x5 = ADDI $x0, 1
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPIADD
+# CHECK-NEXT: PseudoRET
+---
+name: backedge_hazard
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.2, %bb.3
+    $x5 = ADDI $x0, 1
+    $tt_l0 = TTSFPIADD $tt_l0, $tt_c9, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.3
+    PseudoBR %bb.2
+  bb.2:
+    successors: %bb.1
+    $tt_l0 = TTSFPMAD $tt_l0, $tt_c10, $tt_c9, $tt_c9, 0, implicit $tt_cc, implicit $tt_config, implicit $tt_issue, implicit-def $tt_issue
+    $x10 = ADDI $x10, -1
+    PseudoBR %bb.1
+  bb.3:
+    PseudoRET
+...
+# CHECK-LABEL: name: backedge_hazard
+# CHECK: bb.0:
+# CHECK: PseudoBR %bb.1
+# CHECK: bb.1:
+# CHECK: $x5 = ADDI $x0, 1
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPIADD
+# CHECK-NEXT: BNE $x10, $x0, %bb.3
+# CHECK-NEXT: PseudoBR %bb.2
+# CHECK: bb.2:
+# CHECK: $tt_l0 = TTSFPMAD
+# CHECK-NEXT: $x10 = ADDI $x10, -1
+# CHECK-NEXT: PseudoBR %bb.1
+# CHECK: bb.3:
+# CHECK-NEXT: PseudoRET
+---
+name: diamond_dst_hazard
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    BNE $x10, $x0, %bb.2
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.3
+    TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.2:
+    successors: %bb.3
+    TTSFPNOP implicit $tt_issue, implicit-def $tt_issue
+    PseudoBR %bb.3
+  bb.3:
+    $x5 = ADDI $x0, 1
+    $tt_l0 = TTSFPLOAD $tt_l0, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    PseudoRET
+...
+# CHECK-LABEL: name: diamond_dst_hazard
+# CHECK: bb.0:
+# CHECK: BNE $x10, $x0, %bb.2
+# CHECK-NEXT: PseudoBR %bb.1
+# CHECK: bb.1:
+# CHECK: TTMVMUL
+# CHECK-NEXT: PseudoBR %bb.3
+# CHECK: bb.2:
+# CHECK: TTSFPNOP
+# CHECK-NEXT: PseudoBR %bb.3
+# CHECK: bb.3:
+# CHECK-NEXT: $x5 = ADDI $x0, 1
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPLOAD
+# CHECK-NEXT: PseudoRET
+---
+name: backedge_dst_hazard
+tracksRegLiveness: false
+body: |
+  bb.0:
+    successors: %bb.1
+    PseudoBR %bb.1
+  bb.1:
+    successors: %bb.2, %bb.3
+    $x5 = ADDI $x0, 1
+    $tt_l0 = TTSFPLOAD $tt_l0, 0, 0, 4, implicit $tt_cc, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_dst, implicit-def $tt_issue
+    BNE $x10, $x0, %bb.3
+    PseudoBR %bb.2
+  bb.2:
+    successors: %bb.1
+    TTMVMUL 0, 0, 0, 0, implicit $tt_config, implicit $tt_dst, implicit $tt_issue, implicit-def $tt_config, implicit-def $tt_dst, implicit-def $tt_issue
+    $x10 = ADDI $x10, -1
+    PseudoBR %bb.1
+  bb.3:
+    PseudoRET
+...
+# CHECK-LABEL: name: backedge_dst_hazard
+# CHECK: bb.0:
+# CHECK: PseudoBR %bb.1
+# CHECK: bb.1:
+# CHECK: $x5 = ADDI $x0, 1
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: TTSFPNOP
+# CHECK-NEXT: $tt_l0 = TTSFPLOAD
+# CHECK-NEXT: BNE $x10, $x0, %bb.3
+# CHECK-NEXT: PseudoBR %bb.2
+# CHECK: bb.2:
+# CHECK: TTMVMUL
+# CHECK-NEXT: $x10 = ADDI $x10, -1
+# CHECK-NEXT: PseudoBR %bb.1
+# CHECK: bb.3:
+# CHECK-NEXT: PseudoRET
