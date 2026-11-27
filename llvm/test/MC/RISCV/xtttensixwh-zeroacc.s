@@ -1,6 +1,7 @@
 # RUN: split-file %s %t
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -show-encoding %t/full.s | FileCheck %s --check-prefix=WH
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -show-encoding %t/face.s | FileCheck %s --check-prefix=FACE
+# RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -show-encoding %t/half.s | FileCheck %s --check-prefix=HALF
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixbh -show-encoding %t/full.s | FileCheck %s --check-prefix=BH
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixbh -show-encoding %t/bh-upper.s | FileCheck %s --check-prefix=BH-UPPER
 # RUN: llvm-mc -triple=riscv32 -mattr=+xtttensixwh -filetype=obj %t/full.s | llvm-objdump -d --no-print-imm-hex --mattr=+xtttensixwh - | FileCheck %s --check-prefix=DIS
@@ -53,14 +54,14 @@ ttzeroacc 0, 1, 0, 1, 3
 ttzeroacc 16383, 7, 1, 1, 31
 
 #--- invalid.s
-# These forms violate WH field bounds or its admitted Full/16-row forms.
+# These forms violate WH field bounds or its full, half and 16-row selectors.
 ttzeroacc 64, 1, 0, 0, 3
 ttzeroacc 1, 1, 0, 0, 3
 ttzeroacc 0, 0, 0, 0, 3
 ttzeroacc 0, 2, 0, 0, 3
 ttzeroacc 0, 1, 1, 0, 3
 ttzeroacc 0, 1, 0, 2, 3
-ttzeroacc 0, 1, 0, 0, 2
+ttzeroacc 2, 1, 0, 0, 2
 ttzeroacc 0, 1, 0, 1, 7
 ttzeroacc 0, 1, 0, 0, 32
 
@@ -78,3 +79,9 @@ ttzeroacc 0, 1, 0, 0, 32
 # FACE: ttzeroacc 11, 0, 0, 1, 1{{ *}}# encoding: [0x2c,0x00,0xa0,0x40]
 ttzeroacc 11, 0, 0, 0, 1
 ttzeroacc 11, 0, 0, 1, 1
+
+#--- half.s
+# HALF: ttzeroacc 0, 1, 0, 0, 2{{ *}}# encoding: [0x00,0x00,0x42,0x40]
+# HALF: ttzeroacc 1, 1, 0, 1, 2{{ *}}# encoding: [0x04,0x00,0xc2,0x40]
+ttzeroacc 0, 1, 0, 0, 2
+ttzeroacc 1, 1, 0, 1, 2

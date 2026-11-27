@@ -193,9 +193,9 @@ Error verifyTensixWormholeInstructionFields(Intrinsic::ID ID,
                                " must be in [" + Twine(Field->MinValue) + ", " +
                                Twine(Field->MaxValue) + "]");
   }
-  if (ID == Intrinsic::tt_zeroacc_port && Fields[4] != 1)
+  if (ID == Intrinsic::tt_zeroacc_port && Fields[4] != 1 && Fields[4] != 2)
     return createStringError(
-        "Wormhole ZEROACC instruction-port emission requires 16-row mode");
+        "Wormhole ZEROACC instruction-port emission requires a 16-row or half-Dst clear");
   if (Info->IntrinsicID == Intrinsic::tt_zeroacc && Fields[4] == 1 &&
       Fields[3] &&
       Fields[0] > (getTensixWormholeField(Machine->Opcode, 0)->MaxValue >> 1))

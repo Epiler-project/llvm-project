@@ -100,14 +100,14 @@ RISCVSubtarget::RISCVSubtarget(const Triple &TT, StringRef CPU,
                                StringRef TuneCPU, StringRef FS,
                                StringRef ABIName, unsigned RVVVectorBitsMin,
                                unsigned RVVVectorBitsMax,
-                               const TargetMachine &TM)
+                               const TargetMachine &TM, bool TensixExecutor)
     : RISCVGenSubtargetInfo(TT, CPU, TuneCPU, FS),
       CLOpts(static_cast<const RISCVTargetMachine &>(TM).getCLOpts()),
       IsLittleEndian(TT.isLittleEndian()), RVVVectorBitsMin(RVVVectorBitsMin),
       RVVVectorBitsMax(RVVVectorBitsMax),
       FrameLowering(
           initializeSubtargetDependencies(TT, CPU, TuneCPU, FS, ABIName)),
-      InstrInfo(*this), TLInfo(TM, *this) {
+      InstrInfo(*this), TLInfo(TM, *this, TensixExecutor) {
   TSInfo = std::make_unique<RISCVSelectionDAGInfo>();
 }
 

@@ -187,6 +187,7 @@ RISCVTargetMachine::getSubtargetImpl(const Function &F) const {
   Attrs.TuneCPU = FnAttrs.getAttribute("tune-cpu");
   Attrs.FS = FnAttrs.getAttribute("target-features");
   Attrs.VScaleRange = FnAttrs.getAttribute(Attribute::VScaleRange);
+  Attrs.TensixExecutor = FnAttrs.hasAttribute("tensix-executor");
 
   if (const RISCVSubtarget *ST = LastSubtarget.lookup(FnAttrs, M, Attrs))
     return ST;
@@ -238,12 +239,14 @@ RISCVTargetMachine::getSubtargetImpl(const Function &F) const {
 
   SmallString<512> Key;
   raw_svector_ostream(Key) << "RVVMin" << RVVBitsMin << "RVVMax" << RVVBitsMax
-                           << CPU << TuneCPU << FS;
+                           << CPU << TuneCPU << FS
+                           << ":TensixExecutor=" << Attrs.TensixExecutor;
   auto &I = SubtargetMap[Key];
   if (!I) {
     StringRef ABIName = getTargetABIName(*F.getParent());
-    I = std::make_unique<RISCVSubtarget>(
-        TargetTriple, CPU, TuneCPU, FS, ABIName, RVVBitsMin, RVVBitsMax, *this);
+    I = std::make_unique<RISCVSubtarget>(TargetTriple, CPU, TuneCPU, FS,
+                                         ABIName, RVVBitsMin, RVVBitsMax, *this,
+                                         Attrs.TensixExecutor);
   }
   LastSubtarget.set(FnAttrs, M, Attrs, I.get());
   return I.get();

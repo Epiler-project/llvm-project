@@ -785,7 +785,9 @@ def TTELWADD : TensixOrdinaryInst<"ELWADD", 0x28,
        TensixElementwiseWormholeEncoding<0x28>]>;
 }
 
-def PseudoTTELWMULPort : TensixOrdinaryPort;
+def PseudoTTELWMULPort : TensixOrdinaryPort {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTELWMULMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$dest_accum_en, uimm32:$clear_dvalid)>;
 def TTELWMUL : TensixOrdinaryInst<"ELWMUL", 0x27,
@@ -796,6 +798,7 @@ def TTELWMUL : TensixOrdinaryInst<"ELWMUL", 0x27,
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
   let WormholeFieldMaxima = [1023, 3, 3, 0, 3];
+  let WormholeDynamicFields = 0x0002;
   let EncodingInfos = EncodingByHwMode<
       [DefaultMode, TensixWormholeEncoding],
       [TensixElementwiseBlackholeEncoding<0x27>,
@@ -1349,7 +1352,9 @@ def TTMVMULWormholeEncoding : TensixMvmulEncoding {
   let RawWord{23-22} = clear_dvalid;
 }
 
-def PseudoTTMVMULPort : TensixOrdinaryPort;
+def PseudoTTMVMULPort : TensixOrdinaryPort {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTMVMULMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$dst, uimm32:$addr_mode, uimm32:$instr_mod19, uimm32:$clear_dvalid)>;
 def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
@@ -1360,6 +1365,7 @@ def TTMVMUL : TensixOrdinaryInst<"MVMUL", 0x26,
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
   let WormholeFieldMaxima = [1023, 3, 1, 3];
+  let WormholeDynamicFields = 0x0002;
   let EncodingInfos = EncodingByHwMode<
       [DefaultMode, TensixWormholeEncoding],
       [TTMVMULBlackholeEncoding, TTMVMULWormholeEncoding]>;
@@ -1570,10 +1576,13 @@ def TTRMWCIB0 : TensixOrdinaryInst<"RMWCIB0", 0xb3,
   let WormholeSupported = 1;
   let WormholeFieldMaxima = [187, 255, 255];
   // SrcA format override in ALU_FORMAT_SPEC_REG word 0 uses bits 0..3
-  // for the format and bit 4 for enable. Admit FP32 and Float16_b.
+  // for the format and bit 4 for enable. Gasket rounding in word 1
+  // can be disabled independently of the neighboring FPU rounding bit.
   let WormholeLogicalForms = [[6, 0, 255], [2, 0, 1], [2, 1, 1],
                               [2, 0, 60], [2, 4, 60],
-                              [0, 16, 31], [0, 21, 31]];
+                              [2, 0, 3], [2, 1, 3],
+                              [0, 16, 31], [0, 20, 31], [0, 21, 31],
+                              [0, 160, 224], [1, 0, 2]];
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1590,12 +1599,12 @@ def TTRMWCIB1 : TensixOrdinaryInst<"RMWCIB1", 0xb4,
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
     [223, 255, 255]> {
-  // WH RMWCIB.md and cfg_defines.h: first profile only clears the
-  // documented DEST_REGW_BASE bytes through actual in-band config issue.
+  // DEST_REGW_BASE, Dstacc_override or the upper two bits of the
+  // five-bit BF16 SrcB override (continued from the preceding byte).
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
   let WormholeFieldMaxima = [187, 255, 255];
-  let WormholeLogicalForms = [[6, 0, 255]];
+  let WormholeLogicalForms = [[6, 0, 255], [0, 0, 64], [0, 2, 3]];
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1628,12 +1637,14 @@ def TTRMWCIB3 : TensixOrdinaryInst<"RMWCIB3", 0xb6,
     "$cfgregaddr, $data, $mask",
     ["cfgregaddr", "data", "mask"],
     [223, 255, 255]> {
-  // ALU_ACC_CTRL word 1 carries distinct INT8, FPU and SFPU enables.
+  // Word 1 carries distinct INT8, FPU and SFPU enables. Bits 28:25
+  // select the packer Dstacc format (FP32, Float16_b, Int32, UInt16).
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
   let WormholeFieldMaxima = [187, 255, 255];
   let WormholeLogicalForms = [[1, 0, 128], [1, 0, 32], [1, 32, 32],
-                              [1, 0, 64], [1, 64, 64]];
+                              [1, 0, 64], [1, 64, 64], [1, 0, 30],
+                              [1, 10, 30], [1, 16, 30], [1, 18, 30]];
   bits<8> cfgregaddr;
   bits<8> data;
   bits<8> mask;
@@ -1766,6 +1777,7 @@ def TTSETADCXX : TensixOrdinaryInst<"SETADCXX", 0x5e,
   let WormholeSupported = 1;
   // The local port accepts both endpoints of a computed X range.
   let WormholeDynamicFields = 0x0003;
+  let WormholeFieldMaxima = [1023, 1023, 7];
   bits<10> x_start;
   bits<11> x_end2;
   bits<3> cntsetmask;
@@ -2333,7 +2345,9 @@ class TensixWormholeUnpacrDecoder<bit Clear>
 def TTUNPACR_NOPWormholePublishDecoder : TensixWormholeUnpacrDecoder<0>;
 def TTUNPACR_NOPWormholeClearDecoder : TensixWormholeUnpacrDecoder<1>;
 
-def PseudoTTWRCFGPort : TensixOrdinaryPort;
+def PseudoTTWRCFGPort : TensixOrdinaryPort {
+  let Predicates = [HasVendorXTTTensix];
+}
 def PseudoTTWRCFGMop : TensixOrdinaryMop<
     (ins uimm8:$slot, uimm32:$cfgreg, uimm32:$wr128b, uimm32:$gpraddress)>;
 def TTWRCFG : TensixOrdinaryInst<"WRCFG", 0xb0,
@@ -2341,11 +2355,12 @@ def TTWRCFG : TensixOrdinaryInst<"WRCFG", 0xb0,
     "$cfgreg, $wr128b, $gpraddress",
     ["cfgreg", "wr128b", "gpraddress"],
     [32767, 1, 255]> {
-  // Wormhole WRCFG.md: one current-thread GPR supplies a single physical
-  // Config word. Quadword, port and MOP writes have separate contracts.
+  // Wormhole WRCFG uses one GPR or a four-word aligned window.
+  // The instruction port can select the GPR bank at run time.
   let Predicates = [HasVendorXTTTensix];
   let WormholeSupported = 1;
-  let WormholeFieldMaxima = [187, 0, 63];
+  let WormholeDynamicFields = 0x0004;
+  let WormholeFieldMaxima = [187, 1, 63];
   bits<15> cfgreg;
   bits<1> wr128b;
   bits<8> gpraddress;
@@ -2415,7 +2430,10 @@ def TTZEROACC : TensixOrdinaryInst<"ZEROACC", 0x10,
   let WormholeSupported = 1;
   let WormholeFieldMaxima = [63, 1, 0, 1, 3];
   let WormholeDynamicFields = 0x0001;
-  let WormholeLogicalForms = [[0, 1, 0, -1, 3], [-1, 0, 0, -1, 1]];
+  // A dynamic face uses a neutral address modifier. Half-clear selects
+  // the low or high physical half with Imm10 bit 0 and ignores AddrMod.
+  let WormholeLogicalForms = [[0, 1, 0, -1, 3], [-1, 0, 0, -1, 1],
+                              [0, 1, 0, -1, 2], [1, 1, 0, -1, 2]];
   let EncodingInfos = EncodingByHwMode<
       [DefaultMode, TensixWormholeEncoding],
       [TTZEROACCBlackholeEncoding, TTZEROACCWormholeEncoding]>;

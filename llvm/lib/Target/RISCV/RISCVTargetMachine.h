@@ -33,10 +33,12 @@ class RISCVTargetMachine : public CodeGenTargetMachineImpl {
   /// The attributes that select a subtarget.
   struct SubtargetAttrs {
     Attribute CPU, TuneCPU, FS, VScaleRange;
+    bool TensixExecutor = false;
 
     bool operator==(const SubtargetAttrs &RHS) const {
       return CPU == RHS.CPU && TuneCPU == RHS.TuneCPU && FS == RHS.FS &&
-             VScaleRange == RHS.VScaleRange;
+             VScaleRange == RHS.VScaleRange &&
+             TensixExecutor == RHS.TensixExecutor;
     }
 
     bool operator!=(const SubtargetAttrs &RHS) const { return !(*this == RHS); }

@@ -40,12 +40,15 @@ ttaddrcrxy 16, 0, 0, 0, 0, 1
 ttsetadcxy 1, 0, 0, 0, 8, 1
 ttincadczw 0, 0, 0, 8, 1
 ttincrwc 0, 0, 0, 8
+ttsetadcxx 0, 1024, 4
 
 # INVALID: error: Wormhole ADDRCRXY field bitmask must be in [0, 15]
 # INVALID: error: Wormhole SETADCXY field ch1_y must be in [0, 7]
 # INVALID: error: Wormhole INCADCZW field ch1_y must be in [0, 7]
 # INVALID: error: Wormhole INCRWC field rwc_cr must be in [0, 7]
+# INVALID: error: Wormhole SETADCXX field x_end2 must be in [0, 1023]
 # BH: ttaddrcrxy 16, 0, 0, 0, 0, 1
 # BH: ttsetadcxy 1, 0, 0, 0, 8, 1
 # BH: ttincadczw 0, 0, 0, 8, 1
 # BH: ttincrwc 0, 0, 0, 8
+# BH: ttsetadcxx 0, 1024, 4

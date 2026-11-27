@@ -77,7 +77,7 @@ TEST(RISCVTensix, ZeroaccKeepsFiveFieldLogicalContract) {
   EXPECT_EQ(RISCV::getTensixInstructionField(*Info, 5), nullptr);
 }
 
-TEST(RISCVTensix, WormholeZeroaccReceivesCanonicalFullAndFaceForms) {
+TEST(RISCVTensix, WormholeZeroaccReceivesFullHalfAndFaceForms) {
   EXPECT_TRUE(RISCV::isTensixWormholeIntrinsic(Intrinsic::tt_zeroacc));
   EXPECT_TRUE(RISCV::isTensixWormholeIntrinsic(Intrinsic::tt_zeroacc_port));
   for (uint32_t Use32 : {0u, 1u}) {
@@ -88,6 +88,12 @@ TEST(RISCVTensix, WormholeZeroaccReceivesCanonicalFullAndFaceForms) {
   }
   for (Intrinsic::ID ID : {Intrinsic::tt_zeroacc, Intrinsic::tt_zeroacc_port}) {
     for (auto [Use32, LastFace] : {std::pair{0u, 63u}, std::pair{1u, 31u}}) {
+      for (uint32_t Half : {0u, 1u}) {
+        const uint32_t Fields[] = {Half, 1, 0, Use32, 2};
+        EXPECT_TRUE(
+            toString(RISCV::verifyTensixWormholeInstructionFields(ID, Fields))
+                .empty());
+      }
       for (uint32_t Face : {0u, LastFace}) {
         const uint32_t Fields[] = {Face, 0, 0, Use32, 1};
         EXPECT_TRUE(
@@ -111,7 +117,7 @@ TEST(RISCVTensix, WormholeZeroaccRejectsInvalidFieldsAndIssueForms) {
       {1, 2, "field addr_mode must be in [0, 1]"},
       {2, 1, "field clear_zero_flags must be in [0, 0]"},
       {3, 2, "field use_32_bit_mode must be in [0, 1]"},
-      {4, 2, "does not match an admitted logical form"},
+      {4, 0, "does not match an admitted logical form"},
       {4, 7, "field clear_mode must be in [0, 3]"},
   };
   for (const InvalidField &Case : Invalid) {
@@ -133,16 +139,23 @@ TEST(RISCVTensix, WormholeZeroaccRejectsInvalidFieldsAndIssueForms) {
               std::string::npos);
   }
   for (Intrinsic::ID ID : {Intrinsic::tt_zeroacc, Intrinsic::tt_zeroacc_port}) {
+    const uint32_t InvalidHalf[] = {2, 1, 0, 0, 2};
+    EXPECT_NE(
+        toString(RISCV::verifyTensixWormholeInstructionFields(ID, InvalidHalf))
+            .find("does not match an admitted logical form"),
+        std::string::npos);
     const uint32_t Fields[] = {32, 0, 0, 1, 1};
     EXPECT_NE(toString(RISCV::verifyTensixWormholeInstructionFields(ID, Fields))
                   .find("16-row FP32 face must be in [0, 31]"),
               std::string::npos);
   }
   const uint32_t FullFields[] = {0, 1, 0, 0, 3};
-  EXPECT_NE(toString(RISCV::verifyTensixWormholeInstructionFields(
-                         Intrinsic::tt_zeroacc_port, FullFields))
-                .find("instruction-port emission requires 16-row mode"),
-            std::string::npos);
+  EXPECT_NE(
+      toString(RISCV::verifyTensixWormholeInstructionFields(
+                   Intrinsic::tt_zeroacc_port, FullFields))
+          .find(
+              "instruction-port emission requires a 16-row or half-Dst clear"),
+      std::string::npos);
   EXPECT_FALSE(RISCV::isTensixWormholeIntrinsic(Intrinsic::tt_zeroacc_mop));
   EXPECT_NE(toString(RISCV::verifyTensixWormholeInstructionFields(
                          Intrinsic::tt_zeroacc_mop, FullFields))
@@ -158,6 +171,7 @@ TEST(RISCVTensix, WormholeNativePipelinesReceiveArchitecturalFieldBounds) {
   const Case Cases[] = {
       {Intrinsic::tt_mvmul, {0, 1, 0, 0}},
       {Intrinsic::tt_mvmul, {1023, 3, 0, 3}},
+      {Intrinsic::tt_mvmul_port, {0, 3, 0, 0}},
       {Intrinsic::tt_mvmul, {0, 0, 1, 0}},
       {Intrinsic::tt_unpacr, {1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0}},
       {Intrinsic::tt_unpacr, {1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 17, 1}},
@@ -183,6 +197,7 @@ TEST(RISCVTensix, WormholeNativePipelinesRejectUnreceivedAndReservedFields) {
   const Case Cases[] = {
       {Intrinsic::tt_mvmul, {1024, 0, 0, 0}, "dst"},
       {Intrinsic::tt_mvmul, {0, 4, 0, 0}, "addr_mode"},
+      {Intrinsic::tt_mvmul_port, {0, 4, 0, 0}, "addr_mode"},
       {Intrinsic::tt_mvmul, {0, 0, 2, 0}, "instr_mod19"},
       {Intrinsic::tt_mvmul, {0, 0, 0, 4}, "clear_dvalid"},
       {Intrinsic::tt_unpacr,
@@ -230,11 +245,11 @@ TEST(RISCVTensix, WormholeNativePipelinesRejectUnreceivedAndReservedFields) {
   }
 }
 
-TEST(RISCVTensix, WormholeNativePipelinesRejectPortAndMopForms) {
+TEST(RISCVTensix, WormholeNativePipelinesRejectUnsupportedIssueForms) {
   for (Intrinsic::ID ID : std::initializer_list<Intrinsic::ID>{
-           Intrinsic::tt_mvmul_port, Intrinsic::tt_mvmul_mop,
-           Intrinsic::tt_unpacr_port, Intrinsic::tt_unpacr_mop,
-           Intrinsic::tt_zerosrc_port, Intrinsic::tt_zerosrc_mop}) {
+           Intrinsic::tt_mvmul_mop, Intrinsic::tt_unpacr_port,
+           Intrinsic::tt_unpacr_mop, Intrinsic::tt_zerosrc_port,
+           Intrinsic::tt_zerosrc_mop}) {
     SCOPED_TRACE(unsigned(ID));
     EXPECT_FALSE(RISCV::isTensixWormholeIntrinsic(ID));
     EXPECT_NE(toString(RISCV::verifyTensixWormholeInstructionFields(ID, {}))
@@ -389,6 +404,8 @@ struct BoundFormCase {
   int ModeArgument = -1;
   uint16_t BlackholeModes = 0;
   uint16_t WormholeModes = 0;
+  uint16_t StoreBlackholeModes = 0;
+  uint16_t StoreWormholeModes = 0;
 };
 
 const BoundFormCase BoundForms[] = {
@@ -412,7 +429,9 @@ const BoundFormCase BoundForms[] = {
      1,
      3,
      0xc17f,
-     0xc17f},
+     0xc17f,
+     0xc37f,
+     0xc37f},
     {Intrinsic::tt_bh_sfpu_add,
      Intrinsic::tt_wh_sfpu_add,
      {0, 0, 9, 10, 0},
@@ -766,12 +785,19 @@ TEST_P(RISCVTensixPhysicalABITest, ReceivesExactNativeModesAndRejectsReserved) {
   const uint16_t Allowed = Case.Architecture == SFPUArchitecture::Wormhole
                                ? Case.Form->WormholeModes
                                : Case.Form->BlackholeModes;
+  const uint16_t EffectiveAllowed =
+      Case.ID == Intrinsic::tt_bh_sfpu_store
+          ? Case.Form->StoreBlackholeModes
+          : Case.ID == Intrinsic::tt_wh_sfpu_store
+                ? Case.Form->StoreWormholeModes
+                : Allowed;
   for (int64_t Mode = -1; Mode <= 16; ++Mode) {
     SCOPED_TRACE(Mode);
     auto Arguments = boundConstants(Case.Form->Arguments);
     Arguments[Case.Form->ModeArgument].Constant = Mode;
     auto Contract = RISCV::getTensixBoundSFPUContract(Case.ID, Arguments);
-    const bool Expected = Mode >= 0 && Mode < 16 && (Allowed & (1u << Mode));
+    const bool Expected = Mode >= 0 && Mode < 16 &&
+                          (EffectiveAllowed & (1u << Mode));
     EXPECT_EQ(bool(Contract), Expected);
     if (!Contract)
       consumeError(Contract.takeError());
@@ -961,8 +987,8 @@ TEST(RISCVTensix, BoundFloat32DstTransferAdmitsAddressModeZeroOnBothTargets) {
       {Intrinsic::tt_bh_sfpu_load, 0},  {Intrinsic::tt_bh_sfpu_load, 3},
       {Intrinsic::tt_bh_sfpu_load, 6},  {Intrinsic::tt_bh_sfpu_store, 0},
       {Intrinsic::tt_bh_sfpu_store, 3}, {Intrinsic::tt_bh_sfpu_store, 6},
-      {Intrinsic::tt_wh_sfpu_load, 0},  {Intrinsic::tt_wh_sfpu_load, 3},
-      {Intrinsic::tt_wh_sfpu_store, 0}, {Intrinsic::tt_wh_sfpu_store, 3},
+      {Intrinsic::tt_wh_sfpu_load, 0},  {Intrinsic::tt_wh_sfpu_load, 2},
+      {Intrinsic::tt_wh_sfpu_store, 0}, {Intrinsic::tt_wh_sfpu_store, 2},
   };
   for (const Case &Item : Cases) {
     SCOPED_TRACE(Intrinsic::getName(Item.ID));
@@ -1004,51 +1030,79 @@ TEST(RISCVTensix, BoundFloat32DstTransferAdmitsAddressModeZeroOnBothTargets) {
   }
 }
 
-// Native format4 copies the complete datum without format3's denormal flush.
-// Query the actual encoded format and retain its distinct typed semantics.
-TEST(RISCVTensix, BoundRaw32DstTransferRetainsActualABIArguments) {
+// Format 4 retains raw bits that format 3 may flush during a store.
+TEST(RISCVTensix, NativeDstTransfersRetainFormatAndActualABIArguments) {
   using namespace RISCV;
-  for (Intrinsic::ID ID :
-       {Intrinsic::tt_bh_sfpu_load, Intrinsic::tt_bh_sfpu_store}) {
-    const bool Load = ID == Intrinsic::tt_bh_sfpu_load;
+  struct Case {
+    Intrinsic::ID ID;
+    unsigned Mode;
+    bool Load;
+  };
+  constexpr Case Cases[] = {{Intrinsic::tt_bh_sfpu_load, 7, true},
+                            {Intrinsic::tt_bh_sfpu_store, 7, false},
+                            {Intrinsic::tt_wh_sfpu_load, 3, true},
+                            {Intrinsic::tt_wh_sfpu_store, 3, false}};
+  for (auto [ID, Mode, Load] : Cases) {
     SCOPED_TRACE(Intrinsic::getName(ID));
-    for (TensixBoundValue Offset :
-         {TensixBoundValue{TensixBoundValueKind::Constant, 37},
-          TensixBoundValue{TensixBoundValueKind::Constant, 1023},
-          TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
-      auto Arguments =
-          Load ? boundConstants({5, 5, 0, 7, 4}) : boundConstants({5, 0, 7, 4});
-      const unsigned OffsetIndex = Load ? 2 : 1;
-      Arguments[OffsetIndex] = Offset;
-      auto Contract = getTensixBoundSFPUContract(ID, Arguments);
-      ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
-      ASSERT_TRUE(Contract->getDstTransferFacts())
-          << "Blackhole slot7 format4 has no received Raw32 side transfer";
-      const auto &Facts = *Contract->getDstTransferFacts();
-      EXPECT_EQ(Facts.Format, TensixSFPUDstFormat::Raw32);
-      EXPECT_EQ(Facts.OffsetArgument, OffsetIndex);
-      EXPECT_EQ(Contract->getArgumentRoles()[Facts.OffsetArgument],
-                TensixBoundArgumentRole::DstOffset);
-      EXPECT_EQ(Facts.AddressMode, 7u);
-      EXPECT_TRUE(Facts.RequiresLaneEnable);
-      EXPECT_TRUE(Facts.RequiresConditionState);
-      EXPECT_TRUE(Facts.RequiresRowMaskState);
-      EXPECT_TRUE(Contract->getTransferFacts().empty());
-      EXPECT_EQ(Contract->getArgumentCount(), Load ? 5u : 4u);
-      if (Load) {
-        const auto *Transfer =
-            std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
-        ASSERT_NE(Transfer, nullptr);
-        EXPECT_EQ(Transfer->DestinationValue, 0u);
-        ASSERT_TRUE(Transfer->OldValue);
-        EXPECT_EQ(*Transfer->OldValue, 1u);
-      } else {
-        const auto *Transfer =
-            std::get_if<TensixSFPUDstStoreTransfer>(&Facts.Packet);
-        ASSERT_NE(Transfer, nullptr);
-        EXPECT_EQ(Transfer->SourceValue, 0u);
+    const unsigned OffsetIndex = Load ? 2 : 1;
+    for (auto [Format, Expected] :
+         {std::pair{2u, TensixSFPUDstFormat::BFloat16},
+          std::pair{3u, TensixSFPUDstFormat::Float32},
+          std::pair{4u, TensixSFPUDstFormat::Raw32}}) {
+      SCOPED_TRACE(Format);
+      for (TensixBoundValue Offset :
+           {TensixBoundValue{TensixBoundValueKind::Constant, 37},
+            TensixBoundValue{TensixBoundValueKind::Constant, 1023},
+            TensixBoundValue{TensixBoundValueKind::DynamicScalar}}) {
+        auto Arguments = Load ? boundConstants({5, 5, 0, Mode, Format})
+                              : boundConstants({5, 0, Mode, Format});
+        Arguments[OffsetIndex] = Offset;
+        auto Contract = getTensixBoundSFPUContract(ID, Arguments);
+        ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
+        ASSERT_TRUE(Contract->getDstTransferFacts());
+        const auto &Facts = *Contract->getDstTransferFacts();
+        EXPECT_EQ(Facts.Format, Expected);
+        EXPECT_EQ(Facts.OffsetArgument, OffsetIndex);
+        EXPECT_EQ(Contract->getArgumentRoles()[Facts.OffsetArgument],
+                  TensixBoundArgumentRole::DstOffset);
+        EXPECT_EQ(Facts.AddressMode, Mode);
+        EXPECT_TRUE(Facts.RequiresLaneEnable);
+        EXPECT_TRUE(Facts.RequiresConditionState);
+        EXPECT_TRUE(Facts.RequiresRowMaskState);
+        EXPECT_TRUE(Contract->getTransferFacts().empty());
+        EXPECT_EQ(Contract->getArgumentCount(), Load ? 5u : 4u);
+        if (Load) {
+          const auto *Transfer =
+              std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
+          ASSERT_NE(Transfer, nullptr);
+          EXPECT_EQ(Transfer->DestinationValue, 0u);
+          EXPECT_EQ(Transfer->OldValue, 1u);
+        } else {
+          const auto *Transfer =
+              std::get_if<TensixSFPUDstStoreTransfer>(&Facts.Packet);
+          ASSERT_NE(Transfer, nullptr);
+          EXPECT_EQ(Transfer->SourceValue, 0u);
+        }
       }
     }
+  }
+}
+
+TEST(RISCVTensix, FullWormholeDstLoadHasNoOldPacket) {
+  using namespace RISCV;
+  for (unsigned Format : {2u, 3u, 4u}) {
+    auto Semantics = getTensixSFPUInstructionSemantics(
+        TTSFPLOADFull, {4, std::nullopt, 3, Format},
+        TensixSFPUArchitecture::Wormhole);
+    ASSERT_TRUE(bool(Semantics)) << toString(Semantics.takeError());
+    ASSERT_TRUE(Semantics->DstTransfer);
+    const auto &Facts = *Semantics->DstTransfer;
+    const auto *Load = std::get_if<TensixSFPUDstLoadTransfer>(&Facts.Packet);
+    ASSERT_NE(Load, nullptr);
+    EXPECT_EQ(Load->DestinationValue, 0u);
+    EXPECT_FALSE(Load->OldValue);
+    EXPECT_EQ(Facts.OffsetArgument, 1u);
+    EXPECT_EQ(Facts.AddressMode, 3u);
   }
 }
 
@@ -1057,7 +1111,7 @@ TEST(RISCVTensix, Raw32DstTransferDoesNotWidenArchitectureOrAddressMode) {
   for (bool Wormhole : {false, true}) {
     SCOPED_TRACE(Wormhole);
     for (unsigned Mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
-      if (Wormhole && Mode > 3)
+      if (Wormhole && Mode >= 3)
         continue;
       SCOPED_TRACE(Mode);
       for (bool Load : {false, true}) {
@@ -1091,16 +1145,14 @@ TEST(RISCVTensix, BoundDstTransferRemainsAbsentForUnreceivedForms) {
       return RISCV::getTensixBoundSFPUContract(ID, Arguments);
     };
     for (unsigned Mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
-      if (Wormhole && Mode > 3)
+      if (Wormhole && Mode >= 3)
         continue;
       auto Contract = Query(Mode, 2);
       ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
       EXPECT_FALSE(Contract->getDstTransferFacts());
       EXPECT_TRUE(Contract->getTransferFacts().empty());
     }
-    for (unsigned Format : {0u, 1u, 3u, 4u, 5u, 6u, 8u, 14u, 15u}) {
-      if (!Wormhole && (Format == 3 || Format == 4))
-        continue; // Received BH slot7 forms have FP32 and Raw32 positives.
+    for (unsigned Format : {0u, 1u, 5u, 6u, 8u, 14u, 15u}) {
       auto Contract = Query(Wormhole ? 3 : 7, Format);
       ASSERT_TRUE(bool(Contract)) << toString(Contract.takeError());
       EXPECT_FALSE(Contract->getDstTransferFacts());

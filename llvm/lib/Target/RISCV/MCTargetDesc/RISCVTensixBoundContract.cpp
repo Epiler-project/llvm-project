@@ -822,6 +822,7 @@ RISCV::getTensixSFPUInstructionSemantics(
     const auto Mode = NativeFields[AddressMode];
     const auto Storage = NativeFields[Format];
     if (!(Mode == 0 && Storage == 3) &&
+        !(Architecture == TensixSFPUArchitecture::Wormhole && Mode == 3) &&
         !(Architecture == TensixSFPUArchitecture::Blackhole && Mode == 7))
       return;
     std::optional<TensixSFPUDstFormat> StorageFormat;
@@ -831,6 +832,8 @@ RISCV::getTensixSFPUInstructionSemantics(
       StorageFormat = TensixSFPUDstFormat::Float32;
     if (Storage == 4)
       StorageFormat = TensixSFPUDstFormat::Raw32;
+    if (Storage == 9)
+      StorageFormat = TensixSFPUDstFormat::UInt16;
     if (StorageFormat)
       Result.DstTransfer = TensixSFPUDstTransferFacts{
           std::move(Packet), Offset, static_cast<uint8_t>(*Mode),

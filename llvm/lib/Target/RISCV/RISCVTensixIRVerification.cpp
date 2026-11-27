@@ -962,9 +962,13 @@ Error verifyIssue(Function &F, bool HasFeature, bool Wormhole,
             RISCV::getTensixWormholeField(Machine->Opcode, N);
         Minimum = WormholeField->MinValue;
         Maximum = WormholeField->MaxValue;
-        if (ID == Intrinsic::tt_zeroacc_port && N == 0)
-          Maximum >>=
+        if (ID == Intrinsic::tt_zeroacc_port && N == 0) {
+          const auto Mode =
+              cast<ConstantInt>(II->getArgOperand(First + 4))->getZExtValue();
+          const auto Use32 =
               cast<ConstantInt>(II->getArgOperand(First + 3))->getZExtValue();
+          Maximum = Mode == 2 ? 1 : Maximum >> Use32;
+        }
       }
       if (!Port || Replay) {
         if (Error E = range(*II, First + N, Minimum, Maximum))

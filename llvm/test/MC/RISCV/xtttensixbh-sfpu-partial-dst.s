@@ -23,4 +23,4 @@ ttsfpstore l0, 0, 8, 15
 ttsfpload l0, 0, 7, 10
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpstore l0, 0, 7, 13
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 9, 14, 15}

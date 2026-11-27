@@ -23,6 +23,11 @@ ttsfpload l3, 513, 7, 8
 # ENC: ttsfpstore l3, 1023, 7, 8 # encoding: [0xfd,0x8f,0xe3,0xc8]
 # DIS: ttsfpstore l3, 1023, 7, 8
 ttsfpstore l3, 1023, 7, 8
+# Mode 9 is the UInt16 low-half store used by the Top-K pack path.  It is
+# admitted for SFPSTORE while the corresponding load remains unsupported.
+# ENC: ttsfpstore l3, 1023, 7, 9 # encoding: [0xfd,0x8f,0xe7,0xc8]
+# DIS: ttsfpstore l3, 1023, 7, 9
+ttsfpstore l3, 1023, 7, 9
 #--- bad.s
 ttsfpload l3, 1024, 7, 5
 # BAD: immediate must be an integer in the range [0, 1023]
@@ -31,24 +36,22 @@ ttsfpstore l3, 0, 8, 6
 ttsfpload l3, 0, 7, 7
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpstore l3, 0, 7, 7
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 9, 14, 15}
 ttsfpload l3, 0, 7, 9
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
-ttsfpstore l3, 0, 7, 9
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpload l3, 0, 7, 10
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpstore l3, 0, 7, 10
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 9, 14, 15}
 ttsfpload l3, 0, 7, 11
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpstore l3, 0, 7, 11
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 9, 14, 15}
 ttsfpload l3, 0, 7, 12
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpstore l3, 0, 7, 12
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 9, 14, 15}
 ttsfpload l3, 0, 7, 13
 # BAD: SFPLOAD format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
 ttsfpstore l3, 0, 7, 13
-# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 14, 15}
+# BAD: SFPSTORE format must be one of {0, 1, 2, 3, 4, 5, 6, 8, 9, 14, 15}

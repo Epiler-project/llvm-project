@@ -31,7 +31,7 @@ class RISCVTargetLowering : public TargetLowering {
 
 public:
   explicit RISCVTargetLowering(const TargetMachine &TM,
-                               const RISCVSubtarget &STI);
+                               const RISCVSubtarget &STI, bool TensixExecutor);
 
   const RISCVSubtarget &getSubtarget() const { return Subtarget; }
 

@@ -228,7 +228,7 @@ struct TensixSFPUTransferFacts {
   std::optional<TensixSFPUValueBits> ImmediateValue;
 };
 
-enum class TensixSFPUDstFormat : uint8_t { BFloat16, Float32, Raw32 };
+enum class TensixSFPUDstFormat : uint8_t { BFloat16, Float32, Raw32, UInt16 };
 struct TensixSFPUDstLoadTransfer {
   unsigned DestinationValue;
   // Absent only when the actual native form has no old-destination operand.

@@ -21,7 +21,7 @@
 ; IMMEDIATE: immarg operand has non-immediate parameter
 ; FORM: Tensix intrinsic is not supported on Wormhole
 ; LOGICAL: Wormhole ZEROACC does not match an admitted logical form
-; PORTMODE: Wormhole ZEROACC instruction-port emission requires 16-row mode
+; PORTMODE: Wormhole ZEROACC instruction-port emission requires a 16-row or half-Dst clear
 ; FEATURE: Tensix intrinsic requires +xtttensixbh
 ; EXECUTOR: ncrisc cannot issue Tensix instructions
 
@@ -58,7 +58,7 @@ define void @bad() "tensix-executor"="trisc2" {
 ;--- half.ll
 declare void @llvm.tt.zeroacc(i32 immarg, i32 immarg, i32 immarg, i32 immarg, i32 immarg)
 define void @bad() "tensix-executor"="trisc2" {
-  call void @llvm.tt.zeroacc(i32 0, i32 1, i32 0, i32 0, i32 2)
+  call void @llvm.tt.zeroacc(i32 2, i32 1, i32 0, i32 0, i32 2)
   ret void
 }
 ;--- packed-mode.ll

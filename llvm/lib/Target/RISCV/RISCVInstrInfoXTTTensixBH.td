@@ -492,7 +492,9 @@ def TTSFPSTORE : TensixDst<0x72, (outs),
   // Format 0 selects SRCB; 1/2 convert FP16/BF16, 3 is FP32, 4 is raw.
   // 5/6/8 select INT8/UINT16/INT16 with direction-specific conversions.
   // 14/15 move one opaque Dst16 cell to/from the low/high LReg half.
-  let AllowedModes = 0xc17f;
+  // Mode 9 (SFPSTORE_MOD0_FMT_LO16) moves a UInt16 low half into the
+  // packer-visible high half for Top-K output on Wormhole and Blackhole.
+  let AllowedModes = 0xc37f;
   let mayStore = 1;
 }
 // Scalar offset issue keeps SFPU SSA and all scalar scratch registers visible

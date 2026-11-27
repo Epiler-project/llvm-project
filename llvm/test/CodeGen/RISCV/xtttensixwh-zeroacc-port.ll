@@ -46,3 +46,21 @@ define void @face_fp32(i32 noundef %face) "tensix-executor"="trisc1" {
   call void @llvm.tt.zeroacc.port(i32 0, i32 %bounded, i32 0, i32 0, i32 1, i32 1)
   ret void
 }
+
+define void @clear_half(i1 noundef %high) "tensix-executor"="trisc2" {
+; FOLD-LABEL: define void @clear_half
+; FOLD: [[HALFWORD:%.*]] = or disjoint i32 269516800, {{%.*}}
+; FOLD: call void @llvm.tt.issue.word(i32 0, i32 16, i32 [[HALFWORD]])
+; ISEL-LABEL: name: clear_half
+; ISEL: PseudoTTZEROACCPort
+; ASM-LABEL: clear_half:
+; ASM-DAG: lui [[HALFBASE:[a-z0-9]+]], 65800
+; ASM-DAG: andi [[HALFBIT:[a-z0-9]+]], {{[a-z0-9]+}}, 1
+; OR-FACE: or [[WORD:[a-z0-9]+]], {{([a-z0-9]+, )?}}[[HALFBIT]]{{(, [a-z0-9]+)?}}{{$}}
+; OR-BASE: or [[WORD:[a-z0-9]+]], {{([a-z0-9]+, )?}}[[HALFBASE]]{{(, [a-z0-9]+)?}}{{$}}
+; ASM: sw [[WORD]],
+; ASM: ret
+  %half = zext i1 %high to i32
+  call void @llvm.tt.zeroacc.port(i32 0, i32 %half, i32 1, i32 0, i32 0, i32 2)
+  ret void
+}

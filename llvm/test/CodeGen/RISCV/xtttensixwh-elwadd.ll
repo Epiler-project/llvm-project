@@ -79,3 +79,39 @@ define void @sub_mul() "tensix-executor"="trisc1" {
   call void @llvm.tt.elwmul(i32 24, i32 3, i32 2, i32 0, i32 3)
   ret void
 }
+
+declare void @llvm.tt.elwmul.port(i32 immarg, i32, i32, i32, i32, i32)
+
+define void @mul_dynamic_mode(i32 noundef %raw) "tensix-executor"="trisc1" {
+; ISEL-LABEL: name: mul_dynamic_mode
+; ISEL: PseudoTTELWMULPort
+; WH-LABEL: mul_dynamic_mode:
+; WH: slli {{[ast][0-9]+}}, {{[ast][0-9]+}}, 15
+; WH: sw
+; WH: ret
+; BH-LABEL: mul_dynamic_mode:
+; BH: slli {{[ast][0-9]+}}, {{[ast][0-9]+}}, 14
+; BH: sw
+; BH: ret
+  %bounded = and i32 %raw, 3
+  call void @llvm.tt.elwmul.port(i32 0, i32 0, i32 %bounded, i32 0, i32 0, i32 0)
+  ret void
+}
+
+declare void @llvm.tt.mvmul.port(i32 immarg, i32, i32, i32, i32)
+
+define void @matrix_dynamic_mode(i32 noundef %raw) "tensix-executor"="trisc1" {
+; ISEL-LABEL: name: matrix_dynamic_mode
+; ISEL: PseudoTTMVMULPort
+; WH-LABEL: matrix_dynamic_mode:
+; WH: slli {{[ast][0-9]+}}, {{[ast][0-9]+}}, 15
+; WH: sw
+; WH: ret
+; BH-LABEL: matrix_dynamic_mode:
+; BH: slli {{[ast][0-9]+}}, {{[ast][0-9]+}}, 14
+; BH: sw
+; BH: ret
+  %bounded = and i32 %raw, 3
+  call void @llvm.tt.mvmul.port(i32 0, i32 0, i32 %bounded, i32 0, i32 0)
+  ret void
+}

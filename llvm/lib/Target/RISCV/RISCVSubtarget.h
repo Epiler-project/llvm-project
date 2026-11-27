@@ -146,7 +146,8 @@ public:
   // Initializes the data members to match that of the specified triple.
   RISCVSubtarget(const Triple &TT, StringRef CPU, StringRef TuneCPU,
                  StringRef FS, StringRef ABIName, unsigned RVVVectorBitsMin,
-                 unsigned RVVVectorLMULMax, const TargetMachine &TM);
+                 unsigned RVVVectorLMULMax, const TargetMachine &TM,
+                 bool TensixExecutor = false);
 
   ~RISCVSubtarget() override;
 

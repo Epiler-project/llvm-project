@@ -69,7 +69,8 @@ static const unsigned ZvfbfaOps[] = {
     ISD::STRICT_FMUL, ISD::STRICT_FMA,  ISD::SETCC};
 
 RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
-                                         const RISCVSubtarget &STI)
+                                         const RISCVSubtarget &STI,
+                                         bool TensixExecutor)
     : TargetLowering(TM, STI), Subtarget(STI) {
 
   RISCVABI::ABI ABI = Subtarget.getTargetABI();
@@ -2068,7 +2069,12 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   if (Subtarget.hasStdExtP() && Subtarget.is64Bit())
     setTargetDAGCombine(ISD::ZERO_EXTEND_VECTOR_INREG);
 
-  setMaxDivRemBitWidthSupported(Subtarget.is64Bit() ? 128 : 64);
+  // The Tensix firmware ABI on RV32 has no compiler-rt division helpers.
+  // This also applies to NCRISC, which has no Tensix instruction extension.
+  unsigned MaxDivRemWidth = Subtarget.is64Bit() ? 128 : 64;
+  if (!Subtarget.is64Bit() && TensixExecutor)
+    MaxDivRemWidth = 32;
+  setMaxDivRemBitWidthSupported(MaxDivRemWidth);
 
   setMaxLargeFPConvertBitWidthSupported(Subtarget.is64Bit() ? 128 : 64);
 

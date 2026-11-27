@@ -4,6 +4,8 @@
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/poison.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=POISON
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/config.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=CONFIG
 ; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/other.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=OTHER
+; RUN: not llc -mtriple=riscv32 -mattr=+xtttensixwh %t/half.ll -o /dev/null 2>&1 | FileCheck %s --check-prefix=HALF
+; HALF: ZEROACC field where must be proven in [0, 1]
 ; RANGE16: ZEROACC field where must be proven in [0, 63]
 ; RANGE32: ZEROACC field where must be proven in [0, 31]
 ; POISON: ZEROACC field where must be defined and non-poison
@@ -43,5 +45,13 @@ define void @dynamic_configuration(i32 noundef %mode) "tensix-executor"="trisc1"
 declare void @llvm.tt.stallwait.port(i32 immarg, i32, i32)
 define void @other_port() "tensix-executor"="trisc1" {
   call void @llvm.tt.stallwait.port(i32 0, i32 0, i32 0)
+  ret void
+}
+
+;--- half.ll
+declare void @llvm.tt.zeroacc.port(i32 immarg, i32, i32, i32, i32, i32)
+define void @wide_half(i32 noundef %where) "tensix-executor"="trisc2" {
+  %selector = and i32 %where, 3
+  call void @llvm.tt.zeroacc.port(i32 0, i32 %selector, i32 1, i32 0, i32 0, i32 2)
   ret void
 }
