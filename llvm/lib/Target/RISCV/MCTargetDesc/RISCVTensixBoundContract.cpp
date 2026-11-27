@@ -813,6 +813,16 @@ RISCV::getTensixSFPUInstructionSemantics(
   if (Opcode == RISCV::TTSFPTRANSP) {
     for (unsigned Register = 0; Register != 4; ++Register)
       Result.Values.push_back(TensixFixedRegisterRef{Register});
+  } else if (Opcode == RISCV::TTSFPSHFT2Copy4) {
+    for (unsigned Register = 0; Register != 4; ++Register)
+      Result.Values.push_back(TensixFixedRegisterRef{Register});
+  } else if (Opcode == RISCV::TTSFPSHFT2Rotate4) {
+    for (unsigned Register = 0; Register != 4; ++Register)
+      Result.Values.push_back(TensixFixedRegisterRef{Register});
+    Result.Values.push_back(TensixSFPUInstructionOperandRef{0});
+  } else if (Opcode == RISCV::TTSFPLUTFP32Three) {
+    for (unsigned Register = 0; Register != 8; ++Register)
+      Result.Values.push_back(TensixFixedRegisterRef{Register});
   } else {
     for (unsigned Operand = 0; Operand != Desc.getNumOperands(); ++Operand)
       Result.Values.push_back(TensixSFPUInstructionOperandRef{Operand});
@@ -1213,11 +1223,12 @@ RISCV::getTensixSFPUInstructionSemantics(
     Transfer.ImmediateValue = TensixSFPUValueBits{
         Transfer.GeneratedBits, Value & Transfer.GeneratedBits};
   }
-  if (Opcode == RISCV::TTSFPSWAP && NativeFields[4] == 1) {
-    // ALL_ROWS_MAX compares the same pre-instruction D/C snapshot for both
-    // outputs. Each inactive destination retains its own tied old packet.
-    // Initialized inputs establish initialized outputs, without inventing
-    // numerical value bits or an identity relation for either result.
+  if (Opcode == RISCV::TTSFPSWAP &&
+      (NativeFields[4] == 1 || NativeFields[4] == 9)) {
+    // ALL_ROWS_MAX (1) and VEC_MIN_MAX (9) compare the pre-instruction D/C
+    // snapshot for both outputs. Each inactive destination retains its own tied
+    // old packet. Initialized inputs establish initialized outputs, without
+    // inventing numerical value bits or an identity relation for either result.
     for (unsigned Destination = 0; Destination != 2; ++Destination) {
       TensixSFPUTransferFacts Compared{TensixSFPUTransferKind::LaneWise,
                                        0u,
@@ -1256,6 +1267,112 @@ RISCV::getTensixSFPUInstructionSemantics(
       for (unsigned Lane = 0; Lane != 32; ++Lane)
         GroupResult.LaneSources.push_back(
             {Lane / 8, Destination * 8 + Lane % 8});
+      Result.Transfers.push_back(std::move(GroupResult));
+    }
+  } else if (Opcode == RISCV::TTSFPSHFT2Copy4) {
+    if (NativeFields.size() != 1 || !NativeFields[0] ||
+        (*NativeFields[0] != 0 && *NativeFields[0] != 1))
+      return invalid("SFPSHFT2 copy4 requires mode 0 or 1");
+    for (unsigned Destination = 0; Destination != 3; ++Destination) {
+      TensixSFPUTransferFacts Shifted{
+          TensixSFPUTransferKind::RegisterPermutation,
+          0u,
+          0xffffffffu,
+          0xffffffffu,
+          true,
+          true,
+          true,
+          true,
+          {{Destination + 1, 0xffffffffu}}};
+      Shifted.DestinationArgument = Destination;
+      Shifted.OldArgument = Destination;
+      for (unsigned Lane = 0; Lane != 32; ++Lane)
+        Shifted.LaneSources.push_back({Destination + 1, Lane});
+      Result.Transfers.push_back(std::move(Shifted));
+    }
+    if (*NativeFields[0] == 0) {
+      TensixSFPUTransferFacts Zeroed{TensixSFPUTransferKind::ImmediateFull,
+                                     0u,
+                                     0xffffffffu,
+                                     0xffffffffu,
+                                     true,
+                                     true,
+                                     true,
+                                     true};
+      Zeroed.DestinationArgument = 3;
+      Zeroed.OldArgument = 3;
+      Zeroed.ImmediateValue = TensixSFPUValueBits{0xffffffffu, 0u};
+      Result.Transfers.push_back(std::move(Zeroed));
+    } else {
+      TensixSFPUTransferFacts Chained{TensixSFPUTransferKind::LaneWise,
+                                      0u,
+                                      0xffffffffu,
+                                      0xffffffffu,
+                                      true,
+                                      true,
+                                      true,
+                                      true,
+                                      {{0, 0xffffffffu}}};
+      Chained.DestinationArgument = 3;
+      Chained.OldArgument = 3;
+      Result.Transfers.push_back(std::move(Chained));
+    }
+  } else if (Opcode == RISCV::TTSFPSHFT2Rotate4) {
+    for (unsigned Destination = 0; Destination != 3; ++Destination) {
+      TensixSFPUTransferFacts Shifted{
+          TensixSFPUTransferKind::RegisterPermutation,
+          0u,
+          0xffffffffu,
+          0xffffffffu,
+          true,
+          true,
+          true,
+          true,
+          {{Destination + 1, 0xffffffffu}}};
+      Shifted.DestinationArgument = Destination;
+      Shifted.OldArgument = Destination;
+      for (unsigned Lane = 0; Lane != 32; ++Lane)
+        Shifted.LaneSources.push_back({Destination + 1, Lane});
+      Result.Transfers.push_back(std::move(Shifted));
+    }
+    TensixSFPUTransferFacts Rotated{TensixSFPUTransferKind::RegisterPermutation,
+                                    0u,
+                                    0xffffffffu,
+                                    0xffffffffu,
+                                    true,
+                                    true,
+                                    true,
+                                    true,
+                                    {{4, 0xffffffffu}}};
+    Rotated.DestinationArgument = 3;
+    Rotated.OldArgument = 3;
+    for (unsigned Lane = 0; Lane != 32; ++Lane)
+      Rotated.LaneSources.push_back({4, (Lane & ~7u) | ((Lane + 7u) & 7u)});
+    Result.Transfers.push_back(std::move(Rotated));
+  } else if (Opcode == RISCV::TTSFPLUTFP32Three) {
+    if (NativeFields.size() != 1 || !NativeFields[0] ||
+        (*NativeFields[0] != 0 && *NativeFields[0] != 1))
+      return invalid("indirect SFPLUTFP32 requires its sign mode");
+    const bool RetainSign = *NativeFields[0] != 0;
+    for (unsigned Destination = 0; Destination != 8; ++Destination) {
+      TensixSFPUTransferFacts GroupResult{
+          TensixSFPUTransferKind::LaneWise,
+          0u,
+          0xffffffffu,
+          0xffffffffu,
+          true,
+          true,
+          true,
+          true,
+          {{0, 0xffffffffu},
+           {1, 0xffffffffu},
+           {2, 0xffffffffu},
+           {3, Destination == 3 || RetainSign ? 0xffffffffu : 0x7fffffffu}}};
+      if (Destination >= 4 && Destination < 7)
+        GroupResult.Inputs.push_back({Destination, 0xffffffffu});
+      GroupResult.Inputs.push_back({7, Destination == 7 ? 0xffffffffu : 0xfu});
+      GroupResult.DestinationArgument = Destination;
+      GroupResult.OldArgument = Destination;
       Result.Transfers.push_back(std::move(GroupResult));
     }
   } else if (Transfer.Kind != TensixSFPUTransferKind::Unsupported) {
@@ -1336,7 +1453,8 @@ RISCV::getTensixSFPUInstructionSemantics(
   // instruction or mode has no configuration requirements.
   switch (Opcode) {
   case RISCV::TTSFPSWAP: {
-    if (NativeFields.size() != 5 || !NativeFields[4] || *NativeFields[4] != 1)
+    if (NativeFields.size() != 5 || !NativeFields[4] ||
+        (*NativeFields[4] != 1 && *NativeFields[4] != 9))
       break;
     if (Desc.getNumDefs() != 2)
       return invalid("swap configuration requires both native destinations");
@@ -1428,10 +1546,19 @@ RISCV::getTensixSFPUInstructionSemantics(
     Result.Configuration.emplace();
     break;
   case RISCV::TTSFPTRANSP:
-    // SFPTRANSP is exempt from TEN-2932. This native form has VD=0, so it
-    // also bypasses the configurable backdoor-load condition. Its actual CC
-    // and configuration reads remain architectural effects and lane inputs.
+  case RISCV::TTSFPSHFT2Copy4:
+  case RISCV::TTSFPSHFT2Rotate4:
+    // SFPTRANSP and L0..L3 SFPSHFT2 group shifts write only L0..L3 and encode
+    // VD=0, so they are exempt from TEN-2932 and bypass backdoor-load checks.
     Result.Configuration.emplace();
+    break;
+  case RISCV::TTSFPLUTFP32Three:
+    Result.Configuration.emplace();
+    for (unsigned Destination = 4; Destination != 8; ++Destination)
+      Result.Configuration->Requirements.push_back(
+          {Destination,
+           TensixSFPUConfigurationField::EnableDestIndex,
+           {4, 5, 6, 7}});
     break;
   case RISCV::TTSFPLOADFull:
   case RISCV::TTSFPLOAD:

@@ -3912,14 +3912,11 @@ bool RISCVInstrInfo::analyzeCandidate(outliner::Candidate &C) const {
     return true;
   }
 
-  // If last instruction is return then we can rely on
-  // the verification already performed in the getOutliningTypeImpl.
-  if (C.back().isReturn()) {
-    assert(!cannotInsertTailCall(*C.getMBB()) &&
-           "The candidate who uses return instruction must be outlined "
-           "using tail call");
-    return false;
-  }
+  // Earlier outlined candidates in the same MBB (e.g. MachineOutlinerRegSave
+  // using X6) can introduce a read of TailExpandUseRegNo after initial
+  // instruction classification. Reject the tail-call candidate cleanly.
+  if (C.back().isReturn())
+    return cannotInsertTailCall(*C.getMBB());
 
   // Filter out candidates where the X5 register (t0) can't be used to setup
   // the function call.
@@ -4043,6 +4040,9 @@ RISCVInstrInfo::getOutliningTypeImpl(const MachineModuleInfo &MMI,
   // outlined only if in a tail call.
   if (MI.isCFIInstruction())
     return outliner::InstrType::Legal;
+
+  if (MI.isNotDuplicable())
+    return outliner::InstrType::Illegal;
 
   if (cannotInsertTailCall(*MBB) &&
       (MI.isReturn() || isMIModifiesReg(MI, TRI, RISCV::X5)))

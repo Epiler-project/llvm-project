@@ -303,6 +303,34 @@ static bool preservesDefinedScalar(const Instruction &I, ScalarEvolution &SE,
     // Flagged left shifts retain the overflow obligations below.
   }
 
+  if (I.getOpcode() == Instruction::UDiv ||
+      I.getOpcode() == Instruction::URem) {
+    unsigned Width = I.getType()->getIntegerBitWidth();
+    ConstantRange RU = RefinedUnsigned(I.getOperand(1))
+                           .intersectWith(
+                               SE.getSignedRange(SE.getSCEV(I.getOperand(1))),
+                               ConstantRange::Unsigned);
+    if (RU.isEmptySet() || RU.contains(APInt(Width, 0)))
+      return false;
+    if (I.getOpcode() == Instruction::UDiv) {
+      if (const auto *Exact = dyn_cast<PossiblyExactOperator>(Op);
+          Exact && Exact->isExact()) {
+        const auto *DivC = dyn_cast<ConstantInt>(I.getOperand(1));
+        if (!DivC || !DivC->getValue().isPowerOf2())
+          return false;
+        const DataLayout &DL = I.getModule()->getDataLayout();
+        KnownBits Input =
+            computeKnownBits(I.getOperand(0), DL, &AC, &I, &DT,
+                             /*UseInstrInfo=*/false);
+        unsigned TZ = std::max(
+            Input.countMinTrailingZeros(),
+            computeModularTrailingZeros(SE.getSCEV(I.getOperand(0)), SE));
+        return TZ >= static_cast<unsigned>(DivC->getValue().exactLogBase2());
+      }
+    }
+    return true;
+  }
+
   if (const auto *Disjoint = dyn_cast<PossiblyDisjointInst>(&I);
       Disjoint && Disjoint->isDisjoint()) {
     // InstCombine can express bounded field addition as a disjoint OR.
@@ -710,6 +738,68 @@ static ConstantRange refineWithScalarExpressions(Value *Root, ConstantRange Boun
             Visit(TI->getOperand(0))
                 .truncate(V->getType()->getIntegerBitWidth()),
             ConstantRange::Unsigned);
+    } else if (auto *BC = dyn_cast<BitCastInst>(V)) {
+      if (BC->getOperand(0)->getType() == V->getType())
+        Result = Result.intersectWith(Visit(BC->getOperand(0)),
+                                      ConstantRange::Unsigned);
+    } else if (auto *PN = dyn_cast<PHINode>(V);
+               PN && PN->getNumIncomingValues() == 2 &&
+               V->getType()->isIntegerTy()) {
+      for (unsigned InitIdx : {0u, 1u}) {
+        auto *InitC = dyn_cast<ConstantInt>(PN->getIncomingValue(InitIdx));
+        auto *SI = dyn_cast<SelectInst>(PN->getIncomingValue(1u - InitIdx));
+        if (!InitC || !SI)
+          continue;
+        auto *Cmp = dyn_cast<ICmpInst>(SI->getCondition());
+        if (!Cmp || !isa<ConstantInt>(Cmp->getOperand(1)))
+          continue;
+        ICmpInst::Predicate Pred = Cmp->getPredicate();
+        const Value *ResetVal = SI->getTrueValue();
+        const Value *StepVal = SI->getFalseValue();
+        if (Pred == ICmpInst::ICMP_NE || Pred == ICmpInst::ICMP_ULT) {
+          Pred = ICmpInst::getInversePredicate(Pred);
+          std::swap(ResetVal, StepVal);
+        }
+        auto *ResetC = dyn_cast<ConstantInt>(ResetVal);
+        auto *IncBO = dyn_cast<BinaryOperator>(StepVal);
+        if (!ResetC || !IncBO || IncBO->getOpcode() != Instruction::Add)
+          continue;
+        const Value *StepOp = IncBO->getOperand(0) == PN
+                                  ? IncBO->getOperand(1)
+                                  : (IncBO->getOperand(1) == PN
+                                         ? IncBO->getOperand(0)
+                                         : nullptr);
+        auto *StepC = dyn_cast_or_null<ConstantInt>(StepOp);
+        if (!StepC || StepC->isZero())
+          continue;
+        auto *BoundC = cast<ConstantInt>(Cmp->getOperand(1));
+        if (Cmp->getOperand(0) == IncBO &&
+            (Pred == ICmpInst::ICMP_UGE ||
+             (Pred == ICmpInst::ICMP_EQ && StepC->isOne())) &&
+            !BoundC->isZero() && InitC->getValue().ult(BoundC->getValue()) &&
+            ResetC->getValue().ult(BoundC->getValue())) {
+          bool Ov = false;
+          (void)(BoundC->getValue() - 1).uadd_ov(StepC->getValue(), Ov);
+          if (!Ov) {
+            APInt Lower =
+                APIntOps::umin(InitC->getValue(), ResetC->getValue());
+            Result = Result.intersectWith(
+                ConstantRange(Lower, BoundC->getValue()),
+                ConstantRange::Unsigned);
+            break;
+          }
+        }
+        if (Cmp->getOperand(0) == PN && Pred == ICmpInst::ICMP_EQ &&
+            StepC->isOne() && !BoundC->isMaxValue(false) &&
+            InitC->getValue().ule(BoundC->getValue()) &&
+            ResetC->getValue().ule(BoundC->getValue())) {
+          APInt Lower = APIntOps::umin(InitC->getValue(), ResetC->getValue());
+          Result = Result.intersectWith(
+              ConstantRange(Lower, BoundC->getValue() + 1),
+              ConstantRange::Unsigned);
+          break;
+        }
+      }
     }
     Ranges.find(V)->second = Result;
     return Result;
